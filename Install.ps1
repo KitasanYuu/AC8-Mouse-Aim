@@ -1,7 +1,9 @@
 param(
-    [string]$GamePath
+    [string]$GamePath,
+    [switch]$NoPause
 )
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $source = Join-Path $PSScriptRoot 'Payload'
 function Test-GameDirectory([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -98,9 +100,8 @@ foreach ($relative in @(
     $actual = (Get-FileHash -LiteralPath (Join-Path $GamePath $relative) -Algorithm SHA256).Hash
     if ($actual -ne $expected) { throw "Installation verification failed: $relative" }
 }
-Write-Host 'VERIFIED: game files match this 0.2.30 performance release.' -ForegroundColor Green
-Write-Host 'Direct in-process transport; HUD unchanged. Optional F5 performance capture.'
+Write-Host 'VERIFIED: installed game files match the selected package.' -ForegroundColor Green
 if ($isUpgrade) { Write-Host 'The startup loader was repaired and the old files were backed up.' }
 Write-Host 'Start ACE COMBAT 8 through Steam with the existing offline launch option.'
 Write-Host 'Before multiplayer, run Disable-Mod-For-Multiplayer.cmd and then launch from Steam.'
-Read-Host 'Press Enter to close'
+if (-not $NoPause) { Read-Host 'Press Enter to close' }

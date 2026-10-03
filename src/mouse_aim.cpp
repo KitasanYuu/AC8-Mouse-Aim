@@ -21,6 +21,7 @@
 #include "yaw_signature.h"
 #include "flight_math.h"
 #include "free_look.h"
+#include "flight_logic.h"
 #include "lua_bridge.h"
 
 #pragma comment(lib, "dinput8.lib")
@@ -66,8 +67,18 @@ bool hook_created = false;
 std::atomic<bool> running{false};
 std::atomic<bool> enabled{true};
 std::atomic<bool> hud_enabled{true};
+std::atomic<bool> trace_enabled{false};
+// Axes the player is flying by keyboard (1 pitch, 2 roll, 4 yaw), for trace analysis.
+std::atomic<int> keyboard_axes{0};
 std::atomic<bool> game_paused{false};
 std::atomic<bool> gaze_active{false};
+// AC8 AutoPilot is engaged by pressing both yaw keys together. While it flies, the
+// mod leaves controls and camera to the game; Q+E again or a deliberate mouse move
+// takes back control with the target re-anchored to the nose.
+std::atomic<bool> autopilot_active{false};
+std::atomic<long> autopilot_travel{0};
+constexpr float autopilot_takeover_degrees=6.0f;
+bool yielding() { return gaze_active.load() || autopilot_active.load(); }
 std::atomic<bool> resume_center_requested{false};
 std::atomic<bool> active{false};
 std::atomic<uintptr_t> aircraft{0};
@@ -83,11 +94,29 @@ std::atomic<float> target_pitch{0}, target_yaw{0};
 // Camera destination is independent of the flight target while F is held.
 std::atomic<float> look_pitch{0}, look_yaw{0};
 flight::FreeLook free_look;
+flight::V desired_aim{1,0,0};
+bool desired_aim_valid=false;
+// Flight logic runs through this table: the built-in copy, or a hot-loaded
+// ac8_flight_logic.dll during development. Called only on the game thread.
+struct LogicApi {
+    int (*abi)(unsigned*,unsigned*,unsigned*);
+    void (*configure)(const wchar_t*);
+    void (*reset)(void*);
+    void (*step)(void*,const flight::LogicInput*,flight::LogicOutput*);
+};
+LogicApi logic{flight::logic_api::abi,flight::logic_api::configure,flight::logic_api::reset,flight::logic_api::step};
+alignas(64) unsigned char logic_state[4096];
+static_assert(sizeof(flight::LogicState)<=sizeof(logic_state),"logic state buffer too small");
+HMODULE logic_module{};
+wchar_t logic_live_path[MAX_PATH]{};
+int logic_generation=0;
+FILETIME logic_file_time{}, config_file_time{};
+ULONGLONG dev_poll_at=0;
+void logic_reset() { logic.reset(logic_state); }
 std::atomic<bool> recenter_requested{true};
 float previous_pitch{}, previous_yaw{}, previous_roll{};
 float filtered_pitch_rate{}, filtered_yaw_rate{}, filtered_roll_rate{};
-flight::LevelBlend roll_level_blend;
-unsigned long long previous_pose_tick{}, telemetry_tick{};
+unsigned long long previous_pose_clock{}, telemetry_tick{};
 Config config;
 wchar_t module_folder[MAX_PATH]{};
 wchar_t status_path[MAX_PATH]{};
@@ -211,7 +240,9 @@ UINT WINAPI capture_get_raw_input_data(HRAWINPUT input, UINT command, LPVOID dat
         if (raw->header.dwType == RIM_TYPEMOUSE &&
             !(raw->data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) &&
             foreground_is_game() && active.load() && enabled.load()) {
-            if(!game_paused.load() && !gaze_active.load()) {
+            if(autopilot_active.load()) {
+                autopilot_travel.fetch_add(std::abs(raw->data.mouse.lLastX)+std::abs(raw->data.mouse.lLastY));
+            } else if(!game_paused.load() && !gaze_active.load()) {
                 mouse_dx.fetch_add(raw->data.mouse.lLastX);
                 mouse_dy.fetch_add(raw->data.mouse.lLastY);
             }
@@ -276,7 +307,9 @@ void mouse_loop() {
             if (FAILED(result)) {
                 mouse_device->Acquire();
             } else if (foreground_is_game() && active.load()) {
-                if(!game_paused.load() && !gaze_active.load()) {
+                if(autopilot_active.load()) {
+                    autopilot_travel.fetch_add(std::abs(state.lX)+std::abs(state.lY));
+                } else if(!game_paused.load() && !gaze_active.load()) {
                     mouse_dx.fetch_add(state.lX);
                     mouse_dy.fetch_add(state.lY);
                 }
@@ -289,6 +322,31 @@ void mouse_loop() {
             log_line("HUD only: %s",hud_enabled.load()?"ON":"OFF");
         }
         f7_down=f7;
+        static bool chord_down=false;
+        const bool chord=foreground_is_game() && active.load() &&
+            (GetAsyncKeyState('Q')&0x8000) && (GetAsyncKeyState('E')&0x8000);
+        if(chord && !chord_down) {
+            const bool engaged=!autopilot_active.load();
+            autopilot_travel.store(0);
+            autopilot_active.store(engaged);
+            if(!engaged) recenter_requested.store(true);
+            log_line("autopilot: %s",engaged?"Q+E engaged; controls and camera left to the game (Q+E or mouse takes back)"
+                                            :"Q+E released to mouse aim; target re-anchored to nose");
+        }
+        chord_down=chord;
+        if(autopilot_active.load() && autopilot_travel.load()*config.sensitivity>autopilot_takeover_degrees) {
+            autopilot_active.store(false);
+            autopilot_travel.store(0);
+            recenter_requested.store(true);
+            log_line("autopilot: mouse takeover; target re-anchored to nose");
+        }
+        static bool f4_down=false;
+        const bool f4=(GetAsyncKeyState(VK_F4)&0x8000)!=0;
+        if(f4 && !f4_down && foreground_is_game()) {
+            trace_enabled.store(!trace_enabled.load());
+            log_line("flight trace: %s",trace_enabled.load()?"ON (per-frame TRACE lines)":"OFF");
+        }
+        f4_down=f4;
         bool f8 = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (f8 && !f8_down) enabled.store(!enabled.load());
@@ -301,30 +359,48 @@ void mouse_loop() {
 
 void update_commands() {
     using namespace flight;
-    if (!active.load() || !enabled.load() || game_paused.load() || gaze_active.load()) {
+    if (!active.load() || !enabled.load() || game_paused.load() || yielding()) {
         free_look.reset();
+        logic_reset();
+        desired_aim_valid=false;
         command_pitch.store(0); command_roll.store(0); command_yaw.store(0);
-        if(game_paused.load() || gaze_active.load()) { mouse_dx.store(0); mouse_dy.store(0); }
-        previous_pose_tick = 0;
+        if(game_paused.load() || yielding()) { mouse_dx.store(0); mouse_dy.store(0); }
+        previous_pose_clock = 0;
         return;
     }
     const auto now = GetTickCount64();
-    const float dt = previous_pose_tick ? std::clamp((now-previous_pose_tick)/1000.0f,0.001f,0.1f) : 1.0f/60;
+    const auto frame_clock=perf_clock();
+    const float elapsed=previous_pose_clock ?
+        static_cast<float>(double(frame_clock-previous_pose_clock)/perf_frequency.QuadPart) : 0.0f;
+    const float dt=previous_pose_clock ? std::clamp(elapsed,0.002f,0.1f) : 1.0f/60;
     const Basis b = basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load());
     const Basis old = basis(previous_pitch,previous_yaw,previous_roll);
     // Estimate body angular velocity from the moving basis, avoiding Euler wrap/pole artifacts.
     V omega = (cross(old.f,b.f)+cross(old.r,b.r)+cross(old.u,b.u))*(0.5f/dt/rad);
     float a = 1-std::exp(-12*dt);
-    if (!previous_pose_tick) { omega={}; roll_level_blend.reset(); }
+    // A pose jump no aircraft can fly (mission start placement, respawn) re-anchors
+    // the target to the new nose instead of turning back toward the old heading.
+    const float jump=std::acos(std::clamp(std::min(dot(old.f,b.f),dot(old.u,b.u)),-1.0f,1.0f))/rad;
+    if (previous_pose_clock && jump>15.0f && jump/std::max(elapsed,0.001f)>600.0f) {
+        recenter_requested.store(true);
+        log_line("pose jump %.1f deg in %.3fs: target re-anchored to nose",jump,elapsed);
+    }
+    if (!previous_pose_clock || elapsed>0.2f) {
+        omega={};
+        filtered_pitch_rate=filtered_yaw_rate=filtered_roll_rate=0;
+        logic_reset();
+    }
     filtered_pitch_rate += (-dot(omega,b.r)-filtered_pitch_rate)*a;
     filtered_yaw_rate += (dot(omega,b.u)-filtered_yaw_rate)*a;
     filtered_roll_rate += (-dot(omega,b.f)-filtered_roll_rate)*a;
     previous_pitch=pose_pitch.load(); previous_yaw=pose_yaw.load(); previous_roll=pose_roll.load();
-    previous_pose_tick=now;
+    previous_pose_clock=frame_clock;
     V aim=basis(target_pitch.load(),target_yaw.load(),0).f;
+    if(!desired_aim_valid) { desired_aim=aim; desired_aim_valid=true; }
     const bool manual = !foreground_is_game();
     if (recenter_requested.exchange(false) || manual) {
-        aim=b.f;
+        desired_aim=aim=b.f;
+        logic_reset();
         mouse_dx.store(0); mouse_dy.store(0);
     }
     const Basis view=basis(camera_pitch.load(),camera_yaw.load(),camera_roll.load());
@@ -333,46 +409,31 @@ void update_commands() {
         V offset{view_offset_x.load(),view_offset_y.load(),view_offset_z.load()};
         const float along=dot(offset,view.f);
         const float t=-along+std::sqrt(std::max(0.0f,along*along+50000.0f*50000.0f-dot(offset,offset)));
-        aim=unit(offset+view.f*t);
+        desired_aim=aim=unit(offset+view.f*t);
+        logic_reset();
         mouse_dx.store(0); mouse_dy.store(0);
         filtered_pitch_rate=filtered_yaw_rate=filtered_roll_rate=0;
     }
     const bool looking=!manual && (GetAsyncKeyState('F')&0x8000)!=0;
-    const V camera_target=free_look.step(looking,aim,view,
+    if(looking && !free_look.held) desired_aim=aim;
+    const V camera_target=free_look.step(looking,desired_aim,view,
         mouse_dx.exchange(0)*config.sensitivity,mouse_dy.exchange(0)*config.sensitivity);
+    if(!looking) aim=smooth_direction(aim,desired_aim,dt,0.045f);
     look_pitch.store(flight::pitch(camera_target)); look_yaw.store(flight::yaw(camera_target));
     target_pitch.store(flight::pitch(aim)); target_yaw.store(flight::yaw(aim));
-    const float f=dot(aim,b.f), right=dot(aim,b.r), up=dot(aim,b.u);
-    const float angle=std::acos(std::clamp(f,-1.0f,1.0f))/rad;
-    // Direct MouseFlight Plane.RunAutopilot port: normalized local target * 5.
-    // Unity (right, up, forward) -> Unreal (forward, right, up).
-    // Positive UE Pitch raises the nose; positive UE Roll lowers the right wing.
-    const float p=up*5.0f, y=right*5.0f;
-    // AC-specific rate-limited PD control. Body rates are degrees/second.
-    // The reference proportional demand alone does not brake AC's fast roll response.
-    const float pitch_error=std::atan2(up,std::max(0.02f,f))/rad;
-    const float yaw_error=std::atan2(right,std::max(0.02f,f))/rad;
-    const float level_error=std::atan2(b.r.z,b.u.z)/rad;
-    const float near_blend=tracking_weight(angle);
-    // Bank until the target lies above the aircraft, then pull toward it.
-    const float turn_bank_error=std::clamp(std::atan2(right,std::max(0.12f,up))/rad,-90.0f,90.0f);
-    const float roll_blend=roll_level_blend.step(angle,dt);
-    const float roll_error=level_error*(1-roll_blend)+turn_bank_error*roll_blend;
-    // Separate fast tracking from gentler final leveling. Braking remains available.
-    const float roll_speed=70.0f+70.0f*roll_blend;
-    const float rcmd=arrival_command(roll_error,filtered_roll_rate,roll_speed,240.0f,3.5f,1.0f,170.0f,1.0f);
-    const float final_gain=1.0f-near_blend;
-    const float pcmd=arrival_command(pitch_error,filtered_pitch_rate,45.0f,90.0f,1.8f+0.8f*final_gain,0.2f,55.0f,0.85f);
-    const float yaw_rate=std::clamp(dead(yaw_error,0.2f)*(1.2f+0.6f*final_gain),-7.0f,7.0f);
-    const float ycmd=std::clamp((yaw_rate-filtered_yaw_rate*0.6f)/10.0f,-0.7f,0.7f);
-    command_pitch.store(manual?0:pcmd*config.pitch_sign);
-    command_yaw.store(manual?0:ycmd*config.yaw_sign);
-    command_roll.store(manual?0:rcmd*config.roll_sign);
+    // Lift-vector maneuver paradigm (docs/maneuver-spec.md), see flight_logic.h.
+    flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),aim.x,aim.y,aim.z,
+        filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load()};
+    flight::LogicOutput output{};
+    logic.step(logic_state,&input,&output);
+    if(output.event[0]) log_line("%s",output.event);
+    command_pitch.store(manual?0:output.pitch*config.pitch_sign);
+    command_yaw.store(manual?0:output.yaw*config.yaw_sign);
+    command_roll.store(manual?0:output.roll*config.roll_sign);
+    if(trace_enabled.load()) log_line("TRACE %s",output.trace);
     if(now-telemetry_tick>=10000) {
         telemetry_tick=now;
-        log_line("0.2.18 adaptive localScaled=(%.3f,%.3f) angle=%.1f roll=%.1f rollErrorDeg=%.3f bodyrate=(%.1f,%.1f,%.1f) cmd=(%.2f,%.2f,%.2f) rollBlend=%.3f leveling=%d",
-          p,y,angle,pose_roll.load(),roll_error,filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,
-          command_pitch.load(),command_yaw.load(),command_roll.load(),roll_blend,roll_level_blend.leveling);
+        log_line("guidance %s",output.trace);
     }
 }
 #include "native_camera.h"
@@ -381,7 +442,7 @@ void release_controls() {
     active.store(false); aircraft.store(0);
     command_pitch.store(0); command_yaw.store(0); command_roll.store(0);
     mouse_dx.store(0); mouse_dy.store(0);
-    previous_pose_tick=0; free_look.reset();
+    previous_pose_clock=0; free_look.reset(); desired_aim_valid=false; logic_reset();
     receive_camera(0,0,0,0,0);
 }
 
@@ -409,8 +470,11 @@ void receive_pose(const double (&v)[13]) {
     view_fov.store(std::clamp(fov,30.0f,150.0f));
     if (aircraft.load() != static_cast<uintptr_t>(address)) {
         aircraft.store(static_cast<uintptr_t>(address));
+        autopilot_active.store(false);
         roll_reference.store(roll);
-        previous_pose_tick = 0;
+        previous_pose_clock = 0;
+        desired_aim_valid=false;
+        logic_reset();
         telemetry_tick = 0;
         recenter_requested.store(true);
         free_look.reset();
@@ -431,7 +495,7 @@ void receive_pose(const double (&v)[13]) {
 void draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels) {
         RECT alpha_rects[4]={{20,35,1100,85}};
         unsigned alpha_count=1;
-        FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        // The DIB was cleared before drawing; a full-screen GDI fill is redundant.
         SetBkMode(dc,TRANSPARENT);
         SetTextColor(dc,RGB(245,245,245));
         char label[160]{};
@@ -547,12 +611,13 @@ void overlay_loop() {
     ULONGLONG window_check=0;
     MSG message{};
     while (running.load()) {
+        const auto frame_started=GetTickCount64();
         if (!game_window || !IsWindow(game_window) || GetTickCount64()-window_check>1000) {
             HWND found=locate_game_window();
             if(found) game_window=found;
             window_check=GetTickCount64();
         }
-        if (hud_enabled.load() && !game_paused.load() && !gaze_active.load() && game_window && !IsIconic(game_window)) {
+        if (hud_enabled.load() && !game_paused.load() && !yielding() && game_window && !IsIconic(game_window)) {
             RECT client{};
             GetClientRect(game_window, &client);
             if (!window_reported) {
@@ -604,7 +669,9 @@ void overlay_loop() {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        Sleep(33); // HUD only; game, camera and input update rates are unchanged.
+        const auto frame_ms=GetTickCount64()-frame_started;
+        if(frame_ms<16) Sleep(static_cast<DWORD>(16-frame_ms));
+        else Sleep(0); // Yield when a full-surface present took longer than a frame.
     }
     if (bitmap) { SelectObject(surface,original_bitmap); DeleteObject(bitmap); }
     if (surface) DeleteDC(surface);
@@ -692,13 +759,14 @@ uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context)
     }
     if(perf_enabled.load()) ++perf_player_inputs;
     if(!active.load() || GetTickCount64()-pose_tick.load()>1000 || !enabled.load() ||
-       game_paused.load() || gaze_active.load() || !foreground_is_game()) return original(state,context);
+       game_paused.load() || yielding() || !foreground_is_game()) return original(state,context);
     // Manual pitch also suspends automatic roll, matching MouseFlight maneuvers.
     // Preserve AC's native keyboard values, including opposing-key handling.
     auto held=[](int key) { return (GetAsyncKeyState(key)&0x8000)!=0; };
     const bool keyboard_pitch=held('W') || held('S');
     const bool keyboard_roll=keyboard_pitch || held('A') || held('D');
     const bool keyboard_yaw=held('Q') || held('E');
+    keyboard_axes.store((keyboard_pitch?1:0)|(keyboard_roll?2:0)|(keyboard_yaw?4:0));
     bool override_input = true; // Lifecycle/foreground already checked above.
     if (override_input && reinterpret_cast<uintptr_t>(state) == pawn + 0x22a0) {
         __try {
@@ -767,6 +835,83 @@ bool prepare_hook() {
     return true;
 }
 
+bool file_write_time(const wchar_t* path,FILETIME& time) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if(!GetFileAttributesExW(path,GetFileExInfoStandard,&data)) return false;
+    time=data.ftLastWriteTime;
+    return true;
+}
+void remove_stale_logic_copies() {
+    wchar_t pattern[MAX_PATH]{},path[MAX_PATH]{};
+    swprintf_s(pattern,L"%s\\ac8_flight_logic.live*.dll",module_folder);
+    WIN32_FIND_DATAW found{};
+    HANDLE search=FindFirstFileW(pattern,&found);
+    if(search==INVALID_HANDLE_VALUE) return;
+    do {
+        swprintf_s(path,L"%s\\%s",module_folder,found.cFileName);
+        DeleteFileW(path);
+    } while(FindNextFileW(search,&found));
+    FindClose(search);
+}
+// Load a copy so the original can be rebuilt while the game holds the module.
+void load_logic_override(const wchar_t* path) {
+    wchar_t live[MAX_PATH]{};
+    swprintf_s(live,L"%s\\ac8_flight_logic.live%d.dll",module_folder,++logic_generation);
+    if(!CopyFileW(path,live,FALSE)) { log_line("flight logic: copy failed (%lu)",GetLastError()); return; }
+    HMODULE module=LoadLibraryW(live);
+    LogicApi api{};
+    if(module) {
+        api.abi=reinterpret_cast<decltype(api.abi)>(GetProcAddress(module,"ac8_logic_abi"));
+        api.configure=reinterpret_cast<decltype(api.configure)>(GetProcAddress(module,"ac8_logic_configure"));
+        api.reset=reinterpret_cast<decltype(api.reset)>(GetProcAddress(module,"ac8_logic_reset"));
+        api.step=reinterpret_cast<decltype(api.step)>(GetProcAddress(module,"ac8_logic_step"));
+    }
+    unsigned input_size=0,output_size=0,state_size=0;
+    if(!module || !api.abi || !api.configure || !api.reset || !api.step ||
+       api.abi(&input_size,&output_size,&state_size)!=flight::logic_abi ||
+       input_size!=sizeof(flight::LogicInput) || output_size!=sizeof(flight::LogicOutput) ||
+       state_size>sizeof(logic_state)) {
+        log_line("flight logic: generation %d rejected (missing exports or ABI mismatch); keeping current logic",logic_generation);
+        if(module) FreeLibrary(module);
+        DeleteFileW(live);
+        return;
+    }
+    api.configure(config_path);
+    api.reset(logic_state);
+    if(logic_module) { FreeLibrary(logic_module); DeleteFileW(logic_live_path); }
+    logic_module=module;
+    wcscpy_s(logic_live_path,live);
+    logic=api;
+    log_line("flight logic: hot-loaded generation %d",logic_generation);
+}
+// Development loop: config.ini and ac8_flight_logic.dll changes apply without a restart.
+void poll_dev_files() {
+    const ULONGLONG now=GetTickCount64();
+    if(now<dev_poll_at) return;
+    dev_poll_at=now+500;
+    FILETIME time{};
+    if(file_write_time(config_path,time) && CompareFileTime(&time,&config_file_time)!=0) {
+        config_file_time=time;
+        load_config();
+        logic.configure(config_path);
+        log_line("configuration hot-reloaded");
+    }
+    wchar_t path[MAX_PATH]{};
+    swprintf_s(path,L"%s\\ac8_flight_logic.dll",module_folder);
+    if(file_write_time(path,time) && CompareFileTime(&time,&logic_file_time)!=0) {
+        // Let the writer finish: require the file to be at least 0.3 s old.
+        FILETIME system{};
+        GetSystemTimeAsFileTime(&system);
+        ULARGE_INTEGER written{},current{};
+        written.LowPart=time.dwLowDateTime; written.HighPart=time.dwHighDateTime;
+        current.LowPart=system.dwLowDateTime; current.HighPart=system.dwHighDateTime;
+        if(current.QuadPart>written.QuadPart+3000000ull) {
+            logic_file_time=time;
+            load_logic_override(path);
+        }
+    }
+}
+
 bool offline_authorized() {
     wchar_t value[16]{};
     return GetEnvironmentVariableW(L"EOS_USE_ANTICHEATCLIENTNULL", value, 16) > 0 && wcscmp(value, L"1") == 0;
@@ -794,6 +939,10 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_start(lua_State* state) {
         return 0;
     }
     load_config();
+    file_write_time(config_path,config_file_time);
+    remove_stale_logic_copies();
+    logic.configure(config_path);
+    logic_reset();
     if (!prepare_hook()) return 0;
     install_native_camera();
     if (prepare_raw_input_capture()) {
@@ -820,8 +969,10 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_begin(void*) {
     if(!bridge_thread) bridge_thread=GetCurrentThreadId();
     if(!on_bridge_thread()) return 0;
     if(reload_requested.exchange(false)) {
-        load_config(); recenter_requested.store(true); log_line("configuration reloaded");
+        load_config(); logic.configure(config_path);
+        recenter_requested.store(true); log_line("configuration reloaded");
     }
+    poll_dev_files();
     if(perf_enabled.load()) {
         script_start=perf_clock();
         if(previous_frame_start) {
@@ -842,7 +993,7 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_frame(lua_State* state) {
     for(size_t i=1;i<11;++i) if(std::abs(v[i])>1e12) { release_controls(); return 0; }
     if((v[11]!=0 && v[11]!=1) || (v[12]!=0 && v[12]!=1)) { release_controls(); return 0; }
     receive_pose(v);
-    const bool on=enabled.load() && !game_paused.load() && !gaze_active.load() && foreground_is_game();
+    const bool on=enabled.load() && !game_paused.load() && !yielding() && foreground_is_game();
     lua.set_number(on?1:0); lua.set_number(look_pitch.load()); lua.set_number(look_yaw.load());
     return 3;
 }

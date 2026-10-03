@@ -28,38 +28,44 @@ inline V rotate(V v,V axis,float angle) {
 inline float pitch(V v) { return std::asin(std::clamp(v.z,-1.0f,1.0f))/rad; }
 inline float yaw(V v) { return std::atan2(v.y,v.x)/rad; }
 inline float dead(float x,float d) { return std::copysign(std::max(0.0f,std::abs(x)-d),x); }
-inline float tracking_weight(float angle) {
-    float t=std::clamp((angle-0.75f)/4.25f,0.0f,1.0f);
-    return t*t*(3-2*t);
+inline V smooth_direction(V current,V target,float dt,float seconds) {
+    const float alpha=1.0f-std::exp(-std::clamp(dt,0.0f,0.1f)/seconds);
+    // A recenter can reverse the direction; avoid normalizing a near-zero blend.
+    if(dot(current,target)<-0.99f) return target;
+    return unit(current*(1.0f-alpha)+target*alpha);
 }
-// Conservative stopping envelope: distance = speed*delay + speed^2/(2*deceleration).
-struct LevelBlend {
-    bool leveling=false;
-    float weight=1;
-    void reset() { leveling=false; weight=1; }
-    float step(float angle,float dt) {
-        if(angle<=3) leveling=true;
-        else if(angle>=6) leveling=false;
-        const float wanted=leveling?0:tracking_weight(angle);
-        const float delta=std::clamp(wanted-weight,-4*dt,4*dt);
-        weight=std::clamp(weight+delta,0.0f,1.0f);
-        return weight;
+struct CommandSlew {
+    float value=0;
+    void reset() { value=0; }
+    float step(float wanted,float dt,float units_per_second) {
+        const float travel=units_per_second*std::clamp(dt,0.0f,0.1f);
+        value+=std::clamp(wanted-value,-travel,travel);
+        return value;
     }
 };
+// Conservative stopping envelope: distance = speed*delay + speed^2/(2*deceleration).
 // Parameters describe an estimated input response, not changes to the flight model.
-inline float arrival_rate(float error,float max_rate,float deceleration,float gain,float zone) {
+// delay is the measured command-to-rate latency, including pose and filter lag.
+inline float arrival_rate(float error,float max_rate,float deceleration,float gain,float zone,
+                          float delay=0.15f) {
     float distance=std::max(0.0f,std::abs(error)-zone);
-    float delay_speed=deceleration*0.15f;
+    float delay_speed=deceleration*delay;
     float stoppable=std::sqrt(delay_speed*delay_speed+2*deceleration*distance)-delay_speed;
     return std::copysign(std::min({max_rate,gain*distance,stoppable}),error);
 }
 inline float arrival_command(float error,float actual,float max_rate,float deceleration,
-                             float gain,float zone,float full_rate,float limit) {
-    float wanted=arrival_rate(error,max_rate,deceleration,gain,zone);
+                             float gain,float zone,float full_rate,float limit,float delay=0.15f) {
+    float wanted=arrival_rate(error,max_rate,deceleration,gain,zone,delay);
     float command=wanted/full_rate+(wanted-actual)/full_rate;
     // When closing faster than the stopping envelope permits, actively counter-steer.
     if(std::abs(error)<=zone || actual*std::copysign(1.0f,error)>std::abs(wanted)+3.0f)
         command=(wanted-actual)/(full_rate*0.65f);
     return std::clamp(command,-limit,limit);
+}
+// AC8 applies a power curve (measured ~cubic) to injected axis values. Pre-invert
+// it so a demand of 0.5 produces half the full-deflection response.
+inline float linearize_axis(float demand,float exponent) {
+    const float d=std::clamp(demand,-1.0f,1.0f);
+    return exponent<=1.0f ? d : std::copysign(std::pow(std::abs(d),1.0f/exponent),d);
 }
 }

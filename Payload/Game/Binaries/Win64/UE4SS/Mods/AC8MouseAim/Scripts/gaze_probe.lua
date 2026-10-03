@@ -15,6 +15,12 @@ local function relevant(name)
         or s:find('view') or s:find('camera') or s:find('target') or s:find('active')
         or s:find('playing') or s:find('playback') or s:find('state') or s:find('current')
         or s:find('blend') or s:find('sequence') or s:find('override')
+        or s:find('auto') or s:find('pilot') or s:find('assist')
+end
+-- AutoPilot discovery: also open sub-objects whose names suggest it.
+local function autopilot_related(name)
+    local s=name:lower()
+    return s:find('auto') or s:find('pilot') or s:find('assist')
 end
 local function write(s) capture:write(s,'\n') end
 local function stop(reason)
@@ -28,6 +34,7 @@ local function inspect(label,obj,seen)
     write('OBJECT '..label..' '..obj:GetFullName())
     local klass=obj:GetClass()
     local names={}
+    local children={}
     while klass and klass:IsValid() do
         write('CLASS '..klass:GetFullName())
         klass:ForEachFunction(function(fn)
@@ -43,6 +50,7 @@ local function inspect(label,obj,seen)
             local full=p:GetFullName()
             write('PROPERTY '..full)
             local kind=full:match('^(%w+) ')
+            if kind and kind:find('Object') and autopilot_related(name) then children[#children+1]={name=name,kind=kind} end
             if #watched<384 and (kind=='BoolProperty' or kind=='EnumProperty' or
                 kind=='ByteProperty' or kind=='IntProperty' or kind=='ObjectProperty' or
                 kind=='WeakObjectProperty' or kind=='ObjectPtrProperty' or kind=='NameProperty' or
@@ -54,6 +62,17 @@ local function inspect(label,obj,seen)
             end
         end)
         klass=klass:GetSuperStruct()
+    end
+    for _,child in ipairs(children) do
+        local got,sub=pcall(function()
+            local v=obj[child.name]
+            if child.kind=='WeakObjectProperty' and v then v=v:Get() end
+            return v
+        end)
+        if got and sub then
+            local checked,msg=pcall(inspect,label..'.'..child.name,sub,seen)
+            if not checked then write('INSPECT FAILED '..label..'.'..child.name..' '..tostring(msg)) end
+        end
     end
 end
 local function value(field)
@@ -84,8 +103,11 @@ function M.update(pawn,controller,directory)
             started=clock:GetRealTimeSeconds(pawn); next_sample=started
             last_heartbeat=-1; last_view_target=nil; watch_limit_reported=false
             pawn_address=pawn:GetAddress()
-            write('START '..os.date('%Y-%m-%d %H:%M:%S')..' READ-ONLY 0.2.27 ImpactCamera state probe')
+            write('START '..os.date('%Y-%m-%d %H:%M:%S')..' READ-ONLY state probe (AutoPilot discovery + ImpactCamera)')
             local seen={}
+            -- AutoPilot discovery first, so its fields fit within the bounded watch list.
+            inspect('plane',pawn,seen)
+            inspect('controller',controller,seen)
             -- Prioritize the cinematic path before the bounded watch list fills.
             for _,name in ipairs({'ImpactCamera','CameraViewComponent'}) do
                 local checked,msg=pcall(function() inspect(name,pawn[name],seen) end)
