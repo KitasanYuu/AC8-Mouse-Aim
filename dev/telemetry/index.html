@@ -160,8 +160,8 @@ const C = { id: 0, cls: 1, x: 2, y: 3, z: 4, pitch: 5, yaw: 6, roll: 7, speed: 8
 const enemyClasses = new Set();
 function noteSides(snap) { for (const c of snap.c) if (c.length > C.enemy && c[C.enemy] === 1) enemyClasses.add(c[C.cls]); }
 const isEnemy = c => c.length <= C.enemy || c[C.enemy] === 1 || enemyClasses.has(c[C.cls]);
-// Named aces and Shadow squadrons, by class name (BP_OP1020_m29a_CP_Shadow_C, ..._Named_C).
-const isElite = c => /Shadow|Named/.test(c[C.cls]);
+// Named aces, Shadow squadrons and bosses, by class name (BP_OP1020_m29a_CP_Shadow_C, ..._Named_C).
+const isElite = c => /shadow|named|boss|ladon/i.test(c[C.cls]);
 const sideColor = c => isElite(c) ? col.elite : isEnemy(c) ? col.enemy : col.friend;
 const contactPos = c => [c[C.y], c[C.x], c[C.z]];   // east, north, up
 let cursor = -1;          // index of the frame shown

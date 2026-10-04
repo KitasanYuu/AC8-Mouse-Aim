@@ -1,8 +1,8 @@
 -- Other aircraft for the telemetry stream (dev\Telemetry.cmd): position, attitude and the
 -- game's own speed of each aircraft at ~10 Hz, the selected target, and the player's own
--- game speed. Read-only. Does nothing while telemetry is off (the send returns 0).
--- Enemies are tracked first (elites always), then the nearest others; an aircraft that
--- disappears (destroyed, or removed by the game) is reported once in "gone".
+-- game speed and aircraft class. Read-only. Does nothing while telemetry is off (the send
+-- returns 0). Enemies are tracked first (elites always), then the nearest others; an
+-- aircraft that disappears (destroyed, or removed by the game) is reported once in "gone".
 local M={}
 local send
 local next_scan,next_sample,backoff_until=0,0,0
@@ -29,6 +29,17 @@ end
 local function aircraft_class(name)
     return name:find('^BP_W?OP%d') or name:find('PlayerPlane') or name:lower():find('aircraft')
 end
+-- Never aircraft: ground units, ships, props, training dummies, cutscene and minigame actors.
+local function surface_class(name)
+    return name:find('^BP_GR') or name:find('^BP_VE') or name:find('^BP_BPD') or name:find('^BP_AI_Dummy')
+        or name:find('^BP_CIN') or name:find('MiniGame') or name:find('Minigame')
+end
+-- Named aces, Shadow squadrons and bosses (class names, logged: BP_OP1020_m29a_CP_Shadow_C,
+-- BP_OP1007_f18c_CP_Named_C; boss names unknown yet, so a few likely words).
+local function elite_class(name)
+    local n=name:lower()
+    return n:find('shadow') or n:find('named') or n:find('boss') or n:find('ladon')
+end
 -- Friend or foe by the game itself: an object the player is meant to attack. The flag
 -- comes and goes for an enemy (logged), so a class flagged once stays hostile.
 local hostile_class={}
@@ -36,6 +47,17 @@ local function is_enemy(obj,cls)
     local ok,value=pcall(function() return obj:IsPlayerTarget() end)
     if ok and value==true and cls then hostile_class[cls]=true end
     return (ok and value==true) or (cls~=nil and hostile_class[cls]==true)
+end
+-- Still in the air: valid, not hidden, not parked at the origin (pooled planes wait
+-- hidden or at the origin, which is also where a destroyed one goes).
+local function flying(obj)
+    local ok,valid=pcall(function() return obj:IsValid() end)
+    if not ok or not valid then return false end
+    local hidden=false
+    pcall(function() hidden=obj.bHidden==true end)
+    if hidden then return false end
+    local ok2,x,y,z=pcall(location,obj)
+    return ok2 and math.abs(x)+math.abs(y)+math.abs(z)>1
 end
 
 local function scan(pawn)
@@ -52,14 +74,17 @@ local function scan(pawn)
                 local cls=class_of[id]
                 if not cls then cls=short_class(obj); class_of[id]=cls end
                 classes_seen[cls]=(classes_seen[cls] or 0)+1
-                if aircraft_class(cls) then
-                    -- Pooled planes wait hidden or parked at the world origin: not flying.
-                    local hidden=false
-                    pcall(function() hidden=obj.bHidden==true end)
-                    local ok,x,y,z=pcall(location,obj)
-                    if ok and not hidden and math.abs(x)+math.abs(y)+math.abs(z)>1 then
-                        found[#found+1]={obj=obj,id=id,cls=cls,enemy=is_enemy(obj,cls),d=(x-px)^2+(y-py)^2+(z-pz)^2}
-                    end
+                local air=aircraft_class(cls)
+                if not air and not surface_class(cls) then
+                    -- A target of another kind moving at aircraft speed (a boss with its own
+                    -- class name, say): recorded as an aircraft.
+                    local speed=0
+                    pcall(function() speed=tonumber(obj:GetSpeedMps()) or 0 end)
+                    air=speed>60 and is_enemy(obj,cls)
+                end
+                if air and flying(obj) then
+                    local x,y,z=location(obj)
+                    found[#found+1]={obj=obj,id=id,cls=cls,enemy=is_enemy(obj,cls),d=(x-px)^2+(y-py)^2+(z-pz)^2}
                 end
             end
         end
@@ -77,34 +102,26 @@ local function scan(pawn)
     for i=1,math.min(#found,MAX_TRACKED) do tracked[i]=found[i]; before[found[i].id]=nil end
     -- still-listed aircraft that are no longer flying were destroyed or removed: they are
     -- reported by the next sample (dropped ones that still fly are simply not sampled)
-    for id,c in pairs(before) do
+    for _,c in pairs(before) do
         if not flying(c.obj) then tracked[#tracked+1]=c end
     end
 end
 
--- Still in the air: valid, not hidden, not parked at the origin (pooled planes wait
--- hidden or at the origin, which is also where a destroyed one goes).
-local function flying(obj)
-    local ok,valid=pcall(function() return obj:IsValid() end)
-    if not ok or not valid then return false end
-    local hidden=false
-    pcall(function() hidden=obj.bHidden==true end)
-    if hidden then return false end
-    local ok2,x,y,z=pcall(location,obj)
-    return ok2 and math.abs(x)+math.abs(y)+math.abs(z)>1
-end
-
--- Named aces and Shadow squadrons (class names, logged: BP_OP1020_m29a_CP_Shadow_C,
--- BP_OP1007_f18c_CP_Named_C).
-local function elite_class(name) return name:find('Shadow') or name:find('Named') end
-
 local function json_string(s) return '"'..tostring(s):gsub('[%c"\\]','')..'"' end
 
+local self_id,self_class=nil,'?'
 function M.update(pawn,game_time)
     if not send or game_time<0 or game_time<next_sample or game_time<backoff_until then return end
     next_sample=game_time+SAMPLE_SECONDS
     local new_scan=game_time>=next_scan
-    if new_scan then next_scan=game_time+SCAN_SECONDS; scan(pawn) end
+    if new_scan then
+        next_scan=game_time+SCAN_SECONDS
+        local ok=pcall(scan,pawn)
+        if not ok then tracked={} end
+    end
+    local id=0
+    pcall(function() id=pawn:GetAddress() end)
+    if id~=self_id then self_id=id; self_class=short_class(pawn) end
     local selected=0
     pcall(function()
         local target=pawn.TargetSelectionComponent:GetSelectedTarget()
@@ -137,8 +154,8 @@ function M.update(pawn,game_time)
         end)
         if ok and entry then parts[#parts+1]=entry end
     end
-    local text=string.format('{"type":"contacts","gt":%.4f,"selected":%.0f,"me":%.1f,"c":[%s]',
-        game_time,selected,my_speed,table.concat(parts,','))
+    local text=string.format('{"type":"contacts","gt":%.4f,"selected":%.0f,"me":%.1f,"self":%s,"c":[%s]',
+        game_time,selected,my_speed,json_string(self_class),table.concat(parts,','))
     if #gone>0 then text=text..',"gone":['..table.concat(gone,',')..']' end
     if new_scan then
         local names={}
@@ -150,5 +167,5 @@ function M.update(pawn,game_time)
     if not ok or sent~=1 then backoff_until=game_time+5 end
 end
 
-function M.reset() tracked={}; class_of={}; hostile_class={}; next_scan=0; next_sample=0 end
+function M.reset() tracked={}; class_of={}; hostile_class={}; next_scan=0; next_sample=0; self_id=nil end
 return M

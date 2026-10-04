@@ -27,4 +27,6 @@ for %%F in ("Payload\Game\Binaries\Win64\UE4SS\Mods\AC8MouseAim\Scripts\*.lua") 
 )
 build\lua.exe tests\rig_math_checks.lua
 if errorlevel 1 exit /b 1
-echo Lua syntax and rig math checks passed.
+build\lua.exe tests\contacts_checks.lua
+if errorlevel 1 exit /b 1
+echo Lua syntax, rig math and contacts checks passed.

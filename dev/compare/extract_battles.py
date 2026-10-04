@@ -25,7 +25,8 @@ ap.add_argument("--window", action="append", default=[])
 ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "battles"))
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
-elite = lambda cls: bool(re.search("Shadow|Named", cls))
+# Named aces, Shadow squadrons and bosses (as contacts.lua ranks them)
+elite = lambda cls: bool(re.search("shadow|named|boss|ladon", cls, re.I))
 
 battles = []
 for path in args.files:
@@ -119,8 +120,10 @@ for path in args.files:
             return ids.index(sid) if sid in ids else -1
         f0 = own[0]
         n_elite = sum(elite(e["cls"]) for e in enemies.values())
+        # the player's aircraft (contacts packets carry it since 2026-10-05)
+        mine = next((s.get("self") for s in snaps if t0 <= s["gt"] <= t1 and s.get("self")), "unknown")
         battles.append({"name": f"{name}_{t0 - g0:.0f}", "file": name, "t0": t0 - g0, "t1": t1 - g0, "forced": forced,
-                        "elite": n_elite, "enemies": [enemies[i] for i in ids], "ids": ids,
+                        "elite": n_elite, "mine": mine, "enemies": [enemies[i] for i in ids], "ids": ids,
                         "player": (*f0["pos"], *f0["att"], f0["d"][12]),
                         "own": [(f["gt"] - t0, *f["pos"], *f["att"], *f["aim"][:2], f["d"][12], *f["rate"], *f["stick"],
                                  selected(f["gt"]), f.get("ctl", 1) if not f.get("manual") else 0) for f in own],
@@ -135,7 +138,7 @@ for b in chosen:
         classes = {}
         for e in b["enemies"]: classes[e["cls"]] = classes.get(e["cls"], 0) + 1
         out.write(f"# battle: flight-{b['file']} {b['t0']:.0f}-{b['t1']:.0f} s into the recording, {len(b['enemies'])} enemy aircraft "
-                  f"({b['elite']} elite): " + ", ".join(f"{k} x{v}" for k, v in classes.items()) + "\n")
+                  f"({b['elite']} elite): " + ", ".join(f"{k} x{v}" for k, v in classes.items()) + f"; player in {b['mine']}\n")
         out.write("# player x y z pitch yaw roll speed (start)\n")
         out.write("player " + " ".join(f"{v:.3f}" for v in b["player"]) + "\n")
         out.write("# enemy index class first_t last_t shot_down elite by_player / e index t x y z pitch yaw roll\n")
