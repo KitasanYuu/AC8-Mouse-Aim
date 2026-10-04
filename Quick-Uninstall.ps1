@@ -1,6 +1,8 @@
 param([string]$GamePath)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
+. (Join-Path $PSScriptRoot 'Payload\AC8MouseAim-Common.ps1')
+if ([string]::IsNullOrWhiteSpace($GamePath)) { $GamePath = Find-AC8GamePath }
 if ([string]::IsNullOrWhiteSpace($GamePath)) {
     $picker = New-Object System.Windows.Forms.FolderBrowserDialog
     $picker.Description = 'Select ACE COMBAT 8 root folder (contains Game and EasyAntiCheat).'
@@ -36,7 +38,8 @@ function Assert-SafePath([string]$Path) {
 $frameworkRelative = 'Game\Binaries\Win64\UE4SS'
 $framework = Join-Path $game $frameworkRelative
 $targets = @($modRelative, 'EasyAntiCheat\AC8MouseAim_Offline.json',
-    'Launch-AC8-Mouse-Aim.cmd', 'Disable-Mod-For-Multiplayer.cmd', 'Uninstall-AC8-Mouse-Aim.ps1')
+    'Launch-AC8-Mouse-Aim.cmd', 'Disable-Mod-For-Multiplayer.cmd', 'Uninstall-AC8-Mouse-Aim.ps1',
+    'Uninstall-AC8-Mouse-Aim.cmd', 'MouseFlight-Mode.cmd', 'MouseFlight-Mode.ps1', 'AC8MouseAim-Common.ps1')
 $mods = Join-Path $game 'Game\Binaries\Win64\UE4SS\Mods'
 Assert-SafePath $mods
 # Also recognize an older uninstall: its mod entry survives in mods.txt/json.

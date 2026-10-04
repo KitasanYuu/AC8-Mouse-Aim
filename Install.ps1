@@ -1,42 +1,45 @@
-param(
+﻿param(
     [string]$GamePath,
     [switch]$NoPause
 )
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $source = Join-Path $PSScriptRoot 'Payload'
-function Test-GameDirectory([string]$Path) {
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    return ((Test-Path -LiteralPath (Join-Path $Path 'Game\Binaries\Win64\AceCombat8.exe') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $Path 'EasyAntiCheat') -PathType Container))
+. (Join-Path $source 'AC8MouseAim-Common.ps1')
+function Finish([int]$Code) {
+    if (-not $NoPause) { Read-Host '按回车键关闭' | Out-Null }
+    exit $Code
 }
+
+# Game folder: from Steam's library records; ask only when it cannot be found.
 if ([string]::IsNullOrWhiteSpace($GamePath)) {
-    Add-Type -AssemblyName System.Windows.Forms
-    $picker = New-Object System.Windows.Forms.FolderBrowserDialog
-    $picker.Description = 'Select the ACE COMBAT 8 game root folder (contains Game and EasyAntiCheat).'
-    $picker.ShowNewFolderButton = $false
-    try {
-        while ($true) {
-            if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
-                Write-Host 'Installation cancelled. No game files were changed.'
-                exit 0
+    $GamePath = Find-AC8GamePath
+    if ($GamePath) {
+        Write-Host "已通过 Steam 找到游戏：$GamePath"
+    } else {
+        Write-Host '没有自动找到游戏，请手动选择 ACE COMBAT 8 的根目录（包含 Game 和 EasyAntiCheat）。'
+        Add-Type -AssemblyName System.Windows.Forms
+        $picker = New-Object System.Windows.Forms.FolderBrowserDialog
+        $picker.Description = '选择 ACE COMBAT 8 根目录（包含 Game 和 EasyAntiCheat）'
+        $picker.ShowNewFolderButton = $false
+        try {
+            while ($true) {
+                if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+                    Write-Host '已取消安装，没有修改任何游戏文件。'
+                    Finish 0
+                }
+                if (Test-AC8GameDirectory $picker.SelectedPath) { $GamePath = $picker.SelectedPath; break }
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    '这不是游戏根目录。请选择 ACE COMBAT 8 文件夹本身，而不是 Game 或 Win64 子文件夹。',
+                    '未找到游戏', 'OK', 'Warning')
             }
-            if (Test-GameDirectory $picker.SelectedPath) {
-                $GamePath = $picker.SelectedPath
-                break
-            }
-            [void][System.Windows.Forms.MessageBox]::Show(
-                'This is not the game root folder. Select ACE COMBAT 8, not its Game or Win64 subfolder.',
-                'Game directory not found', 'OK', 'Warning')
-        }
-    } finally { $picker.Dispose() }
+        } finally { $picker.Dispose() }
+    }
 }
-if (-not (Test-GameDirectory $GamePath)) { throw "Invalid ACE COMBAT 8 game directory: $GamePath" }
+if (-not (Test-AC8GameDirectory $GamePath)) { throw "不是有效的 ACE COMBAT 8 目录：$GamePath" }
 $GamePath = (Get-Item -LiteralPath $GamePath).FullName
-Write-Host "Installing to: $GamePath"
-$gameExe = Join-Path $GamePath 'Game\Binaries\Win64\AceCombat8.exe'
-if (-not (Test-Path -LiteralPath $gameExe)) { throw "ACE COMBAT 8 was not found at: $GamePath" }
-if (Get-Process -Name 'AceCombat8' -ErrorAction SilentlyContinue) { throw 'Close ACE COMBAT 8 first.' }
+if (Get-Process -Name 'AceCombat8' -ErrorAction SilentlyContinue) { throw '请先关闭 ACE COMBAT 8。' }
+Write-Host "安装到：$GamePath"
 
 $loader = Join-Path $GamePath 'Game\Binaries\Win64\dwmapi.dll'
 $disabledLoader = "$loader.disabled"
@@ -46,7 +49,24 @@ $isUpgrade = Test-Path -LiteralPath $mouseAim
 $hasLoader = (Test-Path -LiteralPath $loader) -or (Test-Path -LiteralPath $disabledLoader) -or
     (Test-Path -LiteralPath $ue4ss)
 if ($hasLoader -and -not $isUpgrade) {
-    throw 'An unrelated UE4SS/dwmapi installation was found. It was not overwritten.'
+    throw '发现其他来源的 UE4SS/dwmapi 安装，为避免冲突没有覆盖。'
+}
+
+# Settings the player chose in [control] survive an upgrade; version adaptation
+# keys (input slots, axis signs) and diagnostics come from the new package.
+$configPath = Join-Path $mouseAim 'config.ini'
+$keptSettings = [ordered]@{}
+if ($isUpgrade -and (Test-Path -LiteralPath $configPath)) {
+    $section = ''
+    foreach ($line in Get-Content -LiteralPath $configPath) {
+        if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1].Trim(); continue }
+        if ($section -eq 'control' -and $line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
+            if ($Matches[1] -notin @('pitch_slot', 'roll_slot', 'pitch_sign', 'roll_sign', 'yaw_sign', 'input_probe')) {
+                $keptSettings[$Matches[1]] = $Matches[2]
+            }
+        }
+    }
+    Copy-Item -LiteralPath $configPath -Destination "$configPath.bak" -Force
 }
 
 if ($isUpgrade) {
@@ -56,35 +76,34 @@ if ($isUpgrade) {
     )
     $installedLoader = if (Test-Path -LiteralPath $loader) { $loader } else { $disabledLoader }
     if (-not (Test-Path -LiteralPath $installedLoader)) {
-        throw 'The existing AC8MouseAim installation has no recognized loader to repair.'
+        throw '现有的 AC8MouseAim 安装缺少可识别的加载器，无法修复。'
     }
     $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedLoader).Hash
     if ($installedHash -notin $knownLoaderHashes) {
-        throw 'The existing loader was modified or belongs to another package. It was not overwritten.'
+        throw '现有加载器已被修改或属于其他安装包，没有覆盖。'
     }
-
     $backup = Join-Path $GamePath 'AC8MouseAim-Loader-Backup-0.1.0'
     if (-not (Test-Path -LiteralPath $backup)) {
         New-Item -ItemType Directory -Path $backup | Out-Null
         Copy-Item -LiteralPath $installedLoader -Destination (Join-Path $backup 'dwmapi.dll')
         $oldCore = Join-Path $ue4ss 'UE4SS.dll'
-        if (Test-Path -LiteralPath $oldCore) {
-            Copy-Item -LiteralPath $oldCore -Destination (Join-Path $backup 'UE4SS.dll')
-        }
+        if (Test-Path -LiteralPath $oldCore) { Copy-Item -LiteralPath $oldCore -Destination (Join-Path $backup 'UE4SS.dll') }
     }
-    if (Test-Path -LiteralPath $disabledLoader) {
-        Remove-Item -LiteralPath $disabledLoader -Force
-    }
+    if (Test-Path -LiteralPath $disabledLoader) { Remove-Item -LiteralPath $disabledLoader -Force }
 }
 
-$gameSource = Join-Path $source 'Game\*'
-$gameDestination = Join-Path $GamePath 'Game'
-Copy-Item -Path $gameSource -Destination $gameDestination -Recurse -Force
+Copy-Item -Path (Join-Path $source 'Game\*') -Destination (Join-Path $GamePath 'Game') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $source 'EasyAntiCheat\AC8MouseAim_Offline.json') `
     -Destination (Join-Path $GamePath 'EasyAntiCheat\AC8MouseAim_Offline.json')
-foreach ($name in @('Launch-AC8-Mouse-Aim.cmd','Disable-Mod-For-Multiplayer.cmd','Uninstall-AC8-Mouse-Aim.ps1')) {
+$tools = @('Launch-AC8-Mouse-Aim.cmd', 'MouseFlight-Mode.cmd', 'MouseFlight-Mode.ps1',
+    'Uninstall-AC8-Mouse-Aim.cmd', 'Uninstall-AC8-Mouse-Aim.ps1', 'AC8MouseAim-Common.ps1')
+foreach ($name in $tools) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $GamePath $name)
 }
+# Replaced by MouseFlight-Mode.cmd.
+$oldDisable = Join-Path $GamePath 'Disable-Mod-For-Multiplayer.cmd'
+if (Test-Path -LiteralPath $oldDisable) { Remove-Item -LiteralPath $oldDisable -Force }
+
 # Verify the actual files, not just whether Copy-Item returned successfully.
 foreach ($relative in @(
     'Game\Binaries\Win64\UE4SS\UE4SS.dll',
@@ -98,10 +117,33 @@ foreach ($relative in @(
 )) {
     $expected = (Get-FileHash -LiteralPath (Join-Path $source $relative) -Algorithm SHA256).Hash
     $actual = (Get-FileHash -LiteralPath (Join-Path $GamePath $relative) -Algorithm SHA256).Hash
-    if ($actual -ne $expected) { throw "Installation verification failed: $relative" }
+    if ($actual -ne $expected) { throw "安装校验失败：$relative" }
 }
-Write-Host 'VERIFIED: installed game files match the selected package.' -ForegroundColor Green
-if ($isUpgrade) { Write-Host 'The startup loader was repaired and the old files were backed up.' }
-Write-Host 'Start ACE COMBAT 8 through Steam with the existing offline launch option.'
-Write-Host 'Before multiplayer, run Disable-Mod-For-Multiplayer.cmd and then launch from Steam.'
-if (-not $NoPause) { Read-Host 'Press Enter to close' }
+
+if ($keptSettings.Count -gt 0) {
+    $section = ''; $restored = 0
+    $lines = foreach ($line in Get-Content -LiteralPath $configPath) {
+        if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1].Trim(); $line; continue }
+        if ($section -eq 'control' -and $line -match '^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$' -and
+            $keptSettings.Contains($Matches[2]) -and $Matches[4].Trim() -ne $keptSettings[$Matches[2]]) {
+            $restored++
+            "$($Matches[1])$($Matches[2])$($Matches[3])$($keptSettings[$Matches[2]])"
+        } else { $line }
+    }
+    if ($restored -gt 0) {
+        [IO.File]::WriteAllLines($configPath, [string[]]$lines, (New-Object Text.UTF8Encoding($false)))
+        Write-Host "已保留你之前修改过的 $restored 项设置（旧配置备份为 config.ini.bak）。"
+    }
+}
+
+Write-Host ''
+Write-Host '安装完成，文件校验通过。' -ForegroundColor Green
+if ($isUpgrade) { Write-Host '这是升级安装，加载器已修复，旧文件已备份。' }
+Write-Host '游戏目录中的 MouseFlight-Mode.cmd 可在「离线 MOD」和「联机原版」之间切换。'
+if (-not $NoPause) {
+    switch (Get-AC8LaunchOptionState) {
+        'set' { Write-Host 'Steam 启动参数已经设置好，直接从 Steam 启动游戏即可。' -ForegroundColor Green }
+        default { Show-AC8LaunchOptionHelp }
+    }
+}
+Finish 0

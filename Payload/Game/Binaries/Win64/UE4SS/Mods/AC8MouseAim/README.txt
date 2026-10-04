@@ -11,13 +11,14 @@ Controls
   F10        Reload config.ini and recenter.
   RMB        Reserved for game actions; does not release camera or flight control.
 
-The native controller refuses to activate unless the game was started by the
-included offline launcher, which sets EOS_USE_ANTICHEATCLIENTNULL=1. Never use
-this installation for multiplayer. Run Disable-Mod-For-Multiplayer.cmd first.
+The native controller refuses to activate unless the game was started with the
+offline Steam launch option, which sets EOS_USE_ANTICHEATCLIENTNULL=1. Never use
+this installation for multiplayer: run MouseFlight-Mode.cmd in the game folder to
+switch to original mode, and clear the launch option in Steam first.
 
 First flight
   1. Select Expert flight controls in AC8.
-  2. Enter Training or a campaign mission using Launch-AC8-Mouse-Aim.cmd.
+  2. Launch from Steam with the offline launch option, then enter a mission.
   3. If pitch or roll moves opposite the cyan marker, close the game, flip the
      matching sign in config.ini, and relaunch. If the two axes are swapped,
      exchange pitch_slot=0 and roll_slot=2.
