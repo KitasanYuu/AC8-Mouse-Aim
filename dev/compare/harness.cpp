@@ -468,7 +468,7 @@ struct Metrics {
     // battles
     int kills = -1, elite_kills = 0, foes = 0, gun_kills = 0, missiles = 0;
     float first_kill = -1, on_lead = -1, close_time = 0, to_shot = -1;
-    float lock_frac = -1;   // battles: share of the time the target was within missile lock (15 deg, 0.3-2.5 km)
+    float lock_frac = -1;   // battles: share of the time the target was within missile lock (15 deg, 0.3-2.5 km; a boss 1 km)
     float crashed = -1;   // recorded scenes: time the aircraft went below 50 m (the ground is near 0-200 m)
 };
 struct Sample { float v[28]; int n; };
@@ -610,6 +610,9 @@ struct Pilot {
           on_the_way(battle.foes.size(), 0), aim(forward) {}
     bool alive(int i, float t) const { const Foe& f = b.foes[i]; return !killed[i] && t >= f.first && t <= f.last; }
     int needed(int i) const { return b.foes[i].boss ? 1000000 : b.foes[i].elite ? 2 : 1; }
+    // A boss's ECM allows a missile lock only within 1 km (LADON); its CIWS shoots missiles
+    // down, so the gun matters more there (scored by the time on the lead point).
+    float lock_range(int i) const { return b.foes[i].boss ? 1000.0f : 2500.0f; }
     double lock_time = 0, target_time = 0;
     bool doomed(int i) const { return missile_hits[i] + on_the_way[i] >= needed(i); }
     void kill(float t, int i) {
@@ -646,9 +649,12 @@ struct Pilot {
         const float closing = target >= 0 && last_range >= 0 && dt > 0 ? (last_range - range) / dt : 0;
         last_range = target >= 0 ? range : -1;
         throttle = brake = 0;
+        // stay inside lock range: a boss within its 1 km, others within 1.5 km
+        const bool boss = target >= 0 && b.foes[target].boss;
+        const float far_range = boss ? 800.0f : 1500.0f, near_range = boss ? 400.0f : 600.0f;
         if (target >= 0 && off > 40 && len(me.vel) > 150) throttle = brake = 1;
-        else if (target >= 0 && range > 1500 && closing < 50) throttle = 1;
-        else if (target >= 0 && range < 600 && closing > 80) brake = 1;
+        else if (target >= 0 && range > far_range && closing < 50) throttle = 1;
+        else if (target >= 0 && range < near_range && closing > (boss ? 30.0f : 80.0f)) brake = 1;
     }
     // After the aircraft moved: the gun.
     void after(float t, float dt, const Aircraft& me) {
@@ -662,7 +668,7 @@ struct Pilot {
         if (target < 0) { lock = 0; return; }
         const V3 to = pose_at(b.foes[target].path, t).pos - me.pos;
         const float seen = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
-        const bool in_lock = seen < 15 && range > 300 && range < 2500;
+        const bool in_lock = seen < 15 && range > 300 && range < lock_range(target);
         lock = in_lock ? lock + dt : 0;
         target_time += dt; if (in_lock) lock_time += dt;
         if (lock >= 0.8f && t >= next_launch && !doomed(target)) {
@@ -816,7 +822,7 @@ Run recorded_battle(const Scenario& sc) {
             const float range = len(e.pos - pos);
             if (range < 1000) { close_time += dt; if (angle < 2) on_lead += dt; }
             const float seen = std::acos(std::clamp(dot(fr.f, unit(e.pos - pos)), -1.0f, 1.0f)) / rad;
-            target_time += dt; if (seen < 15 && range > 300 && range < 2500) lock_time += dt;
+            target_time += dt; if (seen < 15 && range > 300 && range < (b.foes[sel].boss ? 1000.0f : 2500.0f)) lock_time += dt;
         }
         for (int i = 0; i < int(b.foes.size()); ++i) {
             const Foe& f = b.foes[i];
