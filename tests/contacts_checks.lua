@@ -26,6 +26,7 @@ local enemy = object(2, 'BP_OP1017_mr2k_CP_C', 900, 0, 3000, {target = true})
 object(3, 'BP_OP1020_m29a_CP_Shadow_C', 9000, 0, 3000, {target = true})
 object(4, 'BP_WOP1004_f15c_C', 300, 0, 3000)
 object(5, 'BP_Boss_Something_C', 4000, 0, 4000, {target = true, speed = 250})
+object(9, 'BP_OP0045_ladn_CP_C', 20000, 0, 9000, {speed = 600})
 object(6, 'BP_GR0001_tank_C', 100, 0, 0, {target = true, speed = 15})
 object(7, 'BP_PlayerPlane_PP0004_f15c_C', 0, 0, 0, {hidden = true})
 -- a lockable part of a boss: no speed of its own, moves with the aircraft
@@ -50,6 +51,8 @@ assert(not first:find('PP0004'), 'pooled plane tracked')
 local shadow, mr2k, wingman = first:find('Shadow'), first:find('mr2k'), first:find('WOP1004')
 assert(shadow < mr2k and mr2k < wingman, 'tracking order')
 assert(not first:find('Engine'), 'a still part taken for an aircraft')
+-- a LADON (not a player target itself) is tracked first despite being farthest
+assert(first:find('ladn_CP_C') < first:find('mr2k'), 'LADON not ranked as an elite')
 -- the part moves 400 m/s with its aircraft: picked up at the next scan (3 s on)
 part.x = part.x + 1200
 contacts.update(pawn, 4.1)

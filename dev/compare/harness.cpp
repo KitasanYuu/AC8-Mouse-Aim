@@ -87,22 +87,43 @@ struct Plant {
     float aoa_lag;                        // s: AoA = lag x path rate
     float cruise, cruise_rate;            // neutral throttle: speed relaxes to cruise (m/s, 1/s)
     float turn_drag;                      // m/s^2 per g above 1
+    // Authority by speed, per 100 m/s from 0 (interpolated): factors on the pull and push
+    // and on the roll acceleration and limit. From full-stick p90 rates in each speed band.
+    std::array<float, 9> pull_by_speed{1, 1, 1, 1, 1, 1, 1, 1, 1};
+    std::array<float, 9> roll_by_speed{1, 1, 1, 1, 1, 1, 1, 1, 1};
 };
-// Fitted on the game clock (see tests/flight_sim.cpp `measured`, fit_airframe.py):
-// full pull ~50 deg/s at any speed up to 700 m/s (arcade: no corner speed), x1.4-1.6 in
-// a high-G turn; rolls top out near 105 deg/s.
+float by_speed(const std::array<float, 9>& table, float speed) {
+    const float x = std::clamp(speed / 100.0f, 0.0f, 8.0f);
+    const int i = std::min(int(x), 7);
+    return table[i] + (table[i + 1] - table[i]) * (x - i);
+}
+// The weaker aircraft flown 2026-10-04/05 (game clock): full pull ~43 deg/s p90 from 200 to
+// 500 m/s, falling to 6-10 at 600-700 m/s; rolls ~105 deg/s, 55-73 above 500 m/s.
+constexpr std::array<float, 9> weak_pull{0.88f, 0.88f, 1.0f, 1.0f, 0.95f, 0.75f, 0.2f, 0.15f, 0.1f};
+constexpr std::array<float, 9> weak_roll{0.85f, 0.85f, 1.0f, 0.97f, 0.7f, 0.55f, 0.62f, 0.58f, 0.55f};
+// Su-35 (LADON mission, 2026-10-05): about the same at low speed, but keeps 26-28 deg/s of
+// pull at 600-800 m/s and rolls 80-100 deg/s up to 700 m/s.
+constexpr std::array<float, 9> su35_pull{0.95f, 0.95f, 1.0f, 0.8f, 0.82f, 0.65f, 0.66f, 0.68f, 0.42f};
+constexpr std::array<float, 9> su35_roll{0.72f, 0.72f, 0.92f, 0.92f, 1.0f, 0.94f, 0.85f, 0.68f, 0.73f};
+// Fitted on the game clock (see tests/flight_sim.cpp `measured`, fit_airframe.py): full pull
+// ~50 deg/s at 200-500 m/s, x1.4-1.6 in a high-G turn; rolls top out near 105 deg/s.
 constexpr Plant measured{"measured", "实测机体",
     0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 1.5f,
-    0.20f, 187, 0.0825f, 0.4f};
+    0.20f, 187, 0.0825f, 0.4f, weak_pull, weak_roll};
+constexpr Plant su35{"su35", "Su-35",
+    0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
+    0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
+    0.15f, 5.4f, 0.35f, 1.5f,
+    0.20f, 187, 0.0825f, 0.4f, su35_pull, su35_roll};
 // Robustness: 30% more delay and smoothing, less authority (a heavier aircraft, or the
 // fit being optimistic). A controller tuned to the edge of the measured model shows it here.
 constexpr Plant sluggish{"sluggish", "迟钝机体（延迟 ×1.3，权限 ×0.75）",
     0.16f, 0.26f, 0.13f, 0.8f, 38, 19, 0.3f, 1.5f,
     0.18f, 0.33f, 165, 1.3f, 80, 0.7f,
     0.2f, 4.0f, 0.45f, 1.5f,
-    0.25f, 187, 0.0825f, 0.4f};
+    0.25f, 187, 0.0825f, 0.4f, weak_pull, weak_roll};
 
 float input_smooth(float f, float u, float dt, float build, float release) {
     const float tc = (u * f < 0 || std::abs(u) < std::abs(f)) ? release : build;
@@ -131,11 +152,12 @@ struct Aircraft {
         sr += (ur - sr) * (1 - std::exp(-dt / m.roll_input));
         const bool high_g = throttle > 0.5f && brake > 0.5f;
         const float aq = std::pow(std::min(std::abs(sq), 1.0f), m.pitch_curve);
-        const float pull = m.pitch_pull * (high_g ? m.highg_pull : 1.0f);
-        const float steady = (sq >= 0 ? pull * aq : -m.pitch_push * aq) - m.pitch_gravity * b.u.z;
+        const float speed_now = len(vel), pitch_k = by_speed(m.pull_by_speed, speed_now), roll_k = by_speed(m.roll_by_speed, speed_now);
+        const float pull = m.pitch_pull * pitch_k * (high_g ? m.highg_pull : 1.0f);
+        const float steady = (sq >= 0 ? pull * aq : -m.pitch_push * pitch_k * aq) - m.pitch_gravity * b.u.z;
         q += dt * (steady - q) / m.pitch_tau;
-        p = std::clamp(p + dt * (std::copysign(m.roll_accel * std::pow(std::min(std::abs(sr), 1.0f), m.roll_curve), sr) - p / m.roll_tau),
-                       -m.roll_max, m.roll_max);
+        p = std::clamp(p + dt * (std::copysign(m.roll_accel * roll_k * std::pow(std::min(std::abs(sr), 1.0f), m.roll_curve), sr) - p / m.roll_tau),
+                       -m.roll_max * roll_k, m.roll_max * roll_k);
         r += dt * (m.yaw_max * std::clamp(uy, -1.0f, 1.0f) - r) / m.yaw_tau;
         rotate_body(b, q, p, r, dt);
         // flight path: lift turns the velocity toward the nose; gravity; speed
@@ -251,7 +273,9 @@ std::shared_ptr<Track> load_track(const std::string& path) {
 // aircraft's recorded path for minutes, the player's start, and the recorded flight.
 // The enemies fly their recorded paths; they do not react to the simulated aircraft.
 // last: the end of its life here, which for one the player shot down is when that happened.
-struct Foe { std::string cls; float first = 0, last = 0; bool down = false, elite = false, by_player = false; std::vector<Pose> path; };
+// boss: a big aircraft that is not brought down here (LADON); the score is how well it is
+// kept in the sights.
+struct Foe { std::string cls; float first = 0, last = 0; bool down = false, elite = false, by_player = false, boss = false; std::vector<Pose> path; };
 struct Battle {
     V3 start; float pitch = 0, yaw = 0, roll = 0, speed = 220;
     std::vector<Foe> foes;
@@ -265,9 +289,9 @@ std::shared_ptr<Battle> load_battle(const std::string& path) {
         std::string tag; ss >> tag;
         if (tag == "player") ss >> b->start.x >> b->start.y >> b->start.z >> b->pitch >> b->yaw >> b->roll >> b->speed;
         else if (tag == "enemy") {
-            size_t i; Foe f; int down = 0, elite = 0, by_player = 0;
-            ss >> i >> f.cls >> f.first >> f.last >> down >> elite >> by_player;
-            f.down = down != 0; f.elite = elite != 0; f.by_player = by_player != 0;
+            size_t i; Foe f; int down = 0, elite = 0, by_player = 0, boss = 0;
+            ss >> i >> f.cls >> f.first >> f.last >> down >> elite >> by_player >> boss;
+            f.down = down != 0; f.elite = elite != 0; f.by_player = by_player != 0; f.boss = boss != 0;
             if (b->foes.size() <= i) b->foes.resize(i + 1);
             b->foes[i] = f;
         }
@@ -410,12 +434,18 @@ std::vector<Scenario> scenarios(const std::string& track_dir, const std::string&
             if (!battle) continue;
             std::ifstream in(path); std::string first; std::getline(in, first);
             Scenario c; c.kind = Combat; c.battle = battle;
-            int elites = 0; for (const Foe& f : battle->foes) elites += f.elite;
+            int elites = 0, bosses = 0; for (const Foe& f : battle->foes) { elites += f.elite; bosses += f.boss; }
             c.id = "battle_" + name.substr(0, name.size() - 4);
-            c.title = std::string(elites ? "精英战 " : "连续战斗 ") + name.substr(0, name.size() - 4);
+            c.title = std::string(bosses ? "头目战 " : elites ? "精英战 " : "连续战斗 ") + name.substr(0, name.size() - 4);
             c.note = first.size() > 2 ? first.substr(2) : "";
             c.seconds = std::floor(battle->own.back()[0] * 4) / 4;
             s.push_back(c);
+            if (bosses) {
+                // and with the player's recorded mouse: the input the mod had in game
+                c.mouse_aim = true; c.id += "_mouse"; c.title += "（鼠标原样）";
+                c.note = "鼠标按录像原样移动（与游戏里飞控当时收到的输入相同）。" + c.note;
+                s.push_back(c);
+            }
         } while (FindNextFileA(hb, &found));
         FindClose(hb);
     }
@@ -433,6 +463,7 @@ struct Metrics {
     // battles
     int kills = -1, elite_kills = 0, foes = 0, gun_kills = 0, missiles = 0;
     float first_kill = -1, on_lead = -1, close_time = 0, to_shot = -1;
+    float lock_frac = -1;   // battles: share of the time the target was within missile lock (15 deg, 0.3-2.5 km)
     float crashed = -1;   // recorded scenes: time the aircraft went below 50 m (the ground is near 0-200 m)
 };
 struct Sample { float v[28]; int n; };
@@ -485,10 +516,22 @@ struct Scorer {
             m.bank_rms = float(std::sqrt(sum_bank2 / track_time));
             m.within2 = float(in2 / track_time); m.within5 = float(in5 / track_time);
         }
-        // One number per scenario, lower is better. Rough weights: responsiveness first, then
-        // clear overshoot, roll reversals and stick chatter; tracking error for the rest.
         const bool started_inverted = std::abs(sc.start_roll) > 100;
         const float span = sc.kind == Chain ? sc.seconds - sc.switch_at : sc.seconds;
+        // Crashed: the rest of the scene counts as completely off target (scoring only the
+        // seconds flown made an early crash look good).
+        if (m.crashed >= 0 && track_time > 0) {
+            const float tracked_span = std::max(span - track_from, 1.0f), flown = float(track_time), k = std::min(flown / tracked_span, 1.0f);
+            m.mean_angle = (m.mean_angle * flown + 90 * (tracked_span - flown)) / tracked_span;
+            m.within2 *= k; m.within5 *= k;
+            if (m.lock_frac >= 0) m.lock_frac *= k;
+            if (m.on_lead >= 0) m.on_lead *= k;
+        }
+        // Long scenes (battles) count roll reversals and stick chatter per minute.
+        const float minutes = std::max(span / 60.0f, 0.25f);
+        const float rev_rate = m.reversals / minutes, chatter_rate = m.chatter / minutes;
+        // One number per scenario, lower is better. Rough weights: responsiveness first, then
+        // clear overshoot, roll reversals and stick chatter; tracking error for the rest.
         if (sc.kind == Capture || sc.kind == Chain)
             m.cost = (m.to2 < 0 ? span : m.to2) + 0.5f * (m.settle < 0 ? span : m.settle) + 2 * std::max(0.0f, m.overshoot - 1.5f) +
                      0.5f * std::max(0, m.reversals - 1) + 0.2f * m.chatter + (started_inverted ? 0 : 0.5f * m.inverted);
@@ -498,8 +541,13 @@ struct Scorer {
             m.cost = 0.5f * m.mean_angle + 3 * (1 - m.within5) + 0.2f * m.reversals + 0.05f * m.chatter;
         else if (sc.kind == Recorded)   // a gun attack: time on the lead point counts most
             m.cost = 0.5f * m.mean_angle + 2 * (1 - m.within5) + 2 * (1 - m.within2) + 0.2f * m.reversals + 0.05f * m.chatter;
+        else if (sc.mouse_aim)   // a battle replayed with the recorded mouse: how well the nose follows it
+            m.cost = 0.5f * m.mean_angle + 2 * (1 - m.within5) + 2 * (1 - m.within2) + 0.05f * rev_rate + 0.01f * chatter_rate;
         else if (m.to_shot == -2)   // a recorded battle: no fire data, no comparable score
             m.cost = -1;
+        else if (m.foes > 0 && m.kills == 0 && m.lock_frac >= 0 && sc.battle && std::all_of(sc.battle->foes.begin(), sc.battle->foes.end(), [](const Foe& f) { return f.boss; }))
+            // a boss battle: kept in missile lock, on the gun lead point, and the nose near the aim
+            m.cost = 10 * (1 - m.lock_frac) + 10 * (1 - std::max(m.on_lead, 0.0f)) + 0.2f * m.mean_angle + 0.05f * rev_rate + 0.01f * chatter_rate;
         else   // a battle: enemies brought down, how quickly a picked enemy is fired at, gun aim
             m.cost = 20 * (1 - float(std::max(m.kills, 0)) / std::max(m.foes, 1)) + (m.to_shot < 0 ? 15 : m.to_shot) +
                      5 * (1 - std::max(m.on_lead, 0.0f));
@@ -514,15 +562,19 @@ struct Scorer {
 // the ~12.5 ms frame, a multiplicative error of roughly 20%.
 struct Condition { const char* id; const char* title; const Plant* plant; float white; float jitter; };
 const Condition conditions[] = {
-    {"measured", "实测机体 · 游戏时钟", &measured, 0.15f, 0.0f},
-    {"wallclock", "实测机体 · 墙钟计时（角速度噪声大）", &measured, 0.15f, 0.2f},
+    {"measured", "差机体（实测）· 游戏时钟", &measured, 0.15f, 0.0f},
+    {"su35", "Su-35 高机动（实测）· 游戏时钟", &su35, 0.15f, 0.0f},
+    {"wallclock", "差机体 · 墙钟计时（角速度噪声大）", &measured, 0.15f, 0.2f},
     {"sluggish", "迟钝机体（延迟 ×1.3，权限 ×0.75）· 游戏时钟", &sluggish, 0.15f, 0.0f},
 };
+constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
 
 // The simulated player in a battle. Picks an enemy the way the game's target selection
 // tends to (nearest the nose, distance counting), keeps it until it is down or over 5 km
-// away, puts the mouse on its gun lead point, holds throttle+brake (high-G turn) while
-// it is more than 40 deg off the nose, and fires:
+// away, puts the mouse on its gun lead point, and works the throttle: throttle+brake (a
+// high-G turn) while the enemy is more than 40 deg off the nose, full throttle while it is
+// beyond 1.5 km and not closing at 50 m/s (a supersonic bomber has to be run down), brake
+// inside 600 m when closing faster than 80 m/s, neutral otherwise. It fires:
 //   missiles: the enemy within 15 deg of the nose at 300-2500 m for 0.8 s locks it; one
 //     missile every 1.5 s at most, ~700 m/s. It hits an ordinary enemy always; an elite
 //     dodges unless launched within 1500 m with it within 8 deg of the nose, and takes two
@@ -552,15 +604,17 @@ struct Pilot {
         : b(battle), killed(battle.foes.size(), 0), hits(battle.foes.size(), 0), missile_hits(battle.foes.size(), 0),
           on_the_way(battle.foes.size(), 0), aim(forward) {}
     bool alive(int i, float t) const { const Foe& f = b.foes[i]; return !killed[i] && t >= f.first && t <= f.last; }
-    int needed(int i) const { return b.foes[i].elite ? 2 : 1; }
+    int needed(int i) const { return b.foes[i].boss ? 1000000 : b.foes[i].elite ? 2 : 1; }
+    double lock_time = 0, target_time = 0;
     bool doomed(int i) const { return missile_hits[i] + on_the_way[i] >= needed(i); }
     void kill(float t, int i) {
         killed[i] = 1; kill_log.push_back({t, i});
         elite_kills += b.foes[i].elite;
         if (target == i) target = -1;
     }
-    // Before the controller's step: the aim. Returns whether to hold a high-G turn.
-    bool before(float t, const Aircraft& me) {
+    float throttle = 0, brake = 0, last_range = -1;
+    // Before the controller's step: the aim and the throttle.
+    void before(float t, float dt, const Aircraft& me) {
         if (target >= 0 && (!alive(target, t) || doomed(target) || len(pose_at(b.foes[target].path, t).pos - me.pos) > 5000)) target = -1;
         if (target < 0) {
             float best = 1e9f;
@@ -584,7 +638,12 @@ struct Pilot {
             aim = len(flat) > 0.1f ? unit(flat) : V3{1, 0, 0};
         }
         const float off = std::acos(std::clamp(dot(me.b.f, aim), -1.0f, 1.0f)) / rad;
-        return target >= 0 && off > 40 && len(me.vel) > 150;
+        const float closing = target >= 0 && last_range >= 0 && dt > 0 ? (last_range - range) / dt : 0;
+        last_range = target >= 0 ? range : -1;
+        throttle = brake = 0;
+        if (target >= 0 && off > 40 && len(me.vel) > 150) throttle = brake = 1;
+        else if (target >= 0 && range > 1500 && closing < 50) throttle = 1;
+        else if (target >= 0 && range < 600 && closing > 80) brake = 1;
     }
     // After the aircraft moved: the gun.
     void after(float t, float dt, const Aircraft& me) {
@@ -598,7 +657,9 @@ struct Pilot {
         if (target < 0) { lock = 0; return; }
         const V3 to = pose_at(b.foes[target].path, t).pos - me.pos;
         const float seen = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
-        lock = seen < 15 && range > 300 && range < 2500 ? lock + dt : 0;
+        const bool in_lock = seen < 15 && range > 300 && range < 2500;
+        lock = in_lock ? lock + dt : 0;
+        target_time += dt; if (in_lock) lock_time += dt;
         if (lock >= 0.8f && t >= next_launch && !doomed(target)) {
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
             const bool good = !b.foes[target].elite || (range < 1500 && seen < 8);
@@ -614,7 +675,7 @@ struct Pilot {
         if (off < std::max(0.5f, std::atan(9.0f / std::max(range, 1.0f)) / rad)) {
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
             hits[target] += dt;
-            if (hits[target] >= (b.foes[target].elite ? 1.5f : 0.5f)) { ++gun_kills; kill(t, target); }
+            if (!b.foes[target].boss && hits[target] >= (b.foes[target].elite ? 1.5f : 0.5f)) { ++gun_kills; kill(t, target); }
         }
     }
 };
@@ -659,8 +720,13 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
             target = sc.mouse_aim ? tr->mouse(t) : tr->lead(t, me.pos);
         }
         if (pilot) {
-            high_g = pilot->before(t, me);
+            pilot->before(t, dt, me);
             target = pilot->aim;
+            if (sc.mouse_aim) {   // the player's own mouse, as recorded
+                size_t i = 0; while (i + 1 < bt->own.size() && bt->own[i + 1][0] <= t) ++i;
+                target = direction(bt->own[i][7], bt->own[i][8]);
+                pilot->aim = target;
+            }
             if (pilot->target >= 0) {
                 const Pose e = pose_at(bt->foes[pilot->target].path, t);
                 enemy.pos = e.pos; enemy.b = basis(e.pitch, e.yaw, e.roll);
@@ -675,8 +741,9 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
             fp += (me.p * scale + cond.white * unit_noise(rng) - fp) * a;
             fr += (me.r * scale + cond.white * unit_noise(rng) - fr) * a;
         }
-        Sense s{pitch, yaw, roll, {target.x, target.y, target.z}, fq, fr, fp, seen_dt,
-                high_g ? 1.0f : 0.0f, high_g ? 1.0f : 0.0f,
+        const float throttle = pilot ? pilot->throttle : high_g ? 1.0f : 0.0f;
+        const float brake = pilot ? pilot->brake : high_g ? 1.0f : 0.0f;
+        Sense s{pitch, yaw, roll, {target.x, target.y, target.z}, fq, fr, fp, seen_dt, throttle, brake,
                 {me.vel.x, me.vel.y, me.vel.z}, {me.acc.x, me.acc.y, me.acc.z}, me.pos.z};
         Stick u = ctl.step(s);
         u.pitch = std::clamp(u.pitch, -1.0f, 1.0f); u.roll = std::clamp(u.roll, -1.0f, 1.0f); u.yaw = std::clamp(u.yaw, -1.0f, 1.0f);
@@ -687,7 +754,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         score.add(t, dt, angle, bank_of(me.b), me.p, u, me.nz);
         if (pilot) pilot->after(t, dt, me);
         const bool has_enemy = sc.kind == Pursuit || tr || (pilot && pilot->target >= 0);
-        if (keep_frames && k % (bt ? 8 : 4) == 0) {
+        if (keep_frames && k % (sc.seconds > 200 ? 16 : bt ? 8 : 4) == 0) {
             float ep = 0, ey = 0, er = 0;
             if (has_enemy) euler(enemy.b, ep, ey, er);
             Sample f{{t, me.pos.x, me.pos.y, me.pos.z, pitch, yaw, roll, target.x, target.y, target.z, angle,
@@ -704,6 +771,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         m.foes = int(bt->foes.size()); m.kills = int(pilot->kill_log.size()); m.elite_kills = pilot->elite_kills;
         m.gun_kills = pilot->gun_kills; m.missiles = pilot->missiles;
         m.to_shot = pilot->shots_timed ? float(pilot->to_shot / pilot->shots_timed) : -1;
+        m.lock_frac = pilot->target_time > 0 ? float(pilot->lock_time / pilot->target_time) : 0;
         m.first_kill = pilot->kill_log.empty() ? -1 : pilot->kill_log.front().first;
         m.close_time = float(pilot->close_time); m.on_lead = pilot->close_time > 0 ? float(pilot->on_lead / pilot->close_time) : 0;
         run.kills = pilot->kill_log;
@@ -722,7 +790,7 @@ Run recorded_battle(const Scenario& sc) {
     Scorer score(sc, run.m);
     float last_t = 0;
     std::vector<char> counted(b.foes.size(), 0);
-    double close_time = 0, on_lead = 0;
+    double close_time = 0, on_lead = 0, target_time = 0, lock_time = 0;
     for (const auto& o : b.own) {
         const float t = o[0];
         if (t > sc.seconds) break;
@@ -730,7 +798,7 @@ Run recorded_battle(const Scenario& sc) {
         const Frame3 fr = basis(o[4], o[5], o[6]);
         const int sel = int(o[16]);
         const bool has = sel >= 0 && sel < int(b.foes.size()) && t >= b.foes[sel].first && t <= b.foes[sel].last;
-        const V3 target = has ? lead_point(b.foes[sel].path, t, pos) : direction(o[7], o[8]);
+        const V3 target = sc.mouse_aim || !has ? direction(o[7], o[8]) : lead_point(b.foes[sel].path, t, pos);
         const float angle = std::acos(std::clamp(dot(fr.f, target), -1.0f, 1.0f)) / rad;
         const float dt = std::max(t - last_t, 0.0f);
         const Stick u{o[13], o[14], o[15]};
@@ -742,6 +810,8 @@ Run recorded_battle(const Scenario& sc) {
             epos = e.pos; ep = e.pitch; ey = e.yaw; er = e.roll;
             const float range = len(e.pos - pos);
             if (range < 1000) { close_time += dt; if (angle < 2) on_lead += dt; }
+            const float seen = std::acos(std::clamp(dot(fr.f, unit(e.pos - pos)), -1.0f, 1.0f)) / rad;
+            target_time += dt; if (seen < 15 && range > 300 && range < 2500) lock_time += dt;
         }
         for (int i = 0; i < int(b.foes.size()); ++i) {
             const Foe& f = b.foes[i];
@@ -758,6 +828,7 @@ Run recorded_battle(const Scenario& sc) {
     m.foes = int(b.foes.size()); m.kills = int(run.kills.size());
     m.first_kill = run.kills.empty() ? -1 : run.kills.front().first;
     m.close_time = float(close_time); m.on_lead = close_time > 0 ? float(on_lead / close_time) : 0;
+    m.lock_frac = target_time > 0 ? float(lock_time / target_time) : 0;   // while the player had it selected
     const auto& first = b.own.front(); const auto& last = b.own.back();
     m.to_shot = -2;   // not known from a recording without fire data
     score.finish(first[9] - last[9], last[3] - first[3]);
@@ -804,10 +875,10 @@ void json_metrics(std::string& out, const Metrics& m) {
         "{\"to5\":%.2f,\"to2\":%.2f,\"settle\":%.2f,\"level\":%.2f,\"overshoot\":%.2f,\"reversals\":%d,\"chatter\":%d,"
         "\"inverted\":%.2f,\"speed_loss\":%.1f,\"alt_change\":%.0f,\"peak_nz\":%.1f,\"mean_angle\":%.2f,\"rms_angle\":%.2f,"
         "\"within2\":%.3f,\"within5\":%.3f,\"bank_rms\":%.1f,\"pitch_sat\":%.3f,\"roll_sat\":%.3f,\"roll_effort\":%.3f,\"cost\":%.2f,"
-        "\"kills\":%d,\"elite_kills\":%d,\"foes\":%d,\"gun_kills\":%d,\"missiles\":%d,\"first_kill\":%.1f,\"on_lead\":%.3f,\"close_time\":%.1f,\"to_shot\":%.2f,\"crashed\":%.1f}",
+        "\"kills\":%d,\"elite_kills\":%d,\"foes\":%d,\"gun_kills\":%d,\"missiles\":%d,\"first_kill\":%.1f,\"on_lead\":%.3f,\"close_time\":%.1f,\"to_shot\":%.2f,\"crashed\":%.1f,\"lock_frac\":%.3f}",
         m.to5, m.to2, m.settle, m.level, m.overshoot, m.reversals, m.chatter, m.inverted, m.speed_loss, m.alt_change, m.peak_nz,
         m.mean_angle, m.rms_angle, m.within2, m.within5, m.bank_rms, m.pitch_sat, m.roll_sat, m.roll_effort, m.cost,
-        m.kills, m.elite_kills, m.foes, m.gun_kills, m.missiles, m.first_kill, m.on_lead, m.close_time, m.to_shot, m.crashed);
+        m.kills, m.elite_kills, m.foes, m.gun_kills, m.missiles, m.first_kill, m.on_lead, m.close_time, m.to_shot, m.crashed, m.lock_frac);
     out += b;
 }
 std::string esc(const std::string& s) {
@@ -865,7 +936,7 @@ int main() {
     for (size_t i = 0; i < entries.size(); ++i)
         index += std::string(i ? "," : "") + "{\"id\":\"" + entries[i].id + "\",\"label\":\"" + esc(entries[i].label) + "\",\"source\":\"" + esc(entries[i].source) + "\"}";
     index += "],\"plants\":[";
-    for (int p = 0; p < 3; ++p) index += std::string(p ? "," : "") + "{\"id\":\"" + conditions[p].id + "\",\"title\":\"" + conditions[p].title + "\"}";
+    for (int p = 0; p < condition_count; ++p) index += std::string(p ? "," : "") + "{\"id\":\"" + conditions[p].id + "\",\"title\":\"" + conditions[p].title + "\"}";
     index += "],\"scenarios\":[";
     for (size_t i = 0; i < list.size(); ++i)
         index += std::string(i ? "," : "") + "{\"id\":\"" + list[i].id + "\",\"title\":\"" + esc(list[i].title) + "\",\"note\":\"" + esc(list[i].note) +
@@ -875,7 +946,7 @@ int main() {
 
     std::string card;
     char line[512];
-    for (int p = 0; p < 3; ++p) {
+    for (int p = 0; p < condition_count; ++p) {
         const Condition& plant = conditions[p];
         std::string data = std::string("(window.COMPARE_DATA=window.COMPARE_DATA||{})[\"") + plant.id + "\"]={";
         index += std::string(p ? "," : "") + "\"" + plant.id + "\":{";

@@ -35,10 +35,11 @@ local function surface_class(name)
         or name:find('^BP_CIN') or name:find('MiniGame') or name:find('Minigame')
 end
 -- Named aces, Shadow squadrons and bosses (class names, logged: BP_OP1020_m29a_CP_Shadow_C,
--- BP_OP1007_f18c_CP_Named_C; boss names unknown yet, so a few likely words).
+-- BP_OP1007_f18c_CP_Named_C, LADON BP_OP0045_ladn_CP_C and its parts BP_OP0045_ladn_*): tracked
+-- before anything else (a LADON battle brings a swarm of 140 drones).
 local function elite_class(name)
     local n=name:lower()
-    return n:find('shadow') or n:find('named') or n:find('boss') or n:find('ladon')
+    return n:find('shadow') or n:find('named') or n:find('boss') or n:find('ladon') or n:find('_ladn')
 end
 -- Friend or foe by the game itself: an object the player is meant to attack. The flag
 -- comes and goes for an enemy (logged), so a class flagged once stays hostile.
