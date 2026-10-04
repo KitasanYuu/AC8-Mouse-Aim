@@ -224,10 +224,21 @@ function loadCond(cond, then) {
 }
 
 // ---------- canvas ----------
+// Canvas sizes come from a ResizeObserver, not from reading the layout while drawing: each
+// view also updates its readout, and a layout read after a DOM write forces a full
+// relayout, a dozen times a frame (logged as stutter while playing battles).
+const MONO = getComputedStyle(document.documentElement).getPropertyValue('--mono');
+const sizes = new WeakMap();
+const sizeWatch = new ResizeObserver(entries => {
+  for (const e of entries) sizes.set(e.target, [e.contentRect.width, e.contentRect.height]);
+  requestAnimationFrame(() => drawAll());
+});
 function setup(canvas) {
   // pixel ratio capped at 1.5: seven views and eight charts redrawn while playing
-  const r = canvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  let size = sizes.get(canvas);
+  if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
   return { ctx, w, h };
@@ -343,7 +354,7 @@ function drawCams() {
     const color = colorOf(c.id);
     // battle: every enemy still in the air (for this controller), the one attacked marked
     if (sc.kind === 'battle') {
-      const down = downBy(c.id, st.t), mono = getComputedStyle(document.body).getPropertyValue('--mono');
+      const down = downBy(c.id, st.t), mono = MONO;
       foesOf().forEach((foe, k) => {
         const at = foeAt(foe, st.t); if (!at || down.has(k)) return;
         const q = P(at.pos); if (!q) return;
@@ -366,7 +377,7 @@ function drawCams() {
       if (q) {
         const dist = Math.hypot(...sub(E, A));
         drawJet(ctx, P, E, EB, '#e5534b', Math.max(1, dist / 250));
-        ctx.fillStyle = '#e5534b'; ctx.font = `11px ${getComputedStyle(document.body).getPropertyValue('--mono')}`;
+        ctx.fillStyle = '#e5534b'; ctx.font = `11px ${MONO}`;
         ctx.fillText(`敌机 ${(dist / 1000).toFixed(2)} km`, q[0] + 10, q[1] - 8);
       }
     }
@@ -381,12 +392,14 @@ function drawCams() {
     drawJet(ctx, P, A, B, color, 1.5);
     // readout
     const bank = fr[F.roll];
-    cam.read.innerHTML = `<div><span>偏差</span>${fr[F.angle].toFixed(2)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
+    const readout = `<div><span>偏差</span>${fr[F.angle].toFixed(2)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
       `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>` +
       (sc.kind === 'battle' ? `<div><span>击落</span>${fr[F.kills]} / ${foesOf().length}</div>` : '');
+    if (cam.text !== readout) { cam.read.innerHTML = readout; cam.text = readout; }
     [fr[F.sp], fr[F.sr], fr[F.sy]].forEach((v, k) => {
       const m = cam.meters[k], x = Math.max(-1, Math.min(1, v));
-      m.style.left = `${50 + Math.min(0, x) * 50}%`; m.style.width = `${Math.abs(x) * 50}%`; m.style.background = color;
+      const style = `left:${(50 + Math.min(0, x) * 50).toFixed(1)}%;width:${(Math.abs(x) * 50).toFixed(1)}%;background:${color}`;
+      if (m.dataset.s !== style) { m.style.cssText = style; m.dataset.s = style; }
     });
   }
 }
@@ -496,7 +509,7 @@ function drawCharts() {
   }
 }
 function drawChartCurves(c, ctx, w, h, data, sc) {
-  const mono = getComputedStyle(document.body).getPropertyValue('--mono');
+  const mono = MONO;
   {
     const tr = c.sqrt ? v => Math.sqrt(Math.max(0, v)) : v => v;
     let lo = c.lo, hi = c.hi;
