@@ -289,6 +289,7 @@ struct Scenario {
     Kind kind;
     float seconds = 8;
     float start_roll = 0;
+    float start_pitch = 0, start_p = 0;                 // nose pitch and roll rate (deg/s) at the start
     V3 first{}, next{}; float switch_at = -1;          // capture / chain
     std::function<V3(float)> aim;                        // hold: world aim over time
     std::vector<Segment> program;                        // pursuit: enemy program
@@ -320,6 +321,21 @@ std::vector<Scenario> scenarios(const std::string& track_dir, const std::string&
     cap("inv_r15", "倒飞 · 右 15°", direction(0, 15), 180, "推杆与拉杆距离相近");
     cap("inv_dr12", "倒飞 · 右下 12°/12°", direction(-12, 12), 180);
     cap("bank100_ul", "坡度 100° · 左上 10°/15°", direction(10, -15), 100);
+    // A new target picked while the aircraft is still rolling from the last one (logged in
+    // the recorded battles: target switches at 40-45 deg/s of roll the other way cost
+    // ~1.5 s). Nose 30 deg up, 60 deg left bank, rolling right at 45 deg/s; the target 35
+    // deg off at a clock position around the nose (0 above the canopy, 180 below the floor).
+    for (int clock : {-150, -90, -60, 0, 60, 90, 150, 175}) {
+        const Frame3 b0 = basis(30, 0, -60);
+        const float a = 35 * rad, c = clock * rad;
+        Scenario sw; sw.kind = Capture; sw.start_pitch = 30; sw.start_roll = -60; sw.start_p = 45;
+        sw.first = unit(b0.f * std::cos(a) + (b0.u * std::cos(c) + b0.r * std::sin(c)) * std::sin(a));
+        sw.id = "switch_c" + std::to_string(clock < 0 ? 360 + clock : clock);
+        sw.title = "滚转中换目标 · 35° " + std::string(clock == 0 ? "座舱方向" : clock == 175 ? "机腹方向" : clock > 0 ? "右侧 " : "左侧 ") +
+                   (clock == 0 || clock == 175 ? "" : std::to_string(std::abs(clock)) + "°");
+        sw.note = "坡度左 60°、机头上仰 30°、正以 45°/s 向右滚时，新目标出现在偏 35° 处（钟点方位见标题）";
+        s.push_back(sw);
+    }
     auto chain = [&](std::string id, std::string title, V3 a, float at, V3 b, std::string note) {
         Scenario c; c.id = id; c.title = title; c.kind = Chain; c.first = unit(a); c.next = unit(b); c.switch_at = at; c.seconds = 10; c.note = note; s.push_back(c);
     };
@@ -612,7 +628,8 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
     Aircraft me;
     if (tr) me.start(tr->pitch, tr->yaw, tr->roll, speed0, tr->start);
     else if (bt) me.start(bt->pitch, bt->yaw, bt->roll, speed0, bt->start);
-    else me.start(0, 0, sc.start_roll, speed0, {0, 0, 3000});
+    else me.start(sc.start_pitch, 0, sc.start_roll, speed0, {0, 0, 3000});
+    me.p = sc.start_p;
     std::unique_ptr<Pilot> pilot;
     if (bt) pilot = std::make_unique<Pilot>(*bt, me.b.f);
     bool high_g = sc.high_g;
@@ -625,7 +642,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
     ctl.reset();
     std::mt19937 rng(1234);
     std::normal_distribution<float> unit_noise(0.0f, 1.0f);
-    float fq = 0, fp = 0, fr = 0;
+    float fq = 0, fp = sc.start_p, fr = 0;
     Run run;
     Scorer score(sc, run.m);
     V3 target = sc.first;
