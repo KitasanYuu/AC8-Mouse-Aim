@@ -24,7 +24,11 @@
 #include <cstdio>
 #include <deque>
 #include <functional>
+#include <algorithm>
+#include <array>
 #include <map>
+#include <memory>
+#include <sstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -170,9 +174,55 @@ struct Enemy {
     }
 };
 
+// A gun attack cut from a recording (dev/compare/extract_tracks.py): the player's state at
+// the start, the enemy's recorded path, and the player's own path as flown in game.
+struct Pose { float t; V3 pos; float pitch, yaw, roll; };
+struct Track {
+    V3 start; float pitch = 0, yaw = 0, roll = 0, speed = 220;
+    std::vector<Pose> enemy;
+    std::vector<std::array<float, 16>> own;   // t x y z pitch yaw roll aim_p aim_y speed q r p stick p r y
+    Pose enemy_at(float t) const {
+        if (enemy.empty()) return {};
+        if (t <= enemy.front().t) return enemy.front();
+        for (size_t i = 1; i < enemy.size(); ++i) if (enemy[i].t >= t) {
+            const Pose& a = enemy[i - 1]; const Pose& b = enemy[i];
+            const float k = (t - a.t) / std::max(b.t - a.t, 1e-3f);
+            auto mix = [k](float x, float y) { return x + std::remainder(y - x, 360.0f) * k; };
+            return {t, a.pos + (b.pos - a.pos) * k, a.pitch + (b.pitch - a.pitch) * k, mix(a.yaw, b.yaw), mix(a.roll, b.roll)};
+        }
+        return enemy.back();
+    }
+    // Where the gun must point from `from`: the enemy's position after the bullet's
+    // flight (~1000 m/s), the way a lead indicator shows it.
+    V3 lead(float t, V3 from) const {
+        const Pose e = enemy_at(t);
+        const V3 vel = (enemy_at(t + 0.1f).pos - enemy_at(t - 0.1f).pos) * 5.0f;
+        return unit(e.pos + vel * (len(e.pos - from) / 1000.0f) - from);
+    }
+    // Where the player's mouse actually pointed at time t.
+    V3 mouse(float t) const {
+        size_t i = 0;
+        while (i + 1 < own.size() && own[i + 1][0] <= t) ++i;
+        return direction(own[i][7], own[i][8]);
+    }
+};
+std::shared_ptr<Track> load_track(const std::string& path) {
+    std::ifstream in(path);
+    auto tr = std::make_shared<Track>();
+    for (std::string line; std::getline(in, line);) {
+        std::istringstream ss(line);
+        std::string tag; ss >> tag;
+        if (tag == "player") ss >> tr->start.x >> tr->start.y >> tr->start.z >> tr->pitch >> tr->yaw >> tr->roll >> tr->speed;
+        else if (tag == "enemy") { Pose e; ss >> e.t >> e.pos.x >> e.pos.y >> e.pos.z >> e.pitch >> e.yaw >> e.roll; tr->enemy.push_back(e); }
+        else if (tag == "own") { std::array<float, 16> o{}; for (float& v : o) ss >> v; tr->own.push_back(o); }
+    }
+    return tr->enemy.size() > 10 && !tr->own.empty() ? tr : nullptr;
+}
+
 // ---------------------------------------------------------------- scenarios
-enum Kind { Capture, Chain, Hold, Pursuit };
-const char* kind_name(Kind k) { return k == Capture ? "capture" : k == Chain ? "chain" : k == Hold ? "hold" : "pursuit"; }
+enum Kind { Capture, Chain, Hold, Pursuit, Recorded };
+const Kind kinds[] = {Capture, Chain, Hold, Pursuit, Recorded};
+const char* kind_name(Kind k) { return k == Capture ? "capture" : k == Chain ? "chain" : k == Hold ? "hold" : k == Pursuit ? "pursuit" : "track"; }
 struct Scenario {
     std::string id, title, note;
     Kind kind;
@@ -183,8 +233,10 @@ struct Scenario {
     std::vector<Segment> program;                        // pursuit: enemy program
     V3 enemy_offset{}; float enemy_yaw = 0, enemy_speed = 220;   // enemy start, relative to us (m, deg)
     bool high_g = false;                                 // the player holds throttle+brake
+    std::shared_ptr<Track> track;                        // recorded gun attack
+    bool mouse_aim = false;                              // aim as the player's mouse did, not the lead point
 };
-std::vector<Scenario> scenarios() {
+std::vector<Scenario> scenarios(const std::string& track_dir) {
     std::vector<Scenario> s;
     auto cap = [&](std::string id, std::string title, V3 dir, float roll = 0, std::string note = "") {
         Scenario c; c.id = id; c.title = title; c.kind = Capture; c.first = unit(dir); c.start_roll = roll; c.note = note; s.push_back(c);
@@ -246,6 +298,31 @@ std::vector<Scenario> scenarios() {
             "敌机在机头前方左右小幅抖动（实测会满杆左右滚）");
     pursuit("pur_split_s", "追击 · 敌机半滚倒转", {600, 40, 0}, 0, {{1.0f, 0, 0}, {2.2f, 180, 0}, {8.5f, NAN, 28}, {99, 0, 0}}, "滚到倒飞后拉杆向下脱离");
     pursuit("pur_headon", "对头 · 交错后反转", {1800, 150, 60}, 180, {{99, 0, 0}}, "对头交错，之后需要掉头 180°（方向选择）", 16);
+    // Recorded gun attacks: every controller starts where the player was and chases the
+    // enemy's recorded path, the mouse on the lead point.
+    WIN32_FIND_DATAA found;
+    const HANDLE h = FindFirstFileA((track_dir + "/*.txt").c_str(), &found);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::string name = found.cFileName, path = track_dir + "/" + name;
+            auto tr = load_track(path);
+            if (!tr) continue;
+            std::ifstream in(path); std::string first; std::getline(in, first);
+            Scenario c; c.kind = Recorded; c.track = tr;
+            c.id = "rec_" + name.substr(0, name.size() - 4);
+            c.title = "实录 " + name.substr(0, name.size() - 4);
+            c.note = first.size() > 2 ? first.substr(2) : "";
+            c.seconds = std::floor(std::min(tr->enemy.back().t, tr->own.back()[0]) * 4) / 4;
+            s.push_back(c);
+            // The same attack with the player's recorded mouse as the aim: every controller
+            // gets the exact input the mod had in game, so the recorded column is directly
+            // comparable (a check of the model as much as of the controllers).
+            c.mouse_aim = true; c.id += "_mouse"; c.title += "（鼠标原样）";
+            c.note = "鼠标按录像原样移动（与游戏里飞控当时收到的输入相同）。" + c.note;
+            s.push_back(c);
+        } while (FindNextFileA(h, &found));
+        FindClose(h);
+    }
     return s;
 }
 
@@ -261,6 +338,68 @@ struct Metrics {
 struct Sample { float v[26]; int n; };
 
 struct Run { Metrics m; std::vector<Sample> frames; };
+
+// The same scoring for simulated flights and for the player's recorded one.
+struct Scorer {
+    const Scenario& sc;
+    Metrics& m;
+    float start_t = 0, min_angle = 180, held = 0, held_level = 0, last_q = 0, last_r = 0;
+    int last_sign = 0;
+    double sum_angle = 0, sum_angle2 = 0, sum_bank2 = 0, track_time = 0, in2 = 0, in5 = 0;
+    double sat_q = 0, sat_r = 0, effort = 0, total = 0;
+    float track_from;
+    Scorer(const Scenario& s, Metrics& out) : sc(s), m(out) {
+        track_from = sc.kind == Pursuit ? 3.0f : sc.kind == Hold || sc.kind == Recorded ? 1.0f : 1e9f;
+    }
+    void restart(float t) {   // chained target: the capture metrics start again
+        start_t = t; m.to5 = m.to2 = m.settle = m.level = -1; m.overshoot = 0; m.reversals = 0;
+        min_angle = 180; held = held_level = 0; last_sign = 0;
+    }
+    void add(float t, float dt, float angle, float bank, float roll_rate, Stick u, float nz) {
+        const float tt = t - start_t;
+        if (t > 1.0f) {   // stick reversals between beyond +0.3 and beyond -0.3
+            if (std::abs(u.pitch) > 0.3f) { const float sg = u.pitch > 0 ? 1.0f : -1.0f; if (last_q * sg < 0) ++m.chatter; last_q = sg; }
+            if (std::abs(u.roll) > 0.3f) { const float sg = u.roll > 0 ? 1.0f : -1.0f; if (last_r * sg < 0) ++m.chatter; last_r = sg; }
+        }
+        if (std::abs(roll_rate) > 15) { const int sg = roll_rate > 0 ? 1 : -1; if (last_sign && sg != last_sign) ++m.reversals; last_sign = sg; }
+        if (std::abs(bank) > 100) m.inverted += dt;
+        m.peak_nz = std::max(m.peak_nz, nz);
+        sat_q += (std::abs(u.pitch) > 0.95f) * dt; sat_r += (std::abs(u.roll) > 0.95f) * dt; effort += std::abs(u.roll) * dt; total += dt;
+        if (m.to5 < 0 && angle < 5) m.to5 = tt;
+        if (m.to2 < 0 && angle < 2) m.to2 = tt;
+        if (m.to2 >= 0) { min_angle = std::min(min_angle, angle); m.overshoot = std::max(m.overshoot, angle - min_angle); }
+        held = angle < 1.0f ? held + dt : 0;
+        if (m.settle < 0 && held >= 0.5f) m.settle = tt - 0.5f;
+        held_level = (angle < 1.0f && std::abs(bank) < 5.0f) ? held_level + dt : 0;
+        if (m.level < 0 && held_level >= 0.5f) m.level = tt - 0.5f;
+        if (t >= track_from) {
+            sum_angle += angle * dt; sum_angle2 += angle * angle * dt; sum_bank2 += bank * bank * dt; track_time += dt;
+            in2 += angle < 2 ? dt : 0; in5 += angle < 5 ? dt : 0;
+        }
+    }
+    void finish(float speed_loss, float alt_change) {
+        m.speed_loss = speed_loss; m.alt_change = alt_change;
+        m.pitch_sat = float(sat_q / total); m.roll_sat = float(sat_r / total); m.roll_effort = float(effort / total);
+        if (track_time > 0) {
+            m.mean_angle = float(sum_angle / track_time); m.rms_angle = float(std::sqrt(sum_angle2 / track_time));
+            m.bank_rms = float(std::sqrt(sum_bank2 / track_time));
+            m.within2 = float(in2 / track_time); m.within5 = float(in5 / track_time);
+        }
+        // One number per scenario, lower is better. Rough weights: responsiveness first, then
+        // clear overshoot, roll reversals and stick chatter; tracking error for the rest.
+        const bool started_inverted = std::abs(sc.start_roll) > 100;
+        const float span = sc.kind == Chain ? sc.seconds - sc.switch_at : sc.seconds;
+        if (sc.kind == Capture || sc.kind == Chain)
+            m.cost = (m.to2 < 0 ? span : m.to2) + 0.5f * (m.settle < 0 ? span : m.settle) + 2 * std::max(0.0f, m.overshoot - 1.5f) +
+                     0.5f * std::max(0, m.reversals - 1) + 0.2f * m.chatter + (started_inverted ? 0 : 0.5f * m.inverted);
+        else if (sc.kind == Hold)
+            m.cost = m.rms_angle + 0.05f * m.bank_rms + 0.3f * m.reversals + 0.1f * m.chatter;
+        else if (sc.kind == Pursuit)
+            m.cost = 0.5f * m.mean_angle + 3 * (1 - m.within5) + 0.2f * m.reversals + 0.05f * m.chatter;
+        else   // a gun attack: time on the lead point counts most
+            m.cost = 0.5f * m.mean_angle + 2 * (1 - m.within5) + 2 * (1 - m.within2) + 0.2f * m.reversals + 0.05f * m.chatter;
+    }
+};
 
 // Measurement conditions: the aircraft model plus how the host senses body rates.
 // In game, rates come from the pose change between frames divided by the frame time.
@@ -278,8 +417,11 @@ const Condition conditions[] = {
 Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_frames) {
     const Plant& plant = *cond.plant;
     const float dt = 1.0f / 80;   // logged median frame 12.5-13.3 ms
-    const float speed0 = 220;
-    Aircraft me; me.start(0, 0, sc.start_roll, speed0, {0, 0, 3000});
+    const Track* tr = sc.track.get();
+    const float speed0 = tr ? tr->speed : 220;
+    Aircraft me;
+    if (tr) me.start(tr->pitch, tr->yaw, tr->roll, speed0, tr->start);
+    else me.start(0, 0, sc.start_roll, speed0, {0, 0, 3000});
     Enemy enemy;
     if (sc.kind == Pursuit) {
         const Frame3 h = basis(0, 0, 0);
@@ -290,25 +432,21 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
     std::mt19937 rng(1234);
     std::normal_distribution<float> unit_noise(0.0f, 1.0f);
     float fq = 0, fp = 0, fr = 0;
-    Run run; Metrics& m = run.m;
-    float start_t = 0, min_angle = 180, held = 0, held_level = 0, last_q = 0, last_r = 0;
-    int last_sign = 0;
-    double sum_angle = 0, sum_angle2 = 0, sum_bank2 = 0, track_time = 0, in2 = 0, in5 = 0;
-    double sat_q = 0, sat_r = 0, effort = 0, total = 0;
-    const float track_from = sc.kind == Pursuit ? 3.0f : sc.kind == Hold ? 1.0f : 1e9f;
+    Run run;
+    Scorer score(sc, run.m);
     V3 target = sc.first;
     const int steps = int(sc.seconds / dt);
     const float alt0 = me.pos.z;
-    const bool started_inverted = std::abs(sc.start_roll) > 100;
     for (int k = 0; k < steps; ++k) {
         const float t = k * dt;
-        if (sc.kind == Chain && k == int(sc.switch_at / dt)) {
-            target = sc.next; start_t = t;
-            m.to5 = m.to2 = m.settle = m.level = -1; m.overshoot = 0; m.reversals = 0;
-            min_angle = 180; held = held_level = 0; last_sign = 0;
-        }
+        if (sc.kind == Chain && k == int(sc.switch_at / dt)) { target = sc.next; score.restart(t); }
         if (sc.kind == Hold) target = unit(sc.aim(t));
         if (sc.kind == Pursuit) { enemy.step(sc.program, t, dt); target = unit(enemy.pos - me.pos); }
+        if (tr) {
+            const Pose e = tr->enemy_at(t);
+            enemy.pos = e.pos; enemy.b = basis(e.pitch, e.yaw, e.roll);
+            target = sc.mouse_aim ? tr->mouse(t) : tr->lead(t, me.pos);
+        }
         float pitch, yaw, roll; euler(me.b, pitch, yaw, roll);
         // the host's view of this frame: measured frame time, rates from the pose change
         const float seen_dt = dt * std::clamp(1 + cond.jitter * unit_noise(rng), 0.5f, 1.6f);
@@ -326,54 +464,50 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         me.step(plant, u, s.throttle, s.brake, dt);
 
         const float angle = std::acos(std::clamp(dot(me.b.f, target), -1.0f, 1.0f)) / rad;
-        const float bank = bank_of(me.b), tt = t - start_t;
-        if (t > 1.0f) {   // stick reversals between beyond +0.3 and beyond -0.3
-            if (std::abs(u.pitch) > 0.3f) { const float sg = u.pitch > 0 ? 1.0f : -1.0f; if (last_q * sg < 0) ++m.chatter; last_q = sg; }
-            if (std::abs(u.roll) > 0.3f) { const float sg = u.roll > 0 ? 1.0f : -1.0f; if (last_r * sg < 0) ++m.chatter; last_r = sg; }
-        }
-        if (std::abs(me.p) > 15) { const int sg = me.p > 0 ? 1 : -1; if (last_sign && sg != last_sign) ++m.reversals; last_sign = sg; }
-        if (std::abs(bank) > 100) m.inverted += dt;
-        m.peak_nz = std::max(m.peak_nz, me.nz);
-        sat_q += std::abs(u.pitch) > 0.95f; sat_r += std::abs(u.roll) > 0.95f; effort += std::abs(u.roll); total += 1;
-        if (m.to5 < 0 && angle < 5) m.to5 = tt;
-        if (m.to2 < 0 && angle < 2) m.to2 = tt;
-        if (m.to2 >= 0) { min_angle = std::min(min_angle, angle); m.overshoot = std::max(m.overshoot, angle - min_angle); }
-        held = angle < 1.0f ? held + dt : 0;
-        if (m.settle < 0 && held >= 0.5f) m.settle = tt - 0.5f;
-        held_level = (angle < 1.0f && std::abs(bank) < 5.0f) ? held_level + dt : 0;
-        if (m.level < 0 && held_level >= 0.5f) m.level = tt - 0.5f;
-        if (t >= track_from) {
-            sum_angle += angle * dt; sum_angle2 += angle * angle * dt; sum_bank2 += bank * bank * dt; track_time += dt;
-            in2 += angle < 2 ? dt : 0; in5 += angle < 5 ? dt : 0;
-        }
+        score.add(t, dt, angle, bank_of(me.b), me.p, u, me.nz);
+        const bool has_enemy = sc.kind == Pursuit || tr;
         if (keep_frames && k % 4 == 0) {
             float ep = 0, ey = 0, er = 0;
-            if (sc.kind == Pursuit) euler(enemy.b, ep, ey, er);
+            if (has_enemy) euler(enemy.b, ep, ey, er);
             Sample f{{t, me.pos.x, me.pos.y, me.pos.z, pitch, yaw, roll, target.x, target.y, target.z, angle,
                       me.q, me.p, me.r, u.pitch, u.roll, u.yaw, len(me.vel), me.nz,
                       std::atan2(-dot(me.vel, me.b.u), dot(me.vel, me.b.f)) / rad,
-                      enemy.pos.x, enemy.pos.y, enemy.pos.z, ep, ey, er}, sc.kind == Pursuit ? 26 : 20};
+                      enemy.pos.x, enemy.pos.y, enemy.pos.z, ep, ey, er}, has_enemy ? 26 : 20};
             run.frames.push_back(f);
         }
     }
-    m.speed_loss = speed0 - len(me.vel);
-    m.alt_change = me.pos.z - alt0;
-    m.pitch_sat = float(sat_q / total); m.roll_sat = float(sat_r / total); m.roll_effort = float(effort / total);
-    if (track_time > 0) {
-        m.mean_angle = float(sum_angle / track_time); m.rms_angle = float(std::sqrt(sum_angle2 / track_time));
-        m.bank_rms = float(std::sqrt(sum_bank2 / track_time));
-        m.within2 = float(in2 / track_time); m.within5 = float(in5 / track_time);
+    score.finish(speed0 - len(me.vel), me.pos.z - alt0);
+    return run;
+}
+
+// The player's own flight in a recorded attack, scored the same way (aim: the lead
+// point seen from where the player actually was).
+Run recorded_run(const Scenario& sc) {
+    const Track& tr = *sc.track;
+    Run run;
+    Scorer score(sc, run.m);
+    float next = 0, last_t = 0;
+    for (const auto& o : tr.own) {
+        const float t = o[0];
+        if (t > sc.seconds) break;
+        const V3 pos{o[1], o[2], o[3]};
+        const Frame3 b = basis(o[4], o[5], o[6]);
+        const V3 target = sc.mouse_aim ? direction(o[7], o[8]) : tr.lead(t, pos);
+        const float angle = std::acos(std::clamp(dot(b.f, target), -1.0f, 1.0f)) / rad;
+        const Stick u{o[13], o[14], o[15]};
+        score.add(t, std::max(t - last_t, 0.0f), angle, bank_of(b), o[12], u, 0);
+        last_t = t;
+        if (t >= next) {
+            next += 0.05f;
+            const Pose e = tr.enemy_at(t);
+            Sample f{{t, pos.x, pos.y, pos.z, o[4], o[5], o[6], target.x, target.y, target.z, angle,
+                      o[10], o[12], o[11], u.pitch, u.roll, u.yaw, o[9], 0, 0,
+                      e.pos.x, e.pos.y, e.pos.z, e.pitch, e.yaw, e.roll}, 26};
+            run.frames.push_back(f);
+        }
     }
-    // One number per scenario, lower is better. Rough weights: responsiveness first, then
-    // clear overshoot, roll reversals and stick chatter; tracking error for holds/pursuits.
-    const float span = sc.kind == Chain ? sc.seconds - sc.switch_at : sc.seconds;
-    if (sc.kind == Capture || sc.kind == Chain)
-        m.cost = (m.to2 < 0 ? span : m.to2) + 0.5f * (m.settle < 0 ? span : m.settle) + 2 * std::max(0.0f, m.overshoot - 1.5f) +
-                 0.5f * std::max(0, m.reversals - 1) + 0.2f * m.chatter + (started_inverted ? 0 : 0.5f * m.inverted);
-    else if (sc.kind == Hold)
-        m.cost = m.rms_angle + 0.05f * m.bank_rms + 0.3f * m.reversals + 0.1f * m.chatter;
-    else
-        m.cost = 0.5f * m.mean_angle + 3 * (1 - m.within5) + 0.2f * m.reversals + 0.05f * m.chatter;
+    const auto& first = tr.own.front(); const auto& last = tr.own.back();
+    score.finish(first[9] - last[9], last[3] - first[3]);
     return run;
 }
 
@@ -428,7 +562,9 @@ int main(int argc, char** argv) {
     entries.push_back({"upstream_coord", "主仓库 0.2.35 协调制导", "FletcherMiya 052cd6a controller_mode=1", [] { return std::make_unique<UpstreamCoordinated>(); }});
     entries.push_back({"pw5", "xsd467 pw5", "xsd467 821f442 pw5-flight-control", [] { return std::make_unique<Pw5>(); }});
 
-    const auto list = scenarios();
+    const auto list = scenarios(out_dir + "/tracks");
+    if (std::any_of(list.begin(), list.end(), [](const Scenario& s) { return s.track != nullptr; }))
+        entries.push_back({"recorded", "游戏实录（当时的飞控）", "recordings: what the mod in game actually flew", nullptr});
     std::string index = "window.COMPARE_INDEX={\"controllers\":[";
     for (size_t i = 0; i < entries.size(); ++i)
         index += std::string(i ? "," : "") + "{\"id\":\"" + entries[i].id + "\",\"label\":\"" + esc(entries[i].label) + "\",\"source\":\"" + esc(entries[i].source) + "\"}";
@@ -452,19 +588,26 @@ int main(int argc, char** argv) {
         for (const auto& e : entries) { std::snprintf(line, sizeof(line), " %15s", e.id.c_str()); card += line; }
         card += "\n";
         std::map<std::string, std::vector<float>> group_cost;
+        bool first_scenario = true;
         for (size_t si = 0; si < list.size(); ++si) {
             const Scenario& sc = list[si];
             if (!only.empty() && sc.id.find(only) == std::string::npos) continue;
-            data += std::string(si ? "," : "") + "\"" + sc.id + "\":{";
-            index += std::string(si ? "," : "") + "\"" + sc.id + "\":{";
+            data += std::string(first_scenario ? "" : ",") + "\"" + sc.id + "\":{";
+            index += std::string(first_scenario ? "" : ",") + "\"" + sc.id + "\":{";
+            first_scenario = false;
             std::snprintf(line, sizeof(line), "%-26s", sc.id.c_str()); card += line;
+            bool first_entry = true;
             for (size_t ci = 0; ci < entries.size(); ++ci) {
-                auto ctl = entries[ci].make();
-                const Run run = fly(plant, sc, *ctl, true);
+                if (!entries[ci].make && !sc.track) { card += "                "; continue; }
+                Run run;
+                if (entries[ci].make) { auto ctl = entries[ci].make(); run = fly(plant, sc, *ctl, true); }
+                else run = recorded_run(sc);
+                const char* sep = first_entry ? "" : ",";
+                first_entry = false;
                 group_cost[std::string(kind_name(sc.kind)) + "#" + entries[ci].id].push_back(run.m.cost);
                 std::snprintf(line, sizeof(line), " %15.2f", run.m.cost); card += line;
-                index += std::string(ci ? "," : "") + "\"" + entries[ci].id + "\":"; json_metrics(index, run.m);
-                data += std::string(ci ? "," : "") + "\"" + entries[ci].id + "\":[";
+                index += std::string(sep) + "\"" + entries[ci].id + "\":"; json_metrics(index, run.m);
+                data += std::string(sep) + "\"" + entries[ci].id + "\":[";
                 for (size_t k = 0; k < run.frames.size(); ++k) {
                     const Sample& f = run.frames[k];
                     data += k ? ",[" : "[";
@@ -486,18 +629,22 @@ int main(int argc, char** argv) {
         index += "}";
         std::ofstream(out_dir + "/results/data_" + plant.id + ".js", std::ios::binary) << data;
         std::snprintf(line, sizeof(line), "%-26s", "-- total by kind --"); card += line; card += "\n";
-        for (const char* kind : {"capture", "chain", "hold", "pursuit"}) {
+        for (Kind kd : kinds) {
+            const char* kind = kind_name(kd);
             std::snprintf(line, sizeof(line), "%-26s", kind); card += line;
             for (const auto& e : entries) {
-                float sum = 0; for (float c : group_cost[std::string(kind) + "#" + e.id]) sum += c;
-                std::snprintf(line, sizeof(line), " %15.2f", sum); card += line;
+                const auto& costs = group_cost[std::string(kind) + "#" + e.id];
+                float sum = 0; for (float c : costs) sum += c;
+                if (costs.empty()) card += "                ";
+                else { std::snprintf(line, sizeof(line), " %15.2f", sum); card += line; }
             }
             card += "\n";
         }
-        std::snprintf(line, sizeof(line), "%-26s", "ALL"); card += line;
+        std::snprintf(line, sizeof(line), "%-26s", "ALL (simulated)"); card += line;
         for (const auto& e : entries) {
+            if (!e.make) { card += "                "; continue; }
             float sum = 0;
-            for (const char* kind : {"capture", "chain", "hold", "pursuit"}) for (float c : group_cost[std::string(kind) + "#" + e.id]) sum += c;
+            for (Kind kd : kinds) for (float c : group_cost[std::string(kind_name(kd)) + "#" + e.id]) sum += c;
             std::snprintf(line, sizeof(line), " %15.2f", sum); card += line;
         }
         card += "\n";

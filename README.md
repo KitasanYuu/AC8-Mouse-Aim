@@ -255,7 +255,8 @@ dev\Dev-Deploy.cmd -GamePath "D:\SteamLibrary\steamapps\common\ACE COMBAT 8"
 `dev\compare\compare.cmd` 让几种飞控在同一个整机模型上飞同一组机动，并打开 `dev/compare/index.html` 对比：每个飞控一个追尾视角（同一时刻的整机姿态）、航迹叠加、逐项指标和同轴曲线，另有全部场景的评分总览。
 
 - 机体模型来自录像：姿态响应（延迟、游戏输入平滑、响应曲线、权限、滚转上限、高G、方向舵）和航迹（速度方向滞后机头、重力、速度变化）。拟合脚本 `dev/compare/fit_airframe.py`。
-- 场景：固定方向捕获、中途换目标、精确保持（平飞、鼠标微调、拖动）、追击脚本敌机；工况：实测机体、墙钟计时（角速度噪声大）、迟钝机体。
+- 场景：固定方向捕获、中途换目标、精确保持（平飞、鼠标微调、拖动）、追击脚本敌机、实录追击；工况：实测机体、墙钟计时（角速度噪声大）、迟钝机体。
+- 实录追击：`dev/compare/extract_tracks.py` 从录像中截取机炮追敌片段（真实敌机轨迹 + 当时的起始状态 + 游戏里实际飞出的结果），存到 `dev/compare/tracks/`。每段跑两遍：瞄准机炮提前量，以及按录像原样移动鼠标；“游戏实录”一列按同样方法打分，可直接与模拟对照。`--at <录像名>:<秒>` 可指定要收入的片段。
 - 参评飞控：本仓库工作区（`src/` + Payload 的 `[tuning]`）、主仓库 0.2.30 与 0.2.35、xsd467 pw5。其他仓库的源码按提交原样放在 `dev/compare/controllers/<名称>/`（只改命名空间），适配器见同目录的 `.h`；新增飞控时照此添加并在 `harness.cpp` 注册。
 - 试参数：`dev\compare\compare.cmd "variant=kd 0.1:pitch_kd=0.1;level_per_deg=10"`，会作为额外一列与当前配置并排。
 - `dev/compare/scorecard.txt` 随仓库提交，改飞控后重跑，用 git diff 看各场景分数的变化。

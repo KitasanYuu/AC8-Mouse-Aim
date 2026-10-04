@@ -151,10 +151,13 @@ if (!IDX) {
 // Frame layout written by harness.cpp (every 4th 80 Hz step).
 const F = { t: 0, x: 1, y: 2, z: 3, pitch: 4, yaw: 5, roll: 6, ax: 7, ay: 8, az: 9, angle: 10, q: 11, p: 12, r: 13,
             sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25 };
-const PALETTE = { ours: '#4fb3d9', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a' };
+const PALETTE = { ours: '#4fb3d9', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a', recorded: '#e8e8e8' };
 const EXTRA = ['#f5d04c', '#ff7aa8', '#8fd0c4', '#b0b8ff'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
-const KIND = { capture: '捕获（鼠标移到一个方向后不动）', chain: '连续机动（中途换目标）', hold: '精确保持（小幅鼠标操作）', pursuit: '追击脚本敌机（鼠标压在敌机上）' };
+const KIND = { capture: '捕获（鼠标移到一个方向后不动）', chain: '连续机动（中途换目标）', hold: '精确保持（小幅鼠标操作）', pursuit: '追击脚本敌机（鼠标压在敌机上）',
+               track: '实录追击（录像里的真实敌机，鼠标压在机炮提前量上；白色为游戏里当时实际飞出的结果）' };
+const KINDS = ['capture', 'chain', 'hold', 'pursuit', 'track'];
+const withEnemy = kind => kind === 'pursuit' || kind === 'track';
 
 // ---------- vectors (Unreal X north, Y east, Z up -> drawn as east/north/up) ----------
 const rad = Math.PI / 180;
@@ -182,7 +185,8 @@ try { const saved = JSON.parse(localStorage.getItem('ac8-compare') || '{}');
   if (saved.tab === 'overview') st.tab = 'overview';
   (saved.hidden || []).forEach(id => st.hidden.add(id)); } catch (e) { /* storage unavailable */ }
 function save() { try { localStorage.setItem('ac8-compare', JSON.stringify({ cond: st.cond, scen: st.scen, tab: st.tab, hidden: [...st.hidden] })); } catch (e) { /* ignore */ } }
-const visible = () => IDX.controllers.filter(c => !st.hidden.has(c.id));
+const visible = () => IDX.controllers.filter(c => !st.hidden.has(c.id) && (IDX.metrics[st.cond][st.scen] || {})[c.id]);
+const visibleAll = () => IDX.controllers.filter(c => !st.hidden.has(c.id));
 const scenario = () => IDX.scenarios.find(s => s.id === st.scen);
 const runs = () => (window.COMPARE_DATA && window.COMPARE_DATA[st.cond] || {})[st.scen];
 function frameAt(arr, t) {
@@ -318,7 +322,7 @@ function drawCams() {
     }
     const color = colorOf(c.id);
     // enemy: path and model
-    if (sc.kind === 'pursuit' && fr.length > F.er) {
+    if (withEnemy(sc.kind) && fr.length > F.er) {
       ctx.strokeStyle = '#e5534b'; ctx.globalAlpha = .7; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
       for (let k = Math.max(0, i - 60); k <= i; k++) { const q = P(enemyPos(arr[k])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
       ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
@@ -360,7 +364,8 @@ function computeExtent() {
     const arr = data[c.id]; if (!arr) continue;
     for (const fr of arr) { const p = posOf(fr); for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } }
   }
-  extent = { centre: mul(add(lo, hi), .5), size: Math.max(400, Math.hypot(...sub(hi, lo))) };
+  const first = Object.values(data)[0];
+  extent = { centre: mul(add(lo, hi), .5), size: Math.max(400, Math.hypot(...sub(hi, lo))), z0: first ? first[0][F.z] : 3000 };
 }
 function drawOverlay() {
   const { ctx, w, h } = setup(document.getElementById('overlay'));
@@ -371,7 +376,7 @@ function drawOverlay() {
   const P = camera(C, extent.centre, w, h, 50);
   ctx.fillStyle = '#10181c'; ctx.fillRect(0, 0, w, h);
   // reference plane at the start altitude, 1 km grid
-  const z0 = 3000, G = 1000, cx = Math.round(extent.centre[0] / G) * G, cy = Math.round(extent.centre[1] / G) * G, span = Math.ceil(extent.size / G) + 1;
+  const z0 = extent.z0, G = 1000, cx = Math.round(extent.centre[0] / G) * G, cy = Math.round(extent.centre[1] / G) * G, span = Math.ceil(extent.size / G) + 1;
   for (let k = -span; k <= span; k++) {
     lineIn(ctx, P, [cx + k * G, cy - span * G, z0], [cx + k * G, cy + span * G, z0], '#1d2830', 1, null, 1, 8);
     lineIn(ctx, P, [cx - span * G, cy + k * G, z0], [cx + span * G, cy + k * G, z0], '#1d2830', 1, null, 1, 8);
@@ -381,7 +386,7 @@ function drawOverlay() {
   for (const c of visible()) {
     const arr = data[c.id]; if (!arr) continue;
     const i = indexAt(arr, st.t), color = colorOf(c.id);
-    if (sc.kind === 'pursuit' && !enemyDone && arr[0].length > F.er) {
+    if (withEnemy(sc.kind) && !enemyDone && arr[0].length > F.er) {
       enemyDone = true;
       ctx.strokeStyle = '#e5534b'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]); ctx.beginPath(); let pen = false;
       for (const fr of arr) { const q = P(enemyPos(fr)); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
@@ -395,7 +400,7 @@ function drawOverlay() {
     ribbon(ctx, P, arr, 0, i, half, color, .18, 2);
     const fr = arr[i];
     drawJet(ctx, P, posOf(fr), basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), color, jet);
-    if (sc.kind !== 'pursuit') lineIn(ctx, P, posOf(fr), add(posOf(fr), mul(enu([fr[F.ax], fr[F.ay], fr[F.az]]), extent.size * .35)), color, 1, [5, 5], .7);
+    if (!withEnemy(sc.kind)) lineIn(ctx, P, posOf(fr), add(posOf(fr), mul(enu([fr[F.ax], fr[F.ay], fr[F.az]]), extent.size * .35)), color, 1, [5, 5], .7);
   }
 }
 
@@ -461,10 +466,10 @@ const METRICS = [
   ['settle', '稳定在 1° 内', 's', -1, 'capture chain'],
   ['level', '对准且机翼水平', 's', -1, 'capture chain'],
   ['overshoot', '过冲', '°', -1, 'capture chain'],
-  ['mean_angle', '平均偏差', '°', -1, 'hold pursuit'],
-  ['within2', '2° 内时间占比', '%', 1, 'hold pursuit'],
-  ['within5', '5° 内时间占比', '%', 1, 'hold pursuit'],
-  ['bank_rms', '坡度均方根', '°', -1, 'hold pursuit'],
+  ['mean_angle', '平均偏差', '°', -1, 'hold pursuit track'],
+  ['within2', '2° 内时间占比', '%', 1, 'hold pursuit track'],
+  ['within5', '5° 内时间占比', '%', 1, 'hold pursuit track'],
+  ['bank_rms', '坡度均方根', '°', -1, 'hold pursuit track'],
   ['reversals', '滚转反向次数', '', -1, 'all'],
   ['chatter', '杆量来回打', '次', -1, 'all'],
   ['inverted', '倒飞时间', 's', -1, 'all'],
@@ -497,30 +502,34 @@ function drawCard() {
 
 // ---------- overview ----------
 function drawOverview() {
-  const list = visible(), M = IDX.metrics[st.cond];
+  const list = visibleAll(), M = IDX.metrics[st.cond];
   let html = `<table><thead><tr><th>场景（${IDX.plants.find(p => p.id === st.cond).title}）</th>${list.map(c => `<th style="color:${colorOf(c.id)}">${c.label}</th>`).join('')}</tr></thead><tbody>`;
   const totals = {}, all = {};
   list.forEach(c => { all[c.id] = 0; });
-  for (const kind of ['capture', 'chain', 'hold', 'pursuit']) {
+  for (const kind of KINDS) {
+    if (!IDX.scenarios.some(s => s.kind === kind)) continue;
     html += `<tr class="group"><td colspan="${list.length + 1}">${KIND[kind]}</td></tr>`;
-    list.forEach(c => { totals[c.id] = 0; });
+    list.forEach(c => { totals[c.id] = null; });
     for (const sc of IDX.scenarios.filter(s => s.kind === kind)) {
       if (!M[sc.id]) continue;
-      const costs = list.map(c => M[sc.id][c.id].cost), best = Math.min(...costs);
-      list.forEach((c, k) => { totals[c.id] += costs[k]; all[c.id] += costs[k]; });
+      const costs = list.map(c => M[sc.id][c.id] ? M[sc.id][c.id].cost : null), best = Math.min(...costs.filter(v => v !== null));
+      list.forEach((c, k) => { if (costs[k] === null) return; totals[c.id] = (totals[c.id] || 0) + costs[k]; if (c.id !== 'recorded') all[c.id] += costs[k]; });
       html += `<tr data-scen="${sc.id}"><td>${sc.title}</td>${costs.map(v => {
+        if (v === null) return '<td class="na">—</td>';
         const r = Math.min(1, (v / Math.max(best, .05) - 1) / 1.5);   // 0 best .. 1 at 2.5x best
         const bg = `rgba(${Math.round(60 + 180 * r)}, ${Math.round(160 - 90 * r)}, ${Math.round(110 - 60 * r)}, ${.12 + .25 * r})`;
         return `<td style="background:${bg}" class="${v === best ? 'best' : ''}">${v.toFixed(2)}</td>`; }).join('')}</tr>`;
     }
-    const tb = Math.min(...list.map(c => totals[c.id]));
-    html += `<tr class="total"><td>小计</td>${list.map(c => `<td class="${totals[c.id] === tb ? 'best' : ''}">${totals[c.id].toFixed(1)}</td>`).join('')}</tr>`;
+    const tb = Math.min(...list.map(c => totals[c.id]).filter(v => v !== null));
+    html += `<tr class="total"><td>小计</td>${list.map(c => totals[c.id] === null ? '<td class="na">—</td>' : `<td class="${totals[c.id] === tb ? 'best' : ''}">${totals[c.id].toFixed(1)}</td>`).join('')}</tr>`;
   }
-  const ab = Math.min(...list.map(c => all[c.id]));
-  html += `<tr class="total"><td>合计</td>${list.map(c => `<td class="${all[c.id] === ab ? 'best' : ''}">${all[c.id].toFixed(1)}</td>`).join('')}</tr></tbody></table>`;
+  const ab = Math.min(...list.filter(c => c.id !== 'recorded').map(c => all[c.id]));
+  html += `<tr class="total"><td>合计（模拟）</td>${list.map(c => c.id === 'recorded' ? '<td class="na">—</td>' : `<td class="${all[c.id] === ab ? 'best' : ''}">${all[c.id].toFixed(1)}</td>`).join('')}</tr></tbody></table>`;
   html += `<div class="explain"><p><b>综合代价</b>越低越好，每个场景一个数，权重是粗略的，具体差在哪里要看单场景页的指标。
     捕获和连续机动：到 2° 的时间 + 0.5 × 稳定在 1° 内的时间 + 超过 1.5° 的过冲 ×2 + 多余的滚转反向 ×0.5 + 杆量来回打 ×0.2 + 倒飞时间 ×0.5（倒飞起始的场景不计倒飞）；没达到按场景时长计。
-    精确保持：偏差均方根 + 坡度均方根 ×0.05 + 滚转反向 ×0.3 + 杆量来回打 ×0.1。追击：开始 3 s 后的平均偏差 ×0.5 + 不在 5° 内的时间占比 ×3 + 滚转反向 ×0.2 + 杆量来回打 ×0.05。</p>
+    精确保持：偏差均方根 + 坡度均方根 ×0.05 + 滚转反向 ×0.3 + 杆量来回打 ×0.1。追击：开始 3 s 后的平均偏差 ×0.5 + 不在 5° 内的时间占比 ×3 + 滚转反向 ×0.2 + 杆量来回打 ×0.05。
+    实录追击：1 s 后对机炮提前量的平均偏差 ×0.5 + 不在 5° 内的占比 ×2 + 不在 2° 内的占比 ×2 + 滚转反向 ×0.2 + 杆量来回打 ×0.05；
+    “游戏实录”一列是当时游戏里实际飞出的结果，按同样方法打分，可用来核对模拟是否可信（模拟从同一状态出发但不带当时的角速度）。</p>
     <p><b>模型</b>：姿态响应（延迟、游戏的输入平滑、响应曲线、拉杆/推杆权限、滚转加速度和上限、高G拉杆、方向舵约 5.4°/s）和航迹（速度方向滞后机头 0.2 s、重力、中立油门下速度回到约 190 m/s）都来自 2026-10-04 用游戏时钟录下的两段同关卡飞行。
     “墙钟计时”工况模拟宿主用墙上时钟测帧时间（主仓库和 xsd467 的宿主现在仍是这样），角速度带约 20% 的乘性噪声；“迟钝机体”检验对模型误差的鲁棒性。</p>
     <p><b>控制器</b>：${IDX.controllers.map(c => `<span style="color:${colorOf(c.id)}">${c.label}</span>（${c.source}）`).join('；')}。点击任一行打开该场景。</p></div>`;
@@ -553,7 +562,7 @@ function buildChips() {
     b.title = c.source; b.setAttribute('aria-pressed', String(!st.hidden.has(c.id)));
     b.innerHTML = `<i style="background:${colorOf(c.id)}"></i>${c.label}`;
     b.addEventListener('click', () => {
-      if (st.hidden.has(c.id)) st.hidden.delete(c.id); else if (visible().length > 1) st.hidden.add(c.id);
+      if (st.hidden.has(c.id)) st.hidden.delete(c.id); else if (visibleAll().length > 1) st.hidden.add(c.id);
       save(); buildChips(); buildCams(); drawAll(); if (st.tab === 'overview') drawOverview();
     });
     box.appendChild(b);
@@ -563,11 +572,11 @@ function fillSelects() {
   const cond = document.getElementById('cond');
   cond.innerHTML = IDX.plants.map(p => `<option value="${p.id}">${p.title}</option>`).join(''); cond.value = st.cond;
   const sel = document.getElementById('scenario');
-  sel.innerHTML = ['capture', 'chain', 'hold', 'pursuit'].map(k => `<optgroup label="${KIND[k]}">${IDX.scenarios.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.title}</option>`).join('')}</optgroup>`).join('');
+  sel.innerHTML = KINDS.filter(k => IDX.scenarios.some(s => s.kind === k)).map(k => `<optgroup label="${KIND[k]}">${IDX.scenarios.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.title}</option>`).join('')}</optgroup>`).join('');
   sel.value = st.scen;
 }
 function selectScenario() {
-  save(); st.t = 0; computeExtent();
+  save(); st.t = 0; computeExtent(); buildCams();
   const sc = scenario(); document.getElementById('note').textContent = sc.note || '';
   drawAll();
 }

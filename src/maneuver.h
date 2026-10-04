@@ -91,8 +91,11 @@ struct ManeuverTuning {
     // Roll toward where a moving target will be this far ahead (s).
     float pursuit_ahead=0.0f;
     // A target moving faster than pursuit_speed deg/s (fully at twice it) is chased: the
-    // pull may slice (chase_slice = 1) and is not traded for a push.
-    float pursuit_speed=4.0f, chase_slice=0.0f;
+    // pull may slice (chase_slice = 1) and is not traded for a push. A chased target has
+    // no arrival to level the wings for: chase_level = 1 lifts the level_per_deg limit for
+    // it (logged gun attacks: held off the lift by that limit, the pull dragged the nose
+    // past the enemy, which slid to the side of the canopy and stayed there).
+    float pursuit_speed=4.0f, chase_slice=0.0f, chase_level=0.0f;
     float push_enter=120.0f, push_exit=135.0f;     // largest errors always roll and pull
     // A push is used only for targets close to straight below the floor: at most this
     // much roll to bring the floor onto the target (enter / give up).
@@ -245,7 +248,10 @@ struct Maneuver {
             // target's offset, so a sideways offset is closed by bank and pull rather than
             // by the weak rudder alone (logged: 5 deg sideways took 2-3 s with the wings
             // nearly level).
-            if(t.level_per_deg>0) limit=std::min(limit,t.level_per_deg*std::max(0.0f,g.angle-t.level_inside)/std::max(horizon,1e-3f));
+            if(t.level_per_deg>0) {
+                const float level=t.level_per_deg*std::max(0.0f,g.angle-t.level_inside)/std::max(horizon,1e-3f);
+                limit=std::min(limit,level+std::max(0.0f,180.0f-level)*chasing*t.chase_level);
+            }
             const float to_go=g.angle/std::max(closing,1.0f);
             if(t.rollout_rate>0) limit=std::min(limit,t.rollout_rate*std::max(0.0f,to_go-t.rollout_lag)/std::max(horizon,1e-3f));
             if(std::abs(bank)>limit) {
