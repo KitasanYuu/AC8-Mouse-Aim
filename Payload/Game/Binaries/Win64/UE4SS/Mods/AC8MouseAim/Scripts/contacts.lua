@@ -60,7 +60,24 @@ local function flying(obj)
     return ok2 and math.abs(x)+math.abs(y)+math.abs(z)>1
 end
 
-local function scan(pawn)
+-- Where each candidate of an unrecognized class was at the last scan: parts attached to a
+-- big aircraft (a boss's engines, say) may report no speed of their own but move with it.
+local last_seen={}
+local function moving_fast(obj,id,game_time)
+    local speed=0
+    pcall(function() speed=tonumber(obj:GetSpeedMps()) or 0 end)
+    local ok,x,y,z=pcall(location,obj)
+    if not ok then return speed>60 end
+    local prev=last_seen[id]
+    last_seen[id]={x,y,z,game_time}
+    if prev and game_time>prev[4] then
+        local d=math.sqrt((x-prev[1])^2+(y-prev[2])^2+(z-prev[3])^2)
+        speed=math.max(speed,d/(game_time-prev[4]))
+    end
+    return speed>60
+end
+
+local function scan(pawn,game_time)
     local me=pawn:GetAddress()
     local px,py,pz=location(pawn)
     local found={}
@@ -77,10 +94,8 @@ local function scan(pawn)
                 local air=aircraft_class(cls)
                 if not air and not surface_class(cls) then
                     -- A target of another kind moving at aircraft speed (a boss with its own
-                    -- class name, say): recorded as an aircraft.
-                    local speed=0
-                    pcall(function() speed=tonumber(obj:GetSpeedMps()) or 0 end)
-                    air=speed>60 and is_enemy(obj,cls)
+                    -- class name, or a lockable part of one): recorded as an aircraft.
+                    air=is_enemy(obj,cls) and moving_fast(obj,id,game_time)
                 end
                 if air and flying(obj) then
                     local x,y,z=location(obj)
@@ -116,7 +131,7 @@ function M.update(pawn,game_time)
     local new_scan=game_time>=next_scan
     if new_scan then
         next_scan=game_time+SCAN_SECONDS
-        local ok=pcall(scan,pawn)
+        local ok=pcall(scan,pawn,game_time)
         if not ok then tracked={} end
     end
     local id=0
@@ -167,5 +182,5 @@ function M.update(pawn,game_time)
     if not ok or sent~=1 then backoff_until=game_time+5 end
 end
 
-function M.reset() tracked={}; class_of={}; hostile_class={}; next_scan=0; next_sample=0; self_id=nil end
+function M.reset() tracked={}; class_of={}; hostile_class={}; last_seen={}; next_scan=0; next_sample=0; self_id=nil end
 return M

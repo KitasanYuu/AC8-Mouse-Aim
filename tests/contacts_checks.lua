@@ -28,6 +28,8 @@ object(4, 'BP_WOP1004_f15c_C', 300, 0, 3000)
 object(5, 'BP_Boss_Something_C', 4000, 0, 4000, {target = true, speed = 250})
 object(6, 'BP_GR0001_tank_C', 100, 0, 0, {target = true, speed = 15})
 object(7, 'BP_PlayerPlane_PP0004_f15c_C', 0, 0, 0, {hidden = true})
+-- a lockable part of a boss: no speed of its own, moves with the aircraft
+local part = object(8, 'BP_Boss_Part_Engine_C', 5000, 0, 5000, {target = true, speed = 0})
 FindAllOf = function() return objects end
 
 local packets = {}
@@ -47,10 +49,16 @@ assert(not first:find('PP0004'), 'pooled plane tracked')
 -- the Shadow comes before nearer ordinary enemies, enemies before the wingman
 local shadow, mr2k, wingman = first:find('Shadow'), first:find('mr2k'), first:find('WOP1004')
 assert(shadow < mr2k and mr2k < wingman, 'tracking order')
+assert(not first:find('Engine'), 'a still part taken for an aircraft')
+-- the part moves 400 m/s with its aircraft: picked up at the next scan (3 s on)
+part.x = part.x + 1200
+contacts.update(pawn, 4.1)
+assert(packets[2]:find('BP_Boss_Part_Engine_C'), 'moving part not tracked')
+packets = {packets[1]}
 -- shot down: hidden, then reported once as gone
 enemy.hidden = true
-contacts.update(pawn, 1.2)
+contacts.update(pawn, 4.3)
 assert(packets[2]:find('"gone":%[2%]'), 'gone not reported')
-contacts.update(pawn, 1.4)
+contacts.update(pawn, 4.5)
 assert(not packets[3]:find('"gone"'), 'gone reported twice')
 print('Lua contacts checks passed')
