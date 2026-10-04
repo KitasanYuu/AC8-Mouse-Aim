@@ -401,6 +401,12 @@ void send_telemetry(long long clock,float dt,const flight::LogicOutput& output,b
         actor_x/100,actor_y/100,actor_z/100,output.pitch,output.roll,output.yaw,
         raw_axis_pitch.load()*config.pitch_sign,raw_axis_roll.load()*config.roll_sign,raw_axis_yaw.load()*config.yaw_sign,
         input_throttle.load(),input_brake.load(),game_time,controlling?1:0,keyboard_axes.load(),manual?1:0,aircraft_serial);
+    // Mouse buttons and Space (1 left, 2 right, 4 middle, 8 X1, 16 X2, 32 Space): when
+    // the player fires, for scoring recorded attacks.
+    unsigned mouse_buttons=0;
+    const int button_keys[]={VK_LBUTTON,VK_RBUTTON,VK_MBUTTON,VK_XBUTTON1,VK_XBUTTON2,VK_SPACE};
+    for(int i=0;i<6;++i) if(GetAsyncKeyState(button_keys[i])&0x8000) mouse_buttons|=1u<<i;
+    if(n>0) n+=std::snprintf(packet+n,sizeof(packet)-n,"\"mb\":%u,",mouse_buttons);
     float pad[6]{}; unsigned buttons=0;
     if(n>0 && gamepad_read(pad,buttons))
         n+=std::snprintf(packet+n,sizeof(packet)-n,"\"pad\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u],",

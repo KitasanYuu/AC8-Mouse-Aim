@@ -150,14 +150,33 @@ if (!IDX) {
 }
 // Frame layout written by harness.cpp (every 4th 80 Hz step).
 const F = { t: 0, x: 1, y: 2, z: 3, pitch: 4, yaw: 5, roll: 6, ax: 7, ay: 8, az: 9, angle: 10, q: 11, p: 12, r: 13,
-            sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25 };
+            sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25,
+            tgt: 26, kills: 27 };   // battles: the enemy being attacked (-1 none) and enemies down so far
 const PALETTE = { ours: '#4fb3d9', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a', recorded: '#e8e8e8' };
 const EXTRA = ['#f5d04c', '#ff7aa8', '#8fd0c4', '#b0b8ff'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
 const KIND = { capture: '捕获（鼠标移到一个方向后不动）', chain: '连续机动（中途换目标）', hold: '精确保持（小幅鼠标操作）', pursuit: '追击脚本敌机（鼠标压在敌机上）',
-               track: '实录追击（录像里的真实敌机，鼠标压在机炮提前量上；白色为游戏里当时实际飞出的结果）' };
-const KINDS = ['capture', 'chain', 'hold', 'pursuit', 'track'];
-const withEnemy = kind => kind === 'pursuit' || kind === 'track';
+               track: '实录追击（录像里的真实敌机，鼠标压在机炮提前量上；白色为游戏里当时实际飞出的结果）',
+               battle: '连续战斗（录像里整段空战的全部敌机，虚拟飞行员选目标、导弹 + 机炮；粉色为精英机）' };
+const KINDS = ['capture', 'chain', 'hold', 'pursuit', 'track', 'battle'];
+const withEnemy = kind => kind === 'pursuit' || kind === 'track' || kind === 'battle';
+const ELITE = '#ff6bd6';
+// Battles: every enemy's path (2 Hz) and, per controller, when it brought each one down.
+const foesOf = () => (runs() || {})._foes || [];
+function foeAt(foe, t) {   // [class, elite, first, last, [[t, x, y, z], ...]] -> position and heading, or null
+  if (t < foe[2] || t > foe[3]) return null;
+  const pts = foe[4]; if (!pts.length) return null;
+  let k = 1; while (k < pts.length - 1 && pts[k][0] < t) k++;
+  const a = pts[Math.max(0, k - 1)], b = pts[Math.min(k, pts.length - 1)];
+  const u = b[0] > a[0] ? Math.max(0, Math.min(1, (t - a[0]) / (b[0] - a[0]))) : 0;
+  const p = [a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u];
+  const d = sub([b[1], b[2], b[3]], [a[1], a[2], a[3]]), h = Math.hypot(d[0], d[1]);
+  return { pos: enu(p), pitch: Math.atan2(d[2], h || 1) / rad, yaw: Math.atan2(d[1], d[0]) / rad };
+}
+function downBy(ctlId, t) {   // enemy indices this controller had brought down by time t
+  const k = ((runs() || {})._kills || {})[ctlId] || [];
+  return new Set(k.filter(e => e[0] <= t).map(e => e[1]));
+}
 
 // ---------- vectors (Unreal X north, Y east, Z up -> drawn as east/north/up) ----------
 const rad = Math.PI / 180;
@@ -321,8 +340,24 @@ function drawCams() {
       lineIn(ctx, P, [gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0], '#26323a', 1, null, .7);
     }
     const color = colorOf(c.id);
+    // battle: every enemy still in the air (for this controller), the one attacked marked
+    if (sc.kind === 'battle') {
+      const down = downBy(c.id, st.t), mono = getComputedStyle(document.body).getPropertyValue('--mono');
+      foesOf().forEach((foe, k) => {
+        const at = foeAt(foe, st.t); if (!at || down.has(k)) return;
+        const q = P(at.pos); if (!q) return;
+        const dist = Math.hypot(...sub(at.pos, A)), tint = foe[1] ? ELITE : '#e5534b', attacked = fr[F.tgt] === k;
+        if (dist < 3000) drawJet(ctx, P, at.pos, basis(at.pitch, at.yaw, 0), tint, Math.max(1, dist / 250));
+        ctx.strokeStyle = tint; ctx.lineWidth = attacked ? 2 : 1; ctx.beginPath();
+        ctx.arc(q[0], q[1], attacked ? 11 : 6, 0, 2 * Math.PI); ctx.stroke(); ctx.lineWidth = 1;
+        if (attacked || dist < 2500) {
+          ctx.fillStyle = tint; ctx.font = `11px ${mono}`;
+          ctx.fillText(`${attacked ? '目标 ' : ''}${foe[1] ? '精英 ' : ''}${(dist / 1000).toFixed(1)} km`, q[0] + 12, q[1] - 8);
+        }
+      });
+    }
     // enemy: path and model
-    if (withEnemy(sc.kind) && fr.length > F.er) {
+    else if (withEnemy(sc.kind) && fr.length > F.er) {
       ctx.strokeStyle = '#e5534b'; ctx.globalAlpha = .7; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
       for (let k = Math.max(0, i - 60); k <= i; k++) { const q = P(enemyPos(arr[k])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
       ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
@@ -346,7 +381,8 @@ function drawCams() {
     // readout
     const bank = fr[F.roll];
     cam.read.innerHTML = `<div><span>偏差</span>${fr[F.angle].toFixed(2)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
-      `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>`;
+      `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>` +
+      (sc.kind === 'battle' ? `<div><span>击落</span>${fr[F.kills]} / ${foesOf().length}</div>` : '');
     [fr[F.sp], fr[F.sr], fr[F.sy]].forEach((v, k) => {
       const m = cam.meters[k], x = Math.max(-1, Math.min(1, v));
       m.style.left = `${50 + Math.min(0, x) * 50}%`; m.style.width = `${Math.abs(x) * 50}%`; m.style.background = color;
@@ -364,7 +400,7 @@ function computeExtent() {
     const arr = data[c.id]; if (!arr) continue;
     for (const fr of arr) { const p = posOf(fr); for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } }
   }
-  const first = Object.values(data)[0];
+  const first = IDX.controllers.map(c => data[c.id]).find(Boolean);
   extent = { centre: mul(add(lo, hi), .5), size: Math.max(400, Math.hypot(...sub(hi, lo))), z0: first ? first[0][F.z] : 3000 };
 }
 function drawOverlay() {
@@ -386,7 +422,17 @@ function drawOverlay() {
   for (const c of visible()) {
     const arr = data[c.id]; if (!arr) continue;
     const i = indexAt(arr, st.t), color = colorOf(c.id);
-    if (withEnemy(sc.kind) && !enemyDone && arr[0].length > F.er) {
+    if (sc.kind === 'battle' && !enemyDone) {
+      enemyDone = true;
+      foesOf().forEach(foe => {
+        ctx.strokeStyle = foe[1] ? ELITE : '#e5534b'; ctx.globalAlpha = .5; ctx.lineWidth = 1.2; ctx.setLineDash([4, 4]); ctx.beginPath(); let pen = false;
+        for (const p0 of foe[4]) { const q = P(enu([p0[1], p0[2], p0[3]])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+        ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+        const at = foeAt(foe, st.t);
+        if (at) drawJet(ctx, P, at.pos, basis(at.pitch, at.yaw, 0), foe[1] ? ELITE : '#e5534b', jet);
+      });
+    }
+    else if (withEnemy(sc.kind) && !enemyDone && arr[0].length > F.er) {
       enemyDone = true;
       ctx.strokeStyle = '#e5534b'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]); ctx.beginPath(); let pen = false;
       for (const fr of arr) { const q = P(enemyPos(fr)); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
@@ -445,7 +491,7 @@ function drawCharts() {
     const ticks = c.sqrt ? [0, 1, 5, 20, 60, 150].filter(v => v <= hi) : [lo, (lo + hi) / 2, hi];
     for (const v of ticks) { ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - 4, Y(v)); ctx.stroke(); ctx.fillText(Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1), 2, Y(v) + 3); }
     if (c.zero && lo < 0 && hi > 0) { ctx.strokeStyle = '#26323a'; ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(w - 4, Y(0)); ctx.stroke(); }
-    for (let s = 0; s <= T; s += T > 12 ? 2 : 1) if (X(s) + 14 < w) ctx.fillText(`${s}`, X(s) - 3, h - 1);
+    for (let s = 0; s <= T; s += T > 60 ? 20 : T > 12 ? 2 : 1) if (X(s) + 14 < w) ctx.fillText(`${s}`, X(s) - 3, h - 1);
     if (sc.switch_at > 0) { ctx.strokeStyle = '#84959f'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(sc.switch_at), 4); ctx.lineTo(X(sc.switch_at), h - 10); ctx.stroke(); ctx.setLineDash([]); }
     for (const ctl of visible()) {
       const arr = data[ctl.id]; if (!arr) continue;
@@ -466,7 +512,15 @@ const METRICS = [
   ['settle', '稳定在 1° 内', 's', -1, 'capture chain'],
   ['level', '对准且机翼水平', 's', -1, 'capture chain'],
   ['overshoot', '过冲', '°', -1, 'capture chain'],
-  ['mean_angle', '平均偏差', '°', -1, 'hold pursuit track'],
+  ['crashed', '坠地时刻（+20 代价）', 's', 0, 'track battle'],
+  ['kills', '击落', '架', 1, 'battle'],
+  ['elite_kills', '其中精英', '架', 1, 'battle'],
+  ['to_shot', '选定目标到首次开火', 's', -1, 'battle'],
+  ['first_kill', '首个击落', 's', -1, 'battle'],
+  ['missiles', '导弹发射', '枚', 0, 'battle'],
+  ['gun_kills', '机炮击落', '架', 1, 'battle'],
+  ['on_lead', '1 km 内机头在提前量 2° 内', '%', 1, 'battle'],
+  ['mean_angle', '平均偏差', '°', -1, 'hold pursuit track battle'],
   ['within2', '2° 内时间占比', '%', 1, 'hold pursuit track'],
   ['within5', '5° 内时间占比', '%', 1, 'hold pursuit track'],
   ['bank_rms', '坡度均方根', '°', -1, 'hold pursuit track'],
@@ -481,9 +535,13 @@ const METRICS = [
   ['alt_change', '高度变化', 'm', 0, 'all'],
 ];
 function fmt(key, v) {
-  if (v < 0 && ['to5', 'to2', 'settle', 'level', 'mean_angle', 'within2', 'within5', 'bank_rms'].includes(key)) return null;
-  if (['within2', 'within5', 'pitch_sat', 'roll_sat'].includes(key)) return (v * 100).toFixed(0);
-  if (['reversals', 'chatter', 'alt_change', 'speed_loss'].includes(key)) return v.toFixed(0);
+  if (v === undefined) return null;
+  if (key === 'to_shot' && v === -2) return '无数据';
+  if (key === 'cost' && v < 0) return '—';
+  if (key === 'crashed') return v < 0 ? '—' : v.toFixed(1);
+  if (v < 0 && ['to5', 'to2', 'settle', 'level', 'mean_angle', 'within2', 'within5', 'bank_rms', 'to_shot', 'first_kill'].includes(key)) return null;
+  if (['within2', 'within5', 'pitch_sat', 'roll_sat', 'on_lead'].includes(key)) return (v * 100).toFixed(0);
+  if (['reversals', 'chatter', 'alt_change', 'speed_loss', 'kills', 'elite_kills', 'missiles', 'gun_kills'].includes(key)) return v.toFixed(0);
   return v.toFixed(2);
 }
 function drawCard() {
@@ -492,9 +550,9 @@ function drawCard() {
   let html = `<table><thead><tr><th>指标</th>${list.map(c => `<th style="color:${colorOf(c.id)}">${c.label}</th>`).join('')}</tr></thead><tbody>`;
   for (const [key, label, unit, better] of rows) {
     const vals = list.map(c => m[c.id][key]), shown = vals.map(v => fmt(key, v));
-    const valid = vals.filter((v, k) => shown[k] !== null);
+    const valid = vals.filter((v, k) => shown[k] !== null && !isNaN(parseFloat(shown[k])));
     const best = better === 0 || !valid.length ? null : better < 0 ? Math.min(...valid) : Math.max(...valid);
-    html += `<tr><td>${label}${unit ? `（${unit}）` : ''}</td>${vals.map((v, k) => shown[k] === null ? '<td class="na">未达到</td>'
+    html += `<tr><td>${label}${unit ? `（${unit}）` : ''}</td>${vals.map((v, k) => shown[k] === null ? `<td class="na">${key === 'to_shot' ? '未开火' : '未达到'}</td>`
       : `<td class="${best !== null && v === best && valid.length > 1 ? 'best' : ''}">${shown[k]}</td>`).join('')}</tr>`;
   }
   document.getElementById('card').innerHTML = html + '</tbody></table>';
@@ -512,7 +570,7 @@ function drawOverview() {
     list.forEach(c => { totals[c.id] = null; });
     for (const sc of IDX.scenarios.filter(s => s.kind === kind)) {
       if (!M[sc.id]) continue;
-      const costs = list.map(c => M[sc.id][c.id] ? M[sc.id][c.id].cost : null), best = Math.min(...costs.filter(v => v !== null));
+      const costs = list.map(c => M[sc.id][c.id] && M[sc.id][c.id].cost >= 0 ? M[sc.id][c.id].cost : null), best = Math.min(...costs.filter(v => v !== null));
       list.forEach((c, k) => { if (costs[k] === null) return; totals[c.id] = (totals[c.id] || 0) + costs[k]; if (c.id !== 'recorded') all[c.id] += costs[k]; });
       html += `<tr data-scen="${sc.id}"><td>${sc.title}</td>${costs.map(v => {
         if (v === null) return '<td class="na">—</td>';
@@ -528,6 +586,8 @@ function drawOverview() {
   html += `<div class="explain"><p><b>综合代价</b>越低越好，每个场景一个数，权重是粗略的，具体差在哪里要看单场景页的指标。
     捕获和连续机动：到 2° 的时间 + 0.5 × 稳定在 1° 内的时间 + 超过 1.5° 的过冲 ×2 + 多余的滚转反向 ×0.5 + 杆量来回打 ×0.2 + 倒飞时间 ×0.5（倒飞起始的场景不计倒飞）；没达到按场景时长计。
     精确保持：偏差均方根 + 坡度均方根 ×0.05 + 滚转反向 ×0.3 + 杆量来回打 ×0.1。追击：开始 3 s 后的平均偏差 ×0.5 + 不在 5° 内的时间占比 ×3 + 滚转反向 ×0.2 + 杆量来回打 ×0.05。
+    连续战斗：未击落的比例 ×20 + 选定目标到首次开火的平均秒数（没开过火按 15）+ 1 km 内不在提前量 2° 内的比例 ×5；“游戏实录”缺开火数据，只列击落等指标，不给综合分。
+    虚拟飞行员按“离机头近、距离近”选目标，鼠标压在机炮提前量上，目标偏离机头 40° 以上时按住加速+减速做高G转弯；机头 15° 内、300–2500 m 保持 0.8 s 发射导弹（每 1.5 s 一枚，普通敌机必中；精英机要在 1500 m 内、8° 内发射才命中，且要两发）；1 km 内机炮命中累计 0.5 s 击落（精英 1.5 s）。敌机按录像轨迹飞、不会对模拟里的飞机做反应，并在你当时把它打下来的时刻退场。
     实录追击：1 s 后对机炮提前量的平均偏差 ×0.5 + 不在 5° 内的占比 ×2 + 不在 2° 内的占比 ×2 + 滚转反向 ×0.2 + 杆量来回打 ×0.05；
     “游戏实录”一列是当时游戏里实际飞出的结果，按同样方法打分，可用来核对模拟是否可信（模拟从同一状态出发但不带当时的角速度）。</p>
     <p><b>模型</b>：姿态响应（延迟、游戏的输入平滑、响应曲线、拉杆/推杆权限、滚转加速度和上限、高G拉杆、方向舵约 5.4°/s）和航迹（速度方向滞后机头 0.2 s、重力、中立油门下速度回到约 190 m/s）都来自 2026-10-04 用游戏时钟录下的两段同关卡飞行。

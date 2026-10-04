@@ -24,6 +24,7 @@
   --enemy: #e5534b;
   --friend: #5aa9ff;
   --selected: #f5d04c;
+  --elite: #ff6bd6;
   --font: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
   --mono: "Cascadia Mono", "Consolas", "IBM Plex Mono", ui-monospace, monospace;
   color-scheme: dark;
@@ -159,6 +160,9 @@ const C = { id: 0, cls: 1, x: 2, y: 3, z: 4, pitch: 5, yaw: 6, roll: 7, speed: 8
 const enemyClasses = new Set();
 function noteSides(snap) { for (const c of snap.c) if (c.length > C.enemy && c[C.enemy] === 1) enemyClasses.add(c[C.cls]); }
 const isEnemy = c => c.length <= C.enemy || c[C.enemy] === 1 || enemyClasses.has(c[C.cls]);
+// Named aces and Shadow squadrons, by class name (BP_OP1020_m29a_CP_Shadow_C, ..._Named_C).
+const isElite = c => /Shadow|Named/.test(c[C.cls]);
+const sideColor = c => isElite(c) ? col.elite : isEnemy(c) ? col.enemy : col.friend;
 const contactPos = c => [c[C.y], c[C.x], c[C.z]];   // east, north, up
 let cursor = -1;          // index of the frame shown
 let mode = 'live';
@@ -185,7 +189,7 @@ const dirOf = (p, y) => [Math.cos(p * rad) * Math.cos(y * rad), Math.cos(p * rad
 // ---------- canvas helpers ----------
 const col = (() => { const s = getComputedStyle(document.documentElement); const g = n => s.getPropertyValue(n).trim();
   return { ink: g('--ink'), muted: g('--muted'), grid: g('--grid'), rule: g('--rule'), nose: g('--nose'), path: g('--path'),
-           enemy: g('--enemy'), friend: g('--friend'), selected: g('--selected'),
+           enemy: g('--enemy'), elite: g('--elite'), friend: g('--friend'), selected: g('--selected'),
            aim: g('--aim'), trail: g('--trail'), warn: g('--warn'), craft: g('--craft'), panel: g('--panel'), mono: g('--mono') }; })();
 function setup(canvas) {
   const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
@@ -280,7 +284,7 @@ function drawScene() {
     // trails of every aircraft, last 30 s; the selected target as a wingtip ribbon
     for (const [id, list] of contactTrails(ci, 30)) {
       const sel = id === snap.selected, last = list[list.length - 1];
-      const color = sel ? col.selected : isEnemy(last) ? col.enemy : col.friend;
+      const color = sel ? col.selected : sideColor(last);
       if (sel) {
         const pts = list.map(c => { const cb = basis(c[C.pitch], c[C.yaw], c[C.roll]), wr = enu(cb.r), p0 = contactPos(c);
           return { l: P(sub(p0, mul(wr, WING))), r: P(add(p0, mul(wr, WING))), inverted: cb.u[2] < 0 }; });
@@ -299,7 +303,7 @@ function drawScene() {
       if (c[C.hidden]) continue;
       const pos = contactPos(c), q = P(pos); if (!q) continue;
       const dist = Math.hypot(pos[0] - A[0], pos[1] - A[1], pos[2] - A[2]), sel = c[C.id] === snap.selected;
-      const color = sel ? col.selected : isEnemy(c) ? col.enemy : col.friend;
+      const color = sel ? col.selected : sideColor(c);
       if (dist < 2000) {
         const cb = basis(c[C.pitch], c[C.yaw], c[C.roll]);
         drawAircraft(ctx, P, pos, enu(cb.f), enu(cb.r), enu(cb.u), color);
@@ -308,13 +312,13 @@ function drawScene() {
         ctx.moveTo(q[0], q[1] - 6); ctx.lineTo(q[0] + 6, q[1]); ctx.lineTo(q[0], q[1] + 6); ctx.lineTo(q[0] - 6, q[1]); ctx.closePath(); ctx.stroke(); ctx.lineWidth = 1;
       }
       ctx.fillStyle = color; ctx.font = `11px ${col.mono}`;
-      ctx.fillText(`${sel ? '目标 ' : ''}${(dist / 1000).toFixed(1)} km`, q[0] + 9, q[1] - 7);
+      ctx.fillText(`${sel ? '目标 ' : ''}${isElite(c) ? '精英 ' : ''}${(dist / 1000).toFixed(1)} km`, q[0] + 9, q[1] - 7);
     }
   }
   drawAircraft(ctx, P, A, f, r, u, null);
   // legend
   ctx.font = `12px ${col.mono}`;
-  [['机头', col.nose], ['航迹（速度方向）', col.path], ['鼠标目标方向', col.aim], ['轨迹 30 s（中线）', col.trail], ['左翼尖', '#e5534b'], ['右翼尖', '#5fd38a'], ['倒飞段', col.aim], ['敌机', col.enemy], ['友机', col.friend], ['选中目标', col.selected]].forEach(([label, c], i) => {
+  [['机头', col.nose], ['航迹（速度方向）', col.path], ['鼠标目标方向', col.aim], ['轨迹 30 s（中线）', col.trail], ['左翼尖', '#e5534b'], ['右翼尖', '#5fd38a'], ['倒飞段', col.aim], ['敌机', col.enemy], ['精英敌机', col.elite], ['友机', col.friend], ['选中目标', col.selected]].forEach(([label, c], i) => {
     ctx.fillStyle = c; ctx.fillRect(12, 14 + i * 18, 14, 3); ctx.fillStyle = col.ink; ctx.fillText(label, 32, 19 + i * 18);
   });
 }
@@ -358,7 +362,7 @@ function drawMap() {
     const snap = contacts[ci];
     for (const [id, list] of contactTrails(ci, 120)) {
       const sel = id === snap.selected, last = list[list.length - 1];
-      ctx.strokeStyle = sel ? col.selected : isEnemy(last) ? col.enemy : col.friend;
+      ctx.strokeStyle = sel ? col.selected : sideColor(last);
       ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = sel ? .8 : .5; ctx.beginPath();
       list.forEach((c, k) => { const p = contactPos(c); k ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1])); });
       ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
@@ -366,7 +370,7 @@ function drawMap() {
     for (const c of snap.c) {
       if (c[C.hidden]) continue;
       const p = contactPos(c), sel = c[C.id] === snap.selected;
-      ctx.fillStyle = sel ? col.selected : isEnemy(c) ? col.enemy : col.friend; ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), sel ? 4.5 : 3, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = sel ? col.selected : sideColor(c); ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), sel ? 4.5 : 3, 0, 2 * Math.PI); ctx.fill();
     }
   }
   const hd = Math.atan2(f[0], f[1]);
