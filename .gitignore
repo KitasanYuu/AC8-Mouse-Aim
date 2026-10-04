@@ -2,3 +2,5 @@ build/
 deps/ue4ss-source/
 .dev-game-path
 backups/
+recordings/
+dev/compare/results/

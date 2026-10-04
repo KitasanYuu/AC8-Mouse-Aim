@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>飞控对比台</title>
+<style>
+/* A test bench: one row of chase cameras (one per controller, same maneuver, same
+   moment), the paths overlaid, the scorecard, and strip charts with every controller
+   on the same axes. Dark only, like the telemetry page beside it. */
+:root {
+  --bg: #0e1418;
+  --panel: #151d22;
+  --rule: #26323a;
+  --grid: #1d2830;
+  --ink: #dbe4e9;
+  --muted: #84959f;
+  --nose: #f2f5f7;
+  --path: #5fd38a;
+  --aim: #f29a4a;
+  --warn: #f06e5c;
+  --enemy: #e5534b;
+  --good: #5fd38a;
+  --font: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Consolas", "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 13px; line-height: 1.5; }
+.app { display: grid; grid-template-rows: auto auto minmax(0, 1fr); height: 100%; gap: 8px; padding: 10px 14px; }
+.bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.bar h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 600; letter-spacing: .02em; }
+.title { font-size: 11px; color: var(--muted); letter-spacing: .06em; }
+select, button, input[type=range] { font: inherit; color: var(--ink); }
+select, button { background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 8px; }
+button { cursor: pointer; }
+button:hover, select:hover { border-color: var(--muted); }
+button[aria-pressed=true] { border-color: var(--ink); background: #1f2a31; }
+:focus-visible { outline: 2px solid #4fb3d9; outline-offset: 1px; }
+.spacer { flex: 1; }
+.transport { display: flex; gap: 8px; align-items: center; flex: 1 1 360px; }
+.transport input[type=range] { flex: 1; accent-color: #4fb3d9; min-width: 120px; }
+.clock { font-family: var(--mono); min-width: 8ch; text-align: right; font-variant-numeric: tabular-nums; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 12px; border: 1px solid var(--rule); background: var(--panel); cursor: pointer; font-size: 12px; }
+.chip i { width: 14px; height: 4px; border-radius: 2px; display: inline-block; }
+.chip.off { opacity: .4; }
+.note { color: var(--muted); font-size: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; min-width: 0; min-height: 0; }
+
+.scene { display: grid; grid-template-rows: minmax(260px, 1.1fr) minmax(0, 1fr); gap: 8px; min-height: 0; }
+.top { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 8px; min-height: 0; }
+.cams { display: grid; gap: 8px; min-height: 0; }
+.cam { position: relative; overflow: hidden; }
+.cam canvas, .overlay canvas, .chart canvas { width: 100%; height: 100%; display: block; }
+.cam canvas, .overlay canvas { cursor: grab; }
+.cam .label { position: absolute; left: 8px; top: 6px; font-size: 12px; font-weight: 600; pointer-events: none; text-shadow: 0 1px 2px #000; }
+.cam .read { position: absolute; left: 8px; bottom: 6px; right: 8px; font-family: var(--mono); font-size: 11px; color: var(--ink); pointer-events: none;
+             display: grid; grid-template-columns: repeat(4, auto); justify-content: start; gap: 0 14px; text-shadow: 0 1px 2px #000; font-variant-numeric: tabular-nums; }
+.cam .read span { color: var(--muted); margin-right: 3px; }
+.cam .sticks { position: absolute; right: 8px; top: 8px; width: 92px; display: grid; gap: 3px; pointer-events: none; }
+.meter { position: relative; height: 6px; background: rgba(29, 40, 48, .85); border-radius: 3px; overflow: hidden; }
+.meter i { position: absolute; top: 0; bottom: 0; }
+.meter::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--muted); }
+.side { display: grid; grid-template-rows: minmax(180px, 1fr) auto; gap: 8px; min-height: 0; }
+.overlay { position: relative; }
+.overlay .title { position: absolute; left: 10px; top: 6px; pointer-events: none; }
+.card { padding: 8px 10px; overflow: auto; max-height: 46vh; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 2px 6px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--rule); }
+tbody td { font-family: var(--mono); font-size: 12px; border-bottom: 1px solid var(--grid); }
+tbody td:first-child { font-family: var(--font); color: var(--muted); }
+td.best { color: var(--good); font-weight: 600; }
+td.na { color: var(--muted); }
+.charts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(100px, 1fr); gap: 8px; min-height: 0; }
+.chart { padding: 4px 8px 6px; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 100px; }
+.chart canvas { cursor: crosshair; }
+
+.overview { overflow: auto; padding: 10px 12px; }
+.overview table td { cursor: default; }
+.overview tbody tr { cursor: pointer; }
+.overview tbody tr:hover td { background: #1b252c; }
+.overview tr.group td { font-family: var(--font); color: var(--ink); font-weight: 600; background: #111a1f; cursor: default; }
+.overview tr.total td { font-weight: 600; border-top: 1px solid var(--rule); }
+.overview .explain { color: var(--muted); font-size: 12px; max-width: 980px; margin: 12px 0 0; }
+.overview .explain b { color: var(--ink); font-weight: 600; }
+.empty { display: grid; place-items: center; text-align: center; color: var(--muted); padding: 40px; }
+.empty code { font-family: var(--mono); color: var(--aim); }
+
+@media (max-width: 1100px) {
+  .app { height: auto; }
+  .top { grid-template-columns: minmax(0, 1fr); }
+  .scene { grid-template-rows: auto auto; }
+  .cams { grid-auto-rows: 220px; }
+  .side { grid-template-rows: 300px auto; }
+  .charts { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 120px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="bar">
+    <h1>飞控对比台</h1>
+    <div role="group" aria-label="页面" class="chips">
+      <button type="button" id="tabScene" aria-pressed="true">单场景</button>
+      <button type="button" id="tabOverview" aria-pressed="false">总览评分</button>
+    </div>
+    <label class="title" for="cond">工况</label>
+    <select id="cond"></select>
+    <label class="title" for="scenario">场景</label>
+    <select id="scenario"></select>
+    <div class="transport" id="transport">
+      <button id="play" type="button">▶ 播放</button>
+      <select id="speed" aria-label="播放速度"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select>
+      <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="时间">
+      <span class="clock" id="clock">0.00 s</span>
+    </div>
+  </div>
+  <div class="bar">
+    <div class="chips" id="chips"></div>
+    <span class="note" id="note"></span>
+  </div>
+
+  <div class="scene" id="scene">
+    <div class="top">
+      <div class="cams" id="cams"></div>
+      <div class="side">
+        <div class="panel overlay"><span class="title">航迹叠加（拖动旋转 · 滚轮缩放 · 双击复位）</span><canvas id="overlay" aria-label="所有飞控的航迹叠加"></canvas></div>
+        <div class="panel card" id="card"></div>
+      </div>
+    </div>
+    <div class="charts" id="charts"></div>
+  </div>
+
+  <div class="panel overview" id="overview" hidden></div>
+</div>
+
+<script src="results/index.js"></script>
+<script>
+(() => {
+'use strict';
+const IDX = window.COMPARE_INDEX;
+if (!IDX) {
+  document.querySelector('.app').innerHTML = '<div class="empty"><div>还没有对比结果。先在仓库根目录运行 <code>dev\\compare\\compare.cmd</code>。</div></div>';
+  return;
+}
+// Frame layout written by harness.cpp (every 4th 80 Hz step).
+const F = { t: 0, x: 1, y: 2, z: 3, pitch: 4, yaw: 5, roll: 6, ax: 7, ay: 8, az: 9, angle: 10, q: 11, p: 12, r: 13,
+            sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25 };
+const PALETTE = { ours: '#4fb3d9', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a' };
+const EXTRA = ['#f5d04c', '#ff7aa8', '#8fd0c4', '#b0b8ff'];
+const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
+const KIND = { capture: '捕获（鼠标移到一个方向后不动）', chain: '连续机动（中途换目标）', hold: '精确保持（小幅鼠标操作）', pursuit: '追击脚本敌机（鼠标压在敌机上）' };
+
+// ---------- vectors (Unreal X north, Y east, Z up -> drawn as east/north/up) ----------
+const rad = Math.PI / 180;
+const enu = v => [v[1], v[0], v[2]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };
+function basis(p, y, r) {   // flight::basis, Unreal coordinates
+  p *= rad; y *= rad; r *= rad;
+  const f = [Math.cos(p) * Math.cos(y), Math.cos(p) * Math.sin(y), Math.sin(p)];
+  const right = [-Math.sin(y), Math.cos(y), 0], up = cross(f, right);
+  return { f, r: sub(mul(right, Math.cos(r)), mul(up, Math.sin(r))), u: add(mul(up, Math.cos(r)), mul(right, Math.sin(r))) };
+}
+const posOf = fr => enu([fr[F.x], fr[F.y], fr[F.z]]);
+const enemyPos = fr => enu([fr[F.ex], fr[F.ey], fr[F.ez]]);
+
+// ---------- state ----------
+const st = { cond: IDX.plants[0].id, scen: IDX.scenarios[0].id, t: 0, playing: false, speed: 1, hidden: new Set(), tab: 'scene' };
+try { const saved = JSON.parse(localStorage.getItem('ac8-compare') || '{}');
+  if (IDX.plants.some(p => p.id === saved.cond)) st.cond = saved.cond;
+  if (IDX.scenarios.some(s => s.id === saved.scen)) st.scen = saved.scen;
+  if (saved.tab === 'overview') st.tab = 'overview';
+  (saved.hidden || []).forEach(id => st.hidden.add(id)); } catch (e) { /* storage unavailable */ }
+function save() { try { localStorage.setItem('ac8-compare', JSON.stringify({ cond: st.cond, scen: st.scen, tab: st.tab, hidden: [...st.hidden] })); } catch (e) { /* ignore */ } }
+const visible = () => IDX.controllers.filter(c => !st.hidden.has(c.id));
+const scenario = () => IDX.scenarios.find(s => s.id === st.scen);
+const runs = () => (window.COMPARE_DATA && window.COMPARE_DATA[st.cond] || {})[st.scen];
+function frameAt(arr, t) {
+  if (!arr || !arr.length) return null;
+  const step = arr.length > 1 ? arr[1][F.t] - arr[0][F.t] : 1;
+  return arr[Math.max(0, Math.min(arr.length - 1, Math.round(t / step)))];
+}
+function indexAt(arr, t) { const step = arr.length > 1 ? arr[1][F.t] - arr[0][F.t] : 1; return Math.max(0, Math.min(arr.length - 1, Math.round(t / step))); }
+
+// Per-condition frame data loads on demand (a few MB each).
+function loadCond(cond, then) {
+  if (window.COMPARE_DATA && window.COMPARE_DATA[cond]) { then(); return; }
+  const s = document.createElement('script'); s.src = `results/data_${cond}.js`; s.onload = then;
+  s.onerror = () => { document.getElementById('note').textContent = `读取 results/data_${cond}.js 失败`; };
+  document.head.appendChild(s);
+}
+
+// ---------- canvas ----------
+function setup(canvas) {
+  const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+// near: points closer than this are dropped (a trail passing beside the camera would
+// otherwise smear across the whole view).
+function camera(C, target, w, h, fov, near = 0.5) {
+  const fwd = norm(sub(target, C)), right = norm(cross(fwd, [0, 0, 1])), up = cross(right, fwd);
+  const focal = (h / 2) / Math.tan(fov * rad / 2);
+  return p => { const d = sub(p, C), z = dot(d, fwd); return z < near ? null : [w / 2 + focal * dot(d, right) / z, h / 2 - focal * dot(d, up) / z, z]; };
+}
+function lineIn(ctx, P, a, b, color, width = 1, dash = null, alpha = 1, steps = 16) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.globalAlpha = alpha; ctx.setLineDash(dash || []);
+  ctx.beginPath(); let pen = false;
+  for (let i = 0; i <= steps; i++) { const q = P(add(a, mul(sub(b, a), i / steps))); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+  ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+}
+// Jet outline in body axes (m): x forward, y right, z up.
+const MESH = (() => {
+  const tris = [], m = (a, b, c, shade) => { tris.push({ v: [a, b, c], shade }); tris.push({ v: [[a[0], -a[1], a[2]], [c[0], -c[1], c[2]], [b[0], -b[1], b[2]]], shade }); };
+  m([3.5, 0.9, 0], [-4.5, 7.5, 0], [-6.5, 0.9, 0], 1.0);
+  m([-5.6, 0.7, 0.1], [-8.6, 3.4, 0.1], [-8.9, 0.7, 0.1], 0.9);
+  m([9.5, 0, 0.1], [-8.9, 0.95, 0.15], [-8.9, 0, 0.15], 0.8);
+  tris.push({ v: [[-5.2, 0, 0.5], [-8.9, 0, 4.2], [-9.0, 0, 0.5]], shade: 0.7 });
+  tris.push({ v: [[9.5, 0, 0.1], [-8.9, 0, 1.0], [-8.9, 0, -0.6]], shade: 0.6 });
+  return tris;
+})();
+function drawJet(ctx, P, A, B, tint, scale = 1) {
+  const f = enu(B.f), r = enu(B.r), u = enu(B.u);
+  const tris = MESH.map(t => {
+    const pts = t.v.map(p => add(A, mul(add(mul(f, p[0]), add(mul(r, p[1]), mul(u, p[2]))), scale)));
+    const q = pts.map(P); if (q.some(x => !x)) return null;
+    const n = norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0])));
+    const light = 0.45 + 0.55 * Math.abs(dot(n, norm([0.3, -0.4, 1])));
+    // the belly side darker, so upright and inverted read at a glance
+    const belly = dot(u, n) * (t.v[0][2] >= 0 ? 1 : 1) < 0;
+    return { q, z: (q[0][2] + q[1][2] + q[2][2]) / 3, light: light * t.shade, belly };
+  }).filter(Boolean).sort((a, b) => b.z - a.z);
+  for (const t of tris) {
+    ctx.fillStyle = tint; ctx.globalAlpha = 0.35 + 0.6 * t.light * (t.belly ? 0.55 : 1);
+    ctx.strokeStyle = '#0b1114';
+    ctx.beginPath(); ctx.moveTo(t.q[0][0], t.q[0][1]); ctx.lineTo(t.q[1][0], t.q[1][1]); ctx.lineTo(t.q[2][0], t.q[2][1]); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+// Wingtip ribbon between frames i0..i1: the band shows the roll; inverted parts orange.
+function ribbon(ctx, P, arr, i0, i1, half, color, alpha, every = 1) {
+  const pts = [];
+  for (let i = Math.max(0, i0); i <= i1; i += every) {
+    const fr = arr[i], B = basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), c = posOf(fr), wr = enu(B.r);
+    pts.push({ c: P(c), l: P(sub(c, mul(wr, half))), r: P(add(c, mul(wr, half))), inv: B.u[2] < 0 });
+  }
+  for (let k = 1; k < pts.length; k++) {
+    const a = pts[k - 1], b = pts[k]; if (!a.l || !a.r || !b.l || !b.r) continue;
+    ctx.fillStyle = b.inv ? '#f29a4a' : color; ctx.globalAlpha = (b.inv ? 1.6 : 1) * alpha;
+    ctx.beginPath(); ctx.moveTo(a.l[0], a.l[1]); ctx.lineTo(b.l[0], b.l[1]); ctx.lineTo(b.r[0], b.r[1]); ctx.lineTo(a.r[0], a.r[1]); ctx.closePath(); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  for (const [key, c, wd] of [['l', '#e5534b', 1], ['r', '#5fd38a', 1], ['c', color, 1.6]]) {
+    ctx.strokeStyle = c; ctx.lineWidth = wd; ctx.globalAlpha = Math.min(1, alpha * 5); ctx.beginPath(); let pen = false;
+    for (const s of pts) { const q = s[key]; if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.lineWidth = 1;
+}
+
+// ---------- chase cameras ----------
+const orbit = { yaw: 0, pitch: 12, dist: 70 };
+const cams = new Map();   // controller id -> { canvas, label, read, sticks }
+function buildCams() {
+  const box = document.getElementById('cams'); box.innerHTML = ''; cams.clear();
+  const list = visible(), n = list.length;
+  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
+  box.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  for (const c of list) {
+    const el = document.createElement('div'); el.className = 'panel cam';
+    el.innerHTML = `<canvas aria-label="${c.label} 追尾视角"></canvas><div class="label" style="color:${colorOf(c.id)}">${c.label}</div>
+      <div class="sticks"><div class="meter" title="俯仰杆"><i></i></div><div class="meter" title="滚转杆"><i></i></div><div class="meter" title="偏航杆"><i></i></div></div>
+      <div class="read"></div>`;
+    box.appendChild(el);
+    const canvas = el.querySelector('canvas');
+    dragOrbit(canvas, orbit, () => drawCams());
+    cams.set(c.id, { canvas, read: el.querySelector('.read'), meters: [...el.querySelectorAll('.meter i')] });
+  }
+}
+function drawCams() {
+  const data = runs(), sc = scenario();
+  for (const c of visible()) {
+    const cam = cams.get(c.id); if (!cam) continue;
+    const { ctx, w, h } = setup(cam.canvas);
+    const arr = data && data[c.id]; if (!arr) continue;
+    const i = indexAt(arr, st.t), fr = arr[i], B = basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), A = posOf(fr);
+    // camera heading: the direction travelled over the last second (stable while scrubbing)
+    const back = arr[Math.max(0, i - 6)], travel = sub(A, posOf(back));
+    let heading = Math.hypot(travel[0], travel[1]) > 20 ? Math.atan2(travel[0], travel[1]) : Math.atan2(enu(B.f)[0], enu(B.f)[1]);
+    const ch = heading + orbit.yaw * rad, cp = orbit.pitch * rad;
+    const dir = [Math.sin(ch) * Math.cos(cp), Math.cos(ch) * Math.cos(cp), -Math.sin(cp)];
+    const C = sub(add(A, [0, 0, 3]), mul(dir, orbit.dist));
+    const P = camera(C, add(A, [0, 0, 3 + orbit.dist * 0.22]), w, h, 62, orbit.dist * 0.6);   // the aircraft a little below centre
+    // sky and ground split at the horizon
+    const fwd = norm(sub(add(A, [0, 0, 3 + orbit.dist * 0.22]), C));
+    const hz = P(add(C, mul(norm([fwd[0], fwd[1], 0]), 1e6)));
+    const hy = hz ? Math.max(-h, Math.min(2 * h, hz[1])) : (fwd[2] > 0 ? 2 * h : -h);
+    ctx.fillStyle = '#122028'; ctx.fillRect(0, 0, w, Math.max(0, Math.min(h, hy)));
+    ctx.fillStyle = '#161b17'; ctx.fillRect(0, Math.max(0, Math.min(h, hy)), w, h);
+    if (hz) { ctx.strokeStyle = '#2c3a42'; ctx.beginPath(); ctx.moveTo(0, hy); ctx.lineTo(w, hy); ctx.stroke(); }
+    // grid 500 m below, for a sense of motion
+    const G = 400, z0 = A[2] - 500, gx = Math.round(A[0] / G) * G, gy = Math.round(A[1] / G) * G, span = 6;
+    for (let k = -span; k <= span; k++) {
+      lineIn(ctx, P, [gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0], '#26323a', 1, null, .7);
+      lineIn(ctx, P, [gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0], '#26323a', 1, null, .7);
+    }
+    const color = colorOf(c.id);
+    // enemy: path and model
+    if (sc.kind === 'pursuit' && fr.length > F.er) {
+      ctx.strokeStyle = '#e5534b'; ctx.globalAlpha = .7; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
+      for (let k = Math.max(0, i - 60); k <= i; k++) { const q = P(enemyPos(arr[k])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+      ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      const EB = basis(fr[F.ep], fr[F.eyaw], fr[F.er]), E = enemyPos(fr), q = P(E);
+      if (q) {
+        const dist = Math.hypot(...sub(E, A));
+        drawJet(ctx, P, E, EB, '#e5534b', Math.max(1, dist / 250));
+        ctx.fillStyle = '#e5534b'; ctx.font = `11px ${getComputedStyle(document.body).getPropertyValue('--mono')}`;
+        ctx.fillText(`敌机 ${(dist / 1000).toFixed(2)} km`, q[0] + 10, q[1] - 8);
+      }
+    }
+    ribbon(ctx, P, arr, i - 20, i, 12, color, .16);   // the last second
+    // aim direction and ring, flight path, nose
+    const aim = enu([fr[F.ax], fr[F.ay], fr[F.az]]);
+    lineIn(ctx, P, A, add(A, mul(aim, 900)), '#f29a4a', 2, [8, 6]);
+    const ring = P(add(A, mul(aim, 900)));
+    if (ring) { ctx.strokeStyle = '#f29a4a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ring[0], ring[1], 7, 0, 2 * Math.PI); ctx.stroke(); ctx.lineWidth = 1; }
+    if (i > 0) { const v = norm(sub(A, posOf(arr[i - 1]))); lineIn(ctx, P, A, add(A, mul(v, 150)), '#5fd38a', 2); }
+    lineIn(ctx, P, A, add(A, mul(enu(B.f), 150)), '#f2f5f7', 1.5);
+    drawJet(ctx, P, A, B, color, 1.5);
+    // readout
+    const bank = fr[F.roll];
+    cam.read.innerHTML = `<div><span>偏差</span>${fr[F.angle].toFixed(2)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
+      `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>`;
+    [fr[F.sp], fr[F.sr], fr[F.sy]].forEach((v, k) => {
+      const m = cam.meters[k], x = Math.max(-1, Math.min(1, v));
+      m.style.left = `${50 + Math.min(0, x) * 50}%`; m.style.width = `${Math.abs(x) * 50}%`; m.style.background = color;
+    });
+  }
+}
+
+// ---------- overlay of every path ----------
+const over = { yaw: -35, pitch: 28, dist: null };
+let extent = null;   // { centre, size } of the current scenario
+function computeExtent() {
+  const data = runs(); if (!data) { extent = null; return; }
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const c of IDX.controllers) {
+    const arr = data[c.id]; if (!arr) continue;
+    for (const fr of arr) { const p = posOf(fr); for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } }
+  }
+  extent = { centre: mul(add(lo, hi), .5), size: Math.max(400, Math.hypot(...sub(hi, lo))) };
+}
+function drawOverlay() {
+  const { ctx, w, h } = setup(document.getElementById('overlay'));
+  const data = runs(), sc = scenario(); if (!data || !extent) return;
+  const dist = (over.dist || 1.15) * extent.size;
+  const ch = over.yaw * rad, cp = over.pitch * rad;
+  const C = add(extent.centre, mul([-Math.sin(ch) * Math.cos(cp), -Math.cos(ch) * Math.cos(cp), Math.sin(cp)], dist));
+  const P = camera(C, extent.centre, w, h, 50);
+  ctx.fillStyle = '#10181c'; ctx.fillRect(0, 0, w, h);
+  // reference plane at the start altitude, 1 km grid
+  const z0 = 3000, G = 1000, cx = Math.round(extent.centre[0] / G) * G, cy = Math.round(extent.centre[1] / G) * G, span = Math.ceil(extent.size / G) + 1;
+  for (let k = -span; k <= span; k++) {
+    lineIn(ctx, P, [cx + k * G, cy - span * G, z0], [cx + k * G, cy + span * G, z0], '#1d2830', 1, null, 1, 8);
+    lineIn(ctx, P, [cx - span * G, cy + k * G, z0], [cx + span * G, cy + k * G, z0], '#1d2830', 1, null, 1, 8);
+  }
+  const half = Math.max(8, extent.size / 90), jet = Math.max(1, extent.size / 160);
+  let enemyDone = false;
+  for (const c of visible()) {
+    const arr = data[c.id]; if (!arr) continue;
+    const i = indexAt(arr, st.t), color = colorOf(c.id);
+    if (sc.kind === 'pursuit' && !enemyDone && arr[0].length > F.er) {
+      enemyDone = true;
+      ctx.strokeStyle = '#e5534b'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]); ctx.beginPath(); let pen = false;
+      for (const fr of arr) { const q = P(enemyPos(fr)); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+      ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
+      const fr = arr[i]; drawJet(ctx, P, enemyPos(fr), basis(fr[F.ep], fr[F.eyaw], fr[F.er]), '#e5534b', jet);
+    }
+    // whole path faint, travelled part as a ribbon
+    ctx.strokeStyle = color; ctx.globalAlpha = .25; ctx.beginPath(); let pen = false;
+    for (const fr of arr) { const q = P(posOf(fr)); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    ribbon(ctx, P, arr, 0, i, half, color, .18, 2);
+    const fr = arr[i];
+    drawJet(ctx, P, posOf(fr), basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), color, jet);
+    if (sc.kind !== 'pursuit') lineIn(ctx, P, posOf(fr), add(posOf(fr), mul(enu([fr[F.ax], fr[F.ay], fr[F.az]]), extent.size * .35)), color, 1, [5, 5], .7);
+  }
+}
+
+// ---------- charts ----------
+const CHARTS = [
+  { key: 'angle', title: '偏差角（°，平方根刻度）', get: fr => fr[F.angle], sqrt: true },
+  { key: 'bank', title: '坡度（°，+ 右翼低）', get: fr => fr[F.roll], lo: -180, hi: 180, zero: true },
+  { key: 'p', title: '滚转角速度（°/s）', get: fr => fr[F.p], zero: true },
+  { key: 'q', title: '俯仰角速度（°/s）', get: fr => fr[F.q], zero: true },
+  { key: 'sp', title: '俯仰杆（+ 拉）', get: fr => fr[F.sp], lo: -1.05, hi: 1.05, zero: true },
+  { key: 'sr', title: '滚转杆（+ 右）', get: fr => fr[F.sr], lo: -1.05, hi: 1.05, zero: true },
+  { key: 'sy', title: '偏航杆（+ 右）', get: fr => fr[F.sy], lo: -1.05, hi: 1.05, zero: true },
+  { key: 'speed', title: '速度（m/s）', get: fr => fr[F.speed] },
+];
+function buildCharts() {
+  const box = document.getElementById('charts'); box.innerHTML = '';
+  for (const c of CHARTS) {
+    const el = document.createElement('div'); el.className = 'panel chart';
+    el.innerHTML = `<span class="title">${c.title}</span><canvas aria-label="${c.title}"></canvas>`;
+    box.appendChild(el); c.canvas = el.querySelector('canvas');
+    const seek = e => { const r = c.canvas.getBoundingClientRect(); const L = 34, T = scenario().seconds;
+      st.t = Math.max(0, Math.min(T, (e.clientX - r.left - L) / (r.width - L - 4) * T)); drawAll(); };
+    c.canvas.addEventListener('pointerdown', e => { seek(e); c.canvas.setPointerCapture(e.pointerId); });
+    c.canvas.addEventListener('pointermove', e => { if (e.buttons) seek(e); });
+  }
+}
+function drawCharts() {
+  const data = runs(), sc = scenario(), mono = getComputedStyle(document.body).getPropertyValue('--mono');
+  for (const c of CHARTS) {
+    const { ctx, w, h } = setup(c.canvas); if (!data) continue;
+    const tr = c.sqrt ? v => Math.sqrt(Math.max(0, v)) : v => v;
+    let lo = c.lo, hi = c.hi;
+    if (lo === undefined) {
+      lo = Infinity; hi = -Infinity;
+      for (const ctl of visible()) for (const fr of data[ctl.id] || []) { const v = c.get(fr); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+      if (c.sqrt) lo = 0;
+      if (c.zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+      const pad = Math.max((hi - lo) * .08, .5); if (!c.sqrt) lo -= pad; hi += pad;
+    }
+    const L = 34, T = sc.seconds, X = t => L + (w - L - 4) * t / T, Y = v => 4 + (h - 14) * (1 - (tr(v) - tr(lo)) / (tr(hi) - tr(lo)));
+    ctx.font = `10px ${mono}`; ctx.fillStyle = '#84959f'; ctx.strokeStyle = '#1d2830';
+    const ticks = c.sqrt ? [0, 1, 5, 20, 60, 150].filter(v => v <= hi) : [lo, (lo + hi) / 2, hi];
+    for (const v of ticks) { ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - 4, Y(v)); ctx.stroke(); ctx.fillText(Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1), 2, Y(v) + 3); }
+    if (c.zero && lo < 0 && hi > 0) { ctx.strokeStyle = '#26323a'; ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(w - 4, Y(0)); ctx.stroke(); }
+    for (let s = 0; s <= T; s += T > 12 ? 2 : 1) if (X(s) + 14 < w) ctx.fillText(`${s}`, X(s) - 3, h - 1);
+    if (sc.switch_at > 0) { ctx.strokeStyle = '#84959f'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(sc.switch_at), 4); ctx.lineTo(X(sc.switch_at), h - 10); ctx.stroke(); ctx.setLineDash([]); }
+    for (const ctl of visible()) {
+      const arr = data[ctl.id]; if (!arr) continue;
+      ctx.strokeStyle = colorOf(ctl.id); ctx.lineWidth = 1.4; ctx.beginPath();
+      arr.forEach((fr, k) => { const x = X(fr[F.t]), y = Y(Math.max(lo, Math.min(hi, c.get(fr)))); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke(); ctx.lineWidth = 1;
+    }
+    ctx.strokeStyle = '#dbe4e9'; ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(X(st.t), 2); ctx.lineTo(X(st.t), h - 10); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- scorecard ----------
+// [key, label, unit, better: -1 lower / +1 higher, kinds]
+const METRICS = [
+  ['cost', '综合代价', '', -1, 'all'],
+  ['to5', '到 5° 内', 's', -1, 'capture chain'],
+  ['to2', '到 2° 内', 's', -1, 'capture chain'],
+  ['settle', '稳定在 1° 内', 's', -1, 'capture chain'],
+  ['level', '对准且机翼水平', 's', -1, 'capture chain'],
+  ['overshoot', '过冲', '°', -1, 'capture chain'],
+  ['mean_angle', '平均偏差', '°', -1, 'hold pursuit'],
+  ['within2', '2° 内时间占比', '%', 1, 'hold pursuit'],
+  ['within5', '5° 内时间占比', '%', 1, 'hold pursuit'],
+  ['bank_rms', '坡度均方根', '°', -1, 'hold pursuit'],
+  ['reversals', '滚转反向次数', '', -1, 'all'],
+  ['chatter', '杆量来回打', '次', -1, 'all'],
+  ['inverted', '倒飞时间', 's', -1, 'all'],
+  ['roll_effort', '平均滚转杆量', '', -1, 'all'],
+  ['pitch_sat', '俯仰满杆占比', '%', -1, 'all'],
+  ['roll_sat', '滚转满杆占比', '%', -1, 'all'],
+  ['peak_nz', '最大过载', 'g', 0, 'all'],
+  ['speed_loss', '速度损失', 'm/s', -1, 'all'],
+  ['alt_change', '高度变化', 'm', 0, 'all'],
+];
+function fmt(key, v) {
+  if (v < 0 && ['to5', 'to2', 'settle', 'level', 'mean_angle', 'within2', 'within5', 'bank_rms'].includes(key)) return null;
+  if (['within2', 'within5', 'pitch_sat', 'roll_sat'].includes(key)) return (v * 100).toFixed(0);
+  if (['reversals', 'chatter', 'alt_change', 'speed_loss'].includes(key)) return v.toFixed(0);
+  return v.toFixed(2);
+}
+function drawCard() {
+  const sc = scenario(), m = IDX.metrics[st.cond][st.scen], list = visible();
+  const rows = METRICS.filter(r => r[4] === 'all' || r[4].includes(sc.kind));
+  let html = `<table><thead><tr><th>指标</th>${list.map(c => `<th style="color:${colorOf(c.id)}">${c.label}</th>`).join('')}</tr></thead><tbody>`;
+  for (const [key, label, unit, better] of rows) {
+    const vals = list.map(c => m[c.id][key]), shown = vals.map(v => fmt(key, v));
+    const valid = vals.filter((v, k) => shown[k] !== null);
+    const best = better === 0 || !valid.length ? null : better < 0 ? Math.min(...valid) : Math.max(...valid);
+    html += `<tr><td>${label}${unit ? `（${unit}）` : ''}</td>${vals.map((v, k) => shown[k] === null ? '<td class="na">未达到</td>'
+      : `<td class="${best !== null && v === best && valid.length > 1 ? 'best' : ''}">${shown[k]}</td>`).join('')}</tr>`;
+  }
+  document.getElementById('card').innerHTML = html + '</tbody></table>';
+}
+
+// ---------- overview ----------
+function drawOverview() {
+  const list = visible(), M = IDX.metrics[st.cond];
+  let html = `<table><thead><tr><th>场景（${IDX.plants.find(p => p.id === st.cond).title}）</th>${list.map(c => `<th style="color:${colorOf(c.id)}">${c.label}</th>`).join('')}</tr></thead><tbody>`;
+  const totals = {}, all = {};
+  list.forEach(c => { all[c.id] = 0; });
+  for (const kind of ['capture', 'chain', 'hold', 'pursuit']) {
+    html += `<tr class="group"><td colspan="${list.length + 1}">${KIND[kind]}</td></tr>`;
+    list.forEach(c => { totals[c.id] = 0; });
+    for (const sc of IDX.scenarios.filter(s => s.kind === kind)) {
+      if (!M[sc.id]) continue;
+      const costs = list.map(c => M[sc.id][c.id].cost), best = Math.min(...costs);
+      list.forEach((c, k) => { totals[c.id] += costs[k]; all[c.id] += costs[k]; });
+      html += `<tr data-scen="${sc.id}"><td>${sc.title}</td>${costs.map(v => {
+        const r = Math.min(1, (v / Math.max(best, .05) - 1) / 1.5);   // 0 best .. 1 at 2.5x best
+        const bg = `rgba(${Math.round(60 + 180 * r)}, ${Math.round(160 - 90 * r)}, ${Math.round(110 - 60 * r)}, ${.12 + .25 * r})`;
+        return `<td style="background:${bg}" class="${v === best ? 'best' : ''}">${v.toFixed(2)}</td>`; }).join('')}</tr>`;
+    }
+    const tb = Math.min(...list.map(c => totals[c.id]));
+    html += `<tr class="total"><td>小计</td>${list.map(c => `<td class="${totals[c.id] === tb ? 'best' : ''}">${totals[c.id].toFixed(1)}</td>`).join('')}</tr>`;
+  }
+  const ab = Math.min(...list.map(c => all[c.id]));
+  html += `<tr class="total"><td>合计</td>${list.map(c => `<td class="${all[c.id] === ab ? 'best' : ''}">${all[c.id].toFixed(1)}</td>`).join('')}</tr></tbody></table>`;
+  html += `<div class="explain"><p><b>综合代价</b>越低越好，每个场景一个数，权重是粗略的，具体差在哪里要看单场景页的指标。
+    捕获和连续机动：到 2° 的时间 + 0.5 × 稳定在 1° 内的时间 + 超过 1.5° 的过冲 ×2 + 多余的滚转反向 ×0.5 + 杆量来回打 ×0.2 + 倒飞时间 ×0.5（倒飞起始的场景不计倒飞）；没达到按场景时长计。
+    精确保持：偏差均方根 + 坡度均方根 ×0.05 + 滚转反向 ×0.3 + 杆量来回打 ×0.1。追击：开始 3 s 后的平均偏差 ×0.5 + 不在 5° 内的时间占比 ×3 + 滚转反向 ×0.2 + 杆量来回打 ×0.05。</p>
+    <p><b>模型</b>：姿态响应（延迟、游戏的输入平滑、响应曲线、拉杆/推杆权限、滚转加速度和上限、高G拉杆、方向舵约 5.4°/s）和航迹（速度方向滞后机头 0.2 s、重力、中立油门下速度回到约 190 m/s）都来自 2026-10-04 用游戏时钟录下的两段同关卡飞行。
+    “墙钟计时”工况模拟宿主用墙上时钟测帧时间（主仓库和 xsd467 的宿主现在仍是这样），角速度带约 20% 的乘性噪声；“迟钝机体”检验对模型误差的鲁棒性。</p>
+    <p><b>控制器</b>：${IDX.controllers.map(c => `<span style="color:${colorOf(c.id)}">${c.label}</span>（${c.source}）`).join('；')}。点击任一行打开该场景。</p></div>`;
+  const box = document.getElementById('overview'); box.innerHTML = html;
+  box.querySelectorAll('tr[data-scen]').forEach(tr => tr.addEventListener('click', () => { st.scen = tr.dataset.scen; document.getElementById('scenario').value = st.scen; setTab('scene'); selectScenario(); }));
+}
+
+// ---------- interaction ----------
+function dragOrbit(canvas, o, redraw) {
+  let last = null;
+  canvas.addEventListener('pointerdown', e => { last = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'; });
+  canvas.addEventListener('pointerup', () => { last = null; canvas.style.cursor = ''; });
+  canvas.addEventListener('pointermove', e => {
+    if (!last) return;
+    o.yaw += (e.clientX - last[0]) * .4; o.pitch = Math.max(-80, Math.min(85, o.pitch + (e.clientY - last[1]) * .3));
+    last = [e.clientX, e.clientY]; redraw();
+  });
+  canvas.addEventListener('wheel', e => { e.preventDefault();
+    if (o.dist === null || o === over) o.dist = Math.max(.2, Math.min(4, (o.dist || 1.15) * (e.deltaY > 0 ? 1.12 : 1 / 1.12)));
+    else o.dist = Math.max(20, Math.min(600, o.dist * (e.deltaY > 0 ? 1.12 : 1 / 1.12)));
+    redraw(); }, { passive: false });
+  canvas.addEventListener('dblclick', () => { if (o === over) Object.assign(o, { yaw: -35, pitch: 28, dist: null }); else Object.assign(o, { yaw: 0, pitch: 12, dist: 70 }); redraw(); });
+}
+dragOrbit(document.getElementById('overlay'), over, () => drawOverlay());
+
+function buildChips() {
+  const box = document.getElementById('chips'); box.innerHTML = '';
+  for (const c of IDX.controllers) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'chip' + (st.hidden.has(c.id) ? ' off' : '');
+    b.title = c.source; b.setAttribute('aria-pressed', String(!st.hidden.has(c.id)));
+    b.innerHTML = `<i style="background:${colorOf(c.id)}"></i>${c.label}`;
+    b.addEventListener('click', () => {
+      if (st.hidden.has(c.id)) st.hidden.delete(c.id); else if (visible().length > 1) st.hidden.add(c.id);
+      save(); buildChips(); buildCams(); drawAll(); if (st.tab === 'overview') drawOverview();
+    });
+    box.appendChild(b);
+  }
+}
+function fillSelects() {
+  const cond = document.getElementById('cond');
+  cond.innerHTML = IDX.plants.map(p => `<option value="${p.id}">${p.title}</option>`).join(''); cond.value = st.cond;
+  const sel = document.getElementById('scenario');
+  sel.innerHTML = ['capture', 'chain', 'hold', 'pursuit'].map(k => `<optgroup label="${KIND[k]}">${IDX.scenarios.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.title}</option>`).join('')}</optgroup>`).join('');
+  sel.value = st.scen;
+}
+function selectScenario() {
+  save(); st.t = 0; computeExtent();
+  const sc = scenario(); document.getElementById('note').textContent = sc.note || '';
+  drawAll();
+}
+function setTab(tab) {
+  st.tab = tab; save();
+  document.getElementById('tabScene').setAttribute('aria-pressed', String(tab === 'scene'));
+  document.getElementById('tabOverview').setAttribute('aria-pressed', String(tab === 'overview'));
+  document.getElementById('scene').hidden = tab !== 'scene';
+  document.getElementById('overview').hidden = tab !== 'overview';
+  document.getElementById('transport').style.visibility = tab === 'scene' ? '' : 'hidden';
+  document.getElementById('scenario').disabled = tab !== 'scene';
+  document.getElementById('note').style.visibility = tab === 'scene' ? '' : 'hidden';
+  if (tab === 'overview') drawOverview(); else drawAll();
+}
+function drawAll() {
+  if (st.tab !== 'scene') return;
+  const T = scenario().seconds;
+  document.getElementById('clock').textContent = `${st.t.toFixed(2)} s`;
+  document.getElementById('scrub').value = String(Math.round(st.t / T * 1000));
+  drawCams(); drawOverlay(); drawCard(); drawCharts();
+}
+
+document.getElementById('cond').addEventListener('change', e => { st.cond = e.target.value; save(); loadCond(st.cond, () => { computeExtent(); drawAll(); if (st.tab === 'overview') drawOverview(); }); });
+document.getElementById('scenario').addEventListener('change', e => { st.scen = e.target.value; selectScenario(); });
+document.getElementById('scrub').addEventListener('input', e => { st.t = e.target.value / 1000 * scenario().seconds; drawAll(); });
+document.getElementById('speed').addEventListener('change', e => { st.speed = parseFloat(e.target.value); });
+document.getElementById('tabScene').addEventListener('click', () => setTab('scene'));
+document.getElementById('tabOverview').addEventListener('click', () => setTab('overview'));
+const playBtn = document.getElementById('play');
+function setPlaying(on) { st.playing = on; playBtn.textContent = on ? '❚❚ 暂停' : '▶ 播放'; if (on && st.t >= scenario().seconds - 0.01) st.t = 0; }
+playBtn.addEventListener('click', () => setPlaying(!st.playing));
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!st.playing); }
+  else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+    e.preventDefault(); st.t = Math.max(0, Math.min(scenario().seconds, st.t + (e.code === 'ArrowRight' ? .05 : -.05) * (e.shiftKey ? 10 : 1))); drawAll();
+  }
+});
+let lastTick = null;
+function tick(now) {
+  if (st.playing && lastTick !== null) {
+    st.t += (now - lastTick) / 1000 * st.speed;
+    if (st.t >= scenario().seconds) { st.t = scenario().seconds; setPlaying(false); }
+    drawAll();
+  }
+  lastTick = now; requestAnimationFrame(tick);
+}
+window.addEventListener('resize', () => drawAll());
+window.ac8compare = st;   // debugging
+
+fillSelects(); buildChips(); buildCams(); buildCharts();
+loadCond(st.cond, () => { computeExtent(); setTab(st.tab); document.getElementById('note').textContent = scenario().note || ''; requestAnimationFrame(tick); });
+})();
+</script>
+</body>
+</html>

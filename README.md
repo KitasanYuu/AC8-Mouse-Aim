@@ -211,7 +211,7 @@ Payload/              装进游戏目录的文件（Lua 脚本、配置、DLL、
 src/                  原生输入处理、飞控、相机修正、指示层及诊断
 tests/                飞控数学检查、闭环仿真、Lua 相机数学检查
 docs/maneuver-spec.md 机动范式规范（飞控行为以此为准）
-dev/                  开发脚本：构建、检查、调试同步
+dev/                  开发脚本：构建、检查、调试同步、飞行重建、飞控对比台
 ```
 
 构建需要 Visual Studio 2022 的 MSVC x64 C++ 工具链、Windows SDK、Git 和网络连接。`dev\build.cmd` 会先运行 `dev\Setup-Dependencies.ps1`，将 RE-UE4SS 固定在 `e3ba1016562d6c0868c410d0a71e88bfcdbf691b` 提交。源码保存在忽略提交的 `deps/ue4ss-source/`，后续构建可离线复用。构建不需要编译或替换随附的 UE4SS.dll。
@@ -239,6 +239,26 @@ dev\Dev-Deploy.cmd -GamePath "D:\SteamLibrary\steamapps\common\ACE COMBAT 8"
 - **调参数**：修改已安装 `config.ini` 的 `[tuning]` 段并保存，运行中的游戏约 0.5 秒内自动重新读取。
 - **改飞控逻辑**（`src/maneuver.h`、`src/flight_logic.h`）：游戏运行中执行 `dev\Dev-Deploy.cmd -Live`。它构建并替换开发用的 `ac8_flight_logic.dll`，游戏约 1 秒内热加载，日志记录 `flight logic: hot-loaded generation N`。接口不兼容时拒绝加载并保留当前逻辑。修改钩子、桥接、Lua 或 `LogicInput`/`LogicOutput` 结构仍需退出游戏后正常同步。
 - **逐帧记录**：按 F4 开关，日志中的 `TRACE` 行包含误差、角速度、线性杆量、实际写入值和键盘接管状态。
+
+### 实时飞行重建
+
+`dev\Telemetry.cmd` 启动一个本地小服务（只用 Python 标准库），并在浏览器打开 `http://127.0.0.1:8731/`：
+
+- 游戏中实时重建飞行：三维追尾视角（机头、速度方向、目标方向、轨迹）、俯视航迹、速度/高度/攻角/侧滑/过载/角速度、杆量与加速/减速输入，以及最近 20 秒的曲线。
+- 敌机：每秒 10 次记录附近飞机（最多 24 架）的位置、姿态和速度，当前选中的目标高亮并显示距离、接近速度、高度差和航向夹角；同时记录游戏自己给出的本机速度，用于核对计算值。
+- 每次飞行自动录制到仓库的 `recordings/`（不纳入 git），页面左上角可选择录像回放、拖动和变速播放。录像也用于拟合整机模型。
+
+需要在游戏目录的 `config.ini` `[control]` 中设置 `telemetry_port=49731`。MOD 每帧向 127.0.0.1 发送一个 UDP 数据包，不等待、不阻塞，没有服务接收时直接丢弃；设为 0 即关闭。
+
+### 飞控对比台
+
+`dev\compare\compare.cmd` 让几种飞控在同一个整机模型上飞同一组机动，并打开 `dev/compare/index.html` 对比：每个飞控一个追尾视角（同一时刻的整机姿态）、航迹叠加、逐项指标和同轴曲线，另有全部场景的评分总览。
+
+- 机体模型来自录像：姿态响应（延迟、游戏输入平滑、响应曲线、权限、滚转上限、高G、方向舵）和航迹（速度方向滞后机头、重力、速度变化）。拟合脚本 `dev/compare/fit_airframe.py`。
+- 场景：固定方向捕获、中途换目标、精确保持（平飞、鼠标微调、拖动）、追击脚本敌机；工况：实测机体、墙钟计时（角速度噪声大）、迟钝机体。
+- 参评飞控：本仓库工作区（`src/` + Payload 的 `[tuning]`）、主仓库 0.2.30 与 0.2.35、xsd467 pw5。其他仓库的源码按提交原样放在 `dev/compare/controllers/<名称>/`（只改命名空间），适配器见同目录的 `.h`；新增飞控时照此添加并在 `harness.cpp` 注册。
+- 试参数：`dev\compare\compare.cmd "variant=kd 0.1:pitch_kd=0.1;level_per_deg=10"`，会作为额外一列与当前配置并排。
+- `dev/compare/scorecard.txt` 随仓库提交，改飞控后重跑，用 git diff 看各场景分数的变化。
 
 `ac8_flight_logic.dll` 仅用于开发，不在 Payload 中；正式安装使用主 DLL 内置的同一份逻辑代码。
 
