@@ -3,11 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>飞控对比台</title>
+<title>飞控横评</title>
 <style>
-/* A test bench: one row of chase cameras (one per controller, same maneuver, same
-   moment), the paths overlaid, the scorecard, and strip charts with every controller
-   on the same axes. Dark only, like the telemetry page beside it. */
+/* A side-by-side review of flight controllers: the same decisions against the same enemies.
+   First the numbers (every controller on every aircraft, ranked per column), then one shared
+   3D replay with a small attitude gauge per controller, then whole-scene timelines (one lane
+   per controller) and a short detail chart around the cursor. Dark only, like the telemetry
+   page beside it. */
 :root {
   --bg: #0e1418;
   --panel: #151d22;
@@ -15,129 +17,137 @@
   --grid: #1d2830;
   --ink: #dbe4e9;
   --muted: #84959f;
-  --nose: #f2f5f7;
-  --path: #5fd38a;
   --aim: #f29a4a;
   --warn: #f06e5c;
   --enemy: #e5534b;
-  --good: #5fd38a;
+  --elite: #ff6bd6;
   --font: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
   --mono: "Cascadia Mono", "Consolas", "IBM Plex Mono", ui-monospace, monospace;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { height: 100%; }
-body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 13px; line-height: 1.5; }
-.app { display: grid; grid-template-rows: auto auto minmax(0, 1fr); height: 100%; gap: 8px; padding: 10px 14px; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 13px; line-height: 1.45; }
+.page { display: grid; gap: 10px; padding: 10px 14px 18px; max-width: 3440px; margin: 0 auto; }
 .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.bar h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 600; letter-spacing: .02em; }
-.title { font-size: 11px; color: var(--muted); letter-spacing: .06em; }
-select, button, input[type=range] { font: inherit; color: var(--ink); }
-select, button { background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 8px; }
+.bar h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 600; }
+.note { color: var(--muted); font-size: 12px; }
+.label { font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+select, button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 9px; }
 button { cursor: pointer; }
 button:hover, select:hover { border-color: var(--muted); }
-button[aria-pressed=true] { border-color: var(--ink); background: #1f2a31; }
+button[aria-pressed=true] { border-color: var(--ink); background: #22303a; }
 :focus-visible { outline: 2px solid #4fb3d9; outline-offset: 1px; }
-.spacer { flex: 1; }
-.transport { display: flex; gap: 8px; align-items: center; flex: 1 1 360px; }
-.transport input[type=range] { flex: 1; accent-color: #4fb3d9; min-width: 120px; }
-.clock { font-family: var(--mono); min-width: 8ch; text-align: right; font-variant-numeric: tabular-nums; }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 12px; border: 1px solid var(--rule); background: var(--panel); cursor: pointer; font-size: 12px; }
-.chip i { width: 14px; height: 4px; border-radius: 2px; display: inline-block; }
-.chip.off { opacity: .4; }
-.note { color: var(--muted); font-size: 12px; }
-.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; min-width: 0; min-height: 0; }
+.seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; min-width: 0; }
+.panel > h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0; padding: 8px 12px 0; letter-spacing: .04em; }
 
-.scene { display: grid; grid-template-rows: minmax(260px, 1.1fr) minmax(0, 1fr); gap: 8px; min-height: 0; }
-.top { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 8px; min-height: 0; }
-.cams { display: grid; gap: 8px; min-height: 0; }
-.cam { position: relative; overflow: hidden; }
-.cam canvas, .overlay canvas, .chart canvas { width: 100%; height: 100%; display: block; }
-.cam canvas, .overlay canvas { cursor: grab; }
-.cam .label { position: absolute; left: 8px; top: 6px; font-size: 12px; font-weight: 600; pointer-events: none; text-shadow: 0 1px 2px #000; }
-.cam .read { position: absolute; left: 8px; bottom: 6px; right: 8px; font-family: var(--mono); font-size: 11px; color: var(--ink); pointer-events: none;
-             display: grid; grid-template-columns: repeat(4, auto); justify-content: start; gap: 0 14px; text-shadow: 0 1px 2px #000; font-variant-numeric: tabular-nums; }
-.cam .read span { color: var(--muted); margin-right: 3px; }
-.cam .sticks { position: absolute; right: 8px; top: 8px; width: 92px; display: grid; gap: 3px; pointer-events: none; }
-.meter { position: relative; height: 6px; background: rgba(29, 40, 48, .85); border-radius: 3px; overflow: hidden; }
-.meter i { position: absolute; top: 0; bottom: 0; }
-.meter::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--muted); }
-.side { display: grid; grid-template-rows: minmax(180px, 1fr) auto; gap: 8px; min-height: 0; }
-.overlay { position: relative; }
-.overlay .title { position: absolute; left: 10px; top: 6px; pointer-events: none; }
-.card { padding: 8px 10px; overflow: auto; max-height: 46vh; }
-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-th, td { padding: 2px 6px; text-align: right; white-space: nowrap; }
+/* the board: controllers x (condition x metric), each column ranked */
+.board { padding: 8px 12px 10px; overflow-x: auto; }
+table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.board table { width: 100%; }
+th, td { padding: 3px 8px; text-align: right; white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }
-thead th { font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--rule); }
-tbody td { font-family: var(--mono); font-size: 12px; border-bottom: 1px solid var(--grid); }
-tbody td:first-child { font-family: var(--font); color: var(--muted); }
-td.best { color: var(--good); font-weight: 600; }
-td.na { color: var(--muted); }
-.charts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(100px, 1fr); gap: 8px; min-height: 0; }
-.chart { padding: 4px 8px 6px; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 100px; }
-.chart .plot { position: relative; min-height: 0; cursor: crosshair; }
-.chart .plot canvas { position: absolute; inset: 0; }
+thead th { font-weight: 600; font-size: 12px; }
+thead tr.cond th { border-bottom: 1px solid var(--rule); color: var(--ink); text-align: center; }
+thead tr.metric th { color: var(--muted); font-weight: 400; font-size: 11px; }
+th.gap, td.gap { border-left: 1px solid var(--rule); }
+tbody td { font-family: var(--mono); font-size: 12.5px; }
+tbody td:first-child { font-family: var(--font); }
+.chip { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+td.cell { position: relative; }
+td.cell .rank { font-size: 10px; opacity: .8; margin-left: 4px; }
+td.total { font-weight: 700; }
+.legend { color: var(--muted); font-size: 11px; margin-top: 6px; }
+.legend i { display: inline-block; width: 26px; height: 8px; border-radius: 2px; vertical-align: 0; margin: 0 4px 0 10px; }
 
-.overview { overflow: auto; padding: 10px 12px; }
-.overview table td { cursor: default; }
-.overview tbody tr { cursor: pointer; }
-.overview tbody tr:hover td { background: #1b252c; }
-.overview tr.group td { font-family: var(--font); color: var(--ink); font-weight: 600; background: #111a1f; cursor: default; }
-.overview tr.total td { font-weight: 600; border-top: 1px solid var(--rule); }
-.overview .explain { color: var(--muted); font-size: 12px; max-width: 980px; margin: 12px 0 0; }
-.overview .explain b { color: var(--ink); font-weight: 600; }
-.empty { display: grid; place-items: center; text-align: center; color: var(--muted); padding: 40px; }
+/* replay */
+.replay { display: grid; gap: 8px; padding: 8px 12px 12px; }
+.replay-head { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.transport { display: flex; gap: 8px; align-items: center; flex: 1 1 320px; }
+.transport input[type=range] { flex: 1; min-width: 140px; accent-color: #4fb3d9; }
+.clock { font-family: var(--mono); min-width: 8ch; text-align: right; font-variant-numeric: tabular-nums; }
+.replay-body { display: grid; gap: 8px; }
+.view { position: relative; height: clamp(320px, 44vh, 620px); background: #10181c; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
+.view canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+.view .hint { position: absolute; right: 8px; bottom: 6px; color: var(--muted); font-size: 11px; pointer-events: none; }
+.gauges { display: grid; grid-template-columns: repeat(var(--n, 5), minmax(0, 1fr)); gap: 8px; }
+.gauge { border: 1px solid var(--rule); border-radius: 5px; padding: 6px 8px 7px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; background: #121a1f; }
+.gauge .name { grid-column: 1 / -1; }
+.gauge .name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.gauge .name button { margin-left: auto; padding: 0 6px; font-size: 11px; }
+.gauge canvas { width: 100%; height: clamp(110px, 13vh, 200px); display: block; }
+.gauge .read { font-family: var(--mono); font-size: 12px; display: grid; align-content: center; gap: 2px; font-variant-numeric: tabular-nums; min-width: 9ch; }
+.gauge .read span { color: var(--muted); margin-right: 4px; }
+.gauge.crashed { opacity: .55; }
+.gauge .flag { color: var(--warn); font-size: 11px; }
+
+/* timelines */
+.timeline { position: relative; }
+.timeline canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.timeline-wrap { position: relative; cursor: crosshair; }
+.detail-wrap { height: 170px; position: relative; }
+.detail-wrap canvas { width: 100%; height: 100%; display: block; }
+
+/* overview */
+.overview { padding: 8px 12px 12px; overflow-x: auto; }
+.overview tbody tr[data-scen] { cursor: pointer; }
+.overview tbody tr[data-scen]:hover td { outline: 1px solid #2c3a42; }
+.overview tr.group td { font-family: var(--font); color: var(--ink); font-weight: 600; background: #111a1f; text-align: left; }
+.overview tfoot td { font-family: var(--mono); border-top: 1px solid var(--rule); font-weight: 600; }
+.overview tfoot td:first-child { font-family: var(--font); }
+.explain { color: var(--muted); font-size: 12px; max-width: 1100px; margin: 10px 0 0; }
+.explain b { color: var(--ink); font-weight: 600; }
+.empty { padding: 40px; color: var(--muted); text-align: center; }
 .empty code { font-family: var(--mono); color: var(--aim); }
 
 @media (max-width: 1100px) {
-  .app { height: auto; }
-  .top { grid-template-columns: minmax(0, 1fr); }
-  .scene { grid-template-rows: auto auto; }
-  .cams { grid-auto-rows: 220px; }
-  .side { grid-template-rows: 300px auto; }
-  .charts { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 120px; }
+  .gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
 </head>
 <body>
-<div class="app">
+<div class="page" id="app">
   <div class="bar">
-    <h1>飞控对比台</h1>
-    <div role="group" aria-label="页面" class="chips">
-      <button type="button" id="tabScene" aria-pressed="true">单场景</button>
-      <button type="button" id="tabOverview" aria-pressed="false">总览评分</button>
+    <h1>飞控横评</h1>
+    <div class="seg" role="group" aria-label="页面">
+      <button type="button" id="tabScene" aria-pressed="true">场景</button>
+      <button type="button" id="tabOverview" aria-pressed="false">总览</button>
     </div>
-    <label class="title" for="cond">工况</label>
-    <select id="cond"></select>
-    <label class="title" for="scenario">场景</label>
-    <select id="scenario"></select>
-    <div class="transport" id="transport">
-      <button id="play" type="button">▶ 播放</button>
-      <select id="speed" aria-label="播放速度"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select>
-      <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="时间">
-      <span class="clock" id="clock">0.00 s</span>
-    </div>
-  </div>
-  <div class="bar">
-    <div class="chips" id="chips"></div>
+    <label class="label" for="scene">场景</label>
+    <select id="scene"></select>
     <span class="note" id="note"></span>
   </div>
 
-  <div class="scene" id="scene">
-    <div class="top">
-      <div class="cams" id="cams"></div>
-      <div class="side">
-        <div class="panel overlay"><span class="title">航迹叠加（拖动旋转 · 滚轮缩放 · 双击复位）</span><canvas id="overlay" aria-label="所有飞控的航迹叠加"></canvas></div>
-        <div class="panel card" id="card"></div>
+  <div id="scenePage" class="page" style="padding:0">
+    <section class="panel">
+      <h2 id="boardTitle">横评</h2>
+      <div class="board" id="board"></div>
+    </section>
+
+    <section class="panel replay">
+      <div class="replay-head">
+        <span class="label">回放机体</span>
+        <div class="seg" id="conds" role="group" aria-label="回放机体"></div>
+        <span class="label">镜头</span>
+        <div class="seg" id="cams" role="group" aria-label="镜头"></div>
+        <div class="transport">
+          <button type="button" id="play">▶ 播放</button>
+          <select id="speed" aria-label="播放速度"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+          <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="时间">
+          <span class="clock" id="clock">0.0 s</span>
+        </div>
       </div>
-    </div>
-    <div class="charts" id="charts"></div>
+      <div class="replay-body">
+        <div class="view"><canvas id="view" aria-label="所有飞控同一画面的三维回放"></canvas><span class="hint">拖动旋转 · 滚轮缩放 · 双击复位</span></div>
+        <div class="gauges" id="gauges"></div>
+      </div>
+      <div class="timeline-wrap" id="timelineWrap"><div class="timeline" id="timeline"><canvas id="lanes"></canvas><canvas id="lanesCursor"></canvas></div></div>
+      <div class="detail-wrap"><canvas id="detail" aria-label="光标前后 10 秒的偏差角与坡度"></canvas></div>
+    </section>
   </div>
 
-  <div class="panel overview" id="overview" hidden></div>
+  <section class="panel overview" id="overview" hidden></section>
 </div>
 
 <script src="results/index.js"></script>
@@ -145,44 +155,111 @@ td.na { color: var(--muted); }
 (() => {
 'use strict';
 const IDX = window.COMPARE_INDEX;
-if (!IDX) {
-  document.querySelector('.app').innerHTML = '<div class="empty"><div>还没有对比结果。先在仓库根目录运行 <code>dev\\compare\\compare.cmd</code>。</div></div>';
-  return;
-}
-// Frame layout written by harness.cpp (every 4th 80 Hz step).
+if (!IDX) { document.getElementById('app').innerHTML = '<div class="empty">还没有结果。先在仓库根目录运行 <code>dev\\compare\\compare.cmd</code>。</div>'; return; }
+
+// ---------- data ----------
+// Frame layout written by harness.cpp.
 const F = { t: 0, x: 1, y: 2, z: 3, pitch: 4, yaw: 5, roll: 6, ax: 7, ay: 8, az: 9, angle: 10, q: 11, p: 12, r: 13,
-            sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25,
-            tgt: 26, kills: 27 };   // battles: the enemy being attacked (-1 none) and enemies down so far
-const PALETTE = { ours: '#4fb3d9', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a', recorded: '#e8e8e8' };
-const EXTRA = ['#f5d04c', '#ff7aa8', '#8fd0c4', '#b0b8ff'];
+            sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25, tgt: 26, kills: 27 };
+const PALETTE = { ours: '#4fb3d9', ours_game: '#f5d04c', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a' };
+const EXTRA = ['#ff7aa8', '#8fd0c4', '#b0b8ff', '#e8e8e8'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
-const KIND = { capture: '捕获（鼠标移到一个方向后不动）', switch: '换目标（滚转中出现新目标）', chain: '连续（中途换目标）',
-               hold: '保持（对准后的小幅鼠标操作）', pursuit: '脚本追击（鼠标压在脚本敌机上）',
-               track: '实录追击（录像里的真实敌机，鼠标压在机炮提前量上；白色为游戏里当时实际飞出的结果）',
-               battle: '实战（录像里整段空战的全部敌机，虚拟飞行员选目标、导弹 + 机炮；粉色为精英机）' };
-const KINDS = ['capture', 'switch', 'chain', 'hold', 'pursuit', 'track', 'battle'];
-// Recorded scenes run only on the aircraft they were flown with.
-const available = sc => !!(IDX.metrics[st.cond] || {})[sc.id];
-const withEnemy = kind => kind === 'pursuit' || kind === 'track' || kind === 'battle';
-const ELITE = '#ff6bd6';
-// Battles: every enemy's path (2 Hz) and, per controller, when it brought each one down.
-const foesOf = () => (runs() || {})._foes || [];
-function foeAt(foe, t) {   // [class, elite, first, last, [[t, x, y, z], ...]] -> position and heading, or null
-  if (t < foe[2] || t > foe[3]) return null;
-  const pts = foe[4]; if (!pts.length) return null;
-  let k = 1; while (k < pts.length - 1 && pts[k][0] < t) k++;
-  const a = pts[Math.max(0, k - 1)], b = pts[Math.min(k, pts.length - 1)];
-  const u = b[0] > a[0] ? Math.max(0, Math.min(1, (t - a[0]) / (b[0] - a[0]))) : 0;
-  const p = [a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u];
-  const d = sub([b[1], b[2], b[3]], [a[1], a[2], a[3]]), h = Math.hypot(d[0], d[1]);
-  return { pos: enu(p), pitch: Math.atan2(d[2], h || 1) / rad, yaw: Math.atan2(d[1], d[0]) / rad };
-}
-function downBy(ctlId, t) {   // enemy indices this controller had brought down by time t
-  const k = ((runs() || {})._kills || {})[ctlId] || [];
-  return new Set(k.filter(e => e[0] <= t).map(e => e[1]));
+const shortName = c => c.label.replace(/^本仓库 · /, '').replace(/^主仓库 /, '');
+const KIND = { capture: '捕获', switch: '换目标', chain: '连续', hold: '保持', pursuit: '脚本追击', single: '单机', multi: '多机', boss: '头目' };
+const KINDS = Object.keys(KIND);
+const DIRECTION_ONLY = new Set(['capture', 'switch', 'chain', 'hold']);   // the aim is a direction: positions do not matter
+// Key metrics per kind: [key, label, unit, better (-1 lower, +1 higher), format]
+const pct = v => v < 0 ? null : (v * 100).toFixed(0);
+const sec = v => v < 0 ? null : v.toFixed(2);
+const deg = v => v < 0 ? null : v.toFixed(1);
+const num = v => v.toFixed(0);
+const COLS = {
+  capture: [['to2', '到 2° 内', 's', -1, sec], ['settle', '稳定 1° 内', 's', -1, sec], ['overshoot', '过冲', '°', -1, deg], ['reversals', '滚转反向', '', -1, num]],
+  hold: [['mean_angle', '平均偏差', '°', -1, v => v < 0 ? null : v.toFixed(2)], ['bank_rms', '坡度均方根', '°', -1, deg], ['chatter', '杆来回打', '', -1, num]],
+  pursuit: [['mean_angle', '平均偏差', '°', -1, deg], ['within5', '5° 内', '%', 1, pct], ['reversals', '滚转反向', '', -1, num]],
+  single: [['mean_angle', '平均偏差', '°', -1, deg], ['within2', '2° 内', '%', 1, pct], ['within5', '5° 内', '%', 1, pct]],
+  multi: [['kills', '击落', '', 1, num], ['clear', '全部击落', 's', -1, v => v < 0 ? null : v.toFixed(1)], ['to_shot', '选定到开火', 's', -1, sec], ['on_lead', '机炮瞄准', '%', 1, pct]],
+  boss: [['lock_frac', '1 km 锁定', '%', 1, pct], ['on_lead', '机炮瞄准', '%', 1, pct], ['mean_angle', '平均偏差', '°', -1, deg]],
+};
+COLS.switch = COLS.chain = COLS.capture;
+
+const st = { scen: IDX.scenarios[0].id, cond: IDX.plants[0].id, tab: 'scene', t: 0, playing: false, speed: 1, cam: 'group', follow: IDX.controllers[0].id };
+try { const s = JSON.parse(localStorage.getItem('ac8-review') || '{}');
+  if (IDX.scenarios.some(x => x.id === s.scen)) st.scen = s.scen;
+  if (IDX.plants.some(x => x.id === s.cond)) st.cond = s.cond;
+  if (s.tab === 'overview') st.tab = 'overview';
+  if (['group', 'follow', 'target'].includes(s.cam)) st.cam = s.cam;
+  if (IDX.controllers.some(x => x.id === s.follow)) st.follow = s.follow; } catch (e) { /* storage unavailable */ }
+function save() { try { localStorage.setItem('ac8-review', JSON.stringify({ scen: st.scen, cond: st.cond, tab: st.tab, cam: st.cam, follow: st.follow })); } catch (e) { /* ignore */ } }
+const scenario = () => IDX.scenarios.find(s => s.id === st.scen);
+const runs = () => ((window.COMPARE_DATA || {})[st.cond] || {})[st.scen];
+const metricsOf = (cond, scen) => (IDX.metrics[cond] || {})[scen] || {};
+function loadCond(cond, then) {
+  if (window.COMPARE_DATA && window.COMPARE_DATA[cond]) { then(); return; }
+  const s = document.createElement('script'); s.src = `results/data_${cond}.js`; s.onload = then;
+  document.head.appendChild(s);
 }
 
-// ---------- vectors (Unreal X north, Y east, Z up -> drawn as east/north/up) ----------
+// ---------- ranking ----------
+// Rank (0 = best) of each value in a column; equal values share a rank; missing values last.
+function ranks(values, better) {
+  const order = values.map((v, i) => ({ v, i })).filter(o => o.v !== null && Number.isFinite(o.v))
+    .sort((a, b) => better < 0 ? a.v - b.v : b.v - a.v);
+  const r = values.map(() => null);
+  order.forEach((o, k) => { r[o.i] = k > 0 && Math.abs(o.v - order[k - 1].v) < 1e-9 ? r[order[k - 1].i] : k; });
+  return r;
+}
+// best green -> middle amber -> worst red, as a cell background
+function rankColor(rank, n) {
+  if (rank === null || n < 2) return 'transparent';
+  const u = rank / (n - 1);
+  const c = u < .5 ? [[44, 120, 80], [130, 112, 40]][0].map((a, k) => a + ([130, 112, 40][k] - a) * u * 2)
+                   : [130, 112, 40].map((a, k) => a + ([140, 52, 48][k] - a) * (u - .5) * 2);
+  return `rgba(${c.map(Math.round).join(',')}, .55)`;
+}
+const RANK_MARK = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'];
+
+// ---------- board: the numbers for the scene, every controller on every aircraft ----------
+function drawBoard() {
+  const sc = scenario(), cols = COLS[sc.kind] || COLS.capture, list = IDX.controllers, conds = IDX.plants;
+  document.getElementById('boardTitle').textContent = `横评 · ${sc.title}（${sc.seconds.toFixed(0)} s）`;
+  let html = '<table><thead><tr class="cond"><th></th>';
+  for (const c of conds) html += `<th class="gap" colspan="${cols.length + 1}">${c.title}</th>`;
+  html += '<th class="gap">平均名次</th></tr><tr class="metric"><th>飞控</th>';
+  for (const c of conds) { cols.forEach((m, k) => { html += `<th class="${k ? '' : 'gap'}">${m[1]}${m[2] ? `（${m[2]}）` : ''}</th>`; }); html += '<th>综合代价</th>'; }
+  html += '<th class="gap"></th></tr></thead><tbody>';
+  // per column ranks
+  const cell = {}, rankSum = list.map(() => 0);
+  for (const c of conds) {
+    const M = metricsOf(c.id, sc.id);
+    for (const [key, , , better] of [...cols, ['cost', '', '', -1]]) {
+      const vals = list.map(x => M[x.id] ? M[x.id][key] : null).map(v => v === undefined || v === null || (v < 0 && key !== 'cost') ? null : v);
+      const r = ranks(vals, better);
+      list.forEach((x, i) => { cell[`${c.id}|${key}|${x.id}`] = { v: vals[i], r }; if (key === 'cost' && r[i] !== null) rankSum[i] += r[i]; });
+      list.forEach((x, i) => { cell[`${c.id}|${key}|${x.id}`].rank = r[i]; });
+    }
+  }
+  const avgRank = rankSum.map(v => v / conds.length), bestAvg = Math.min(...avgRank);
+  list.forEach((x, i) => {
+    html += `<tr><td><span class="chip" style="background:${colorOf(x.id)}"></span>${x.label}</td>`;
+    for (const c of conds) {
+      const M = metricsOf(c.id, sc.id)[x.id] || {};
+      cols.forEach(([key, , , , fmt], k) => {
+        const e = cell[`${c.id}|${key}|${x.id}`], shown = e.v === null ? '—' : (fmt(e.v) ?? '—');
+        html += `<td class="cell ${k ? '' : 'gap'}" style="background:${rankColor(e.rank, list.length)}">${shown}</td>`;
+      });
+      const e = cell[`${c.id}|cost|${x.id}`];
+      const crashed = M.crashed >= 0 ? ' <span title="坠地">✕</span>' : '';
+      html += `<td class="cell total" style="background:${rankColor(e.rank, list.length)}">${e.v === null ? '—' : e.v.toFixed(2)}<span class="rank">${e.rank === null ? '' : RANK_MARK[e.rank] || ''}</span>${crashed}</td>`;
+    }
+    html += `<td class="gap total" style="color:${avgRank[i] === bestAvg ? '#5fd38a' : 'inherit'}">${(avgRank[i] + 1).toFixed(1)}</td></tr>`;
+  });
+  html += '</tbody></table><div class="legend">每列按名次着色<i style="background:' + rankColor(0, 3) + '"></i>最好<i style="background:' +
+          rankColor(1, 3) + '"></i>居中<i style="background:' + rankColor(2, 3) + '"></i>最差 · ✕ 坠地（之后的时间按完全偏离计）· 综合代价越低越好，平均名次按三种机体的综合代价计</div>';
+  document.getElementById('board').innerHTML = html;
+}
+
+// ---------- vectors (Unreal X north, Y east, Z up -> drawn east/north/up) ----------
 const rad = Math.PI / 180;
 const enu = v => [v[1], v[0], v[2]];
 const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -197,85 +274,50 @@ function basis(p, y, r) {   // flight::basis, Unreal coordinates
   const right = [-Math.sin(y), Math.cos(y), 0], up = cross(f, right);
   return { f, r: sub(mul(right, Math.cos(r)), mul(up, Math.sin(r))), u: add(mul(up, Math.cos(r)), mul(right, Math.sin(r))) };
 }
-const posOf = fr => enu([fr[F.x], fr[F.y], fr[F.z]]);
-const enemyPos = fr => enu([fr[F.ex], fr[F.ey], fr[F.ez]]);
-
-// ---------- state ----------
-const st = { cond: IDX.plants[0].id, scen: IDX.scenarios[0].id, t: 0, playing: false, speed: 1, hidden: new Set(), tab: 'scene' };
-try { const saved = JSON.parse(localStorage.getItem('ac8-compare') || '{}');
-  if (IDX.plants.some(p => p.id === saved.cond)) st.cond = saved.cond;
-  if (IDX.scenarios.some(s => s.id === saved.scen)) st.scen = saved.scen;
-  if (saved.tab === 'overview') st.tab = 'overview';
-  (saved.hidden || []).forEach(id => st.hidden.add(id)); } catch (e) { /* storage unavailable */ }
-function save() { try { localStorage.setItem('ac8-compare', JSON.stringify({ cond: st.cond, scen: st.scen, tab: st.tab, hidden: [...st.hidden] })); } catch (e) { /* ignore */ } }
-const visible = () => IDX.controllers.filter(c => !st.hidden.has(c.id) && (IDX.metrics[st.cond][st.scen] || {})[c.id]);
-const visibleAll = () => IDX.controllers.filter(c => !st.hidden.has(c.id));
-const scenario = () => IDX.scenarios.find(s => s.id === st.scen);
-const runs = () => (window.COMPARE_DATA && window.COMPARE_DATA[st.cond] || {})[st.scen];
+// Interpolated frame at t (stored frames are 5-20 a second); wrapping angles take the short way.
+const WRAPS = new Set([F.yaw, F.roll, F.eyaw, F.er]);
 function frameAt(arr, t) {
-  if (!arr || !arr.length) return null;
   const step = arr.length > 1 ? arr[1][F.t] - arr[0][F.t] : 1;
-  return arr[Math.max(0, Math.min(arr.length - 1, Math.round(t / step)))];
+  const i = Math.max(0, Math.min(arr.length - 1, Math.floor(t / step)));
+  const a = arr[i], b = arr[Math.min(i + 1, arr.length - 1)];
+  if (a === b || b[F.t] <= a[F.t] || (a.length > F.tgt && a[F.tgt] !== b[F.tgt])) return a;
+  const u = Math.max(0, Math.min(1, (t - a[F.t]) / (b[F.t] - a[F.t])));
+  return a.map((v, k) => k >= F.tgt ? v : v + (WRAPS.has(k) ? ((b[k] - v + 540) % 360) - 180 : b[k] - v) * u);
 }
-function indexAt(arr, t) { const step = arr.length > 1 ? arr[1][F.t] - arr[0][F.t] : 1; return Math.max(0, Math.min(arr.length - 1, Math.round(t / step))); }
-
-// Per-condition frame data loads on demand (a few MB each).
-function loadCond(cond, then) {
-  if (window.COMPARE_DATA && window.COMPARE_DATA[cond]) { then(); return; }
-  const s = document.createElement('script'); s.src = `results/data_${cond}.js`; s.onload = then;
-  s.onerror = () => { document.getElementById('note').textContent = `读取 results/data_${cond}.js 失败`; };
-  document.head.appendChild(s);
+const ended = (arr, t) => arr.length && t > arr[arr.length - 1][F.t] + 0.3;   // crashed or cleared before t
+const crashedRun = id => { const m = metricsOf(st.cond, st.scen)[id]; return !!m && m.crashed >= 0; };
+function foeAt(foe, t) {   // [class, 0 / 1 elite / 2 boss, first, last, [[t, x, y, z], ...]]
+  if (t < foe[2] || t > foe[3]) return null;
+  const pts = foe[4]; if (!pts.length) return null;
+  let k = 1; while (k < pts.length - 1 && pts[k][0] < t) k++;
+  const a = pts[Math.max(0, k - 1)], b = pts[Math.min(k, pts.length - 1)];
+  const u = b[0] > a[0] ? Math.max(0, Math.min(1, (t - a[0]) / (b[0] - a[0]))) : 0;
+  const p = [a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u];
+  const d = sub([b[1], b[2], b[3]], [a[1], a[2], a[3]]);
+  return { pos: enu(p), pitch: Math.atan2(d[2], Math.hypot(d[0], d[1]) || 1) / rad, yaw: Math.atan2(d[1], d[0]) / rad };
 }
 
 // ---------- canvas ----------
-// Canvas sizes come from a ResizeObserver, not from reading the layout while drawing: each
-// view also updates its readout, and a layout read after a DOM write forces a full
-// relayout, a dozen times a frame (logged as stutter while playing battles).
+// Canvas sizes from a ResizeObserver (no layout reads while drawing); the backing store is
+// capped (pixel ratio 1.5, 0.6 megapixels) since filling pixels is most of a frame's cost.
 const MONO = getComputedStyle(document.documentElement).getPropertyValue('--mono');
 const sizes = new WeakMap();
-const sizeWatch = new ResizeObserver(entries => {
-  for (const e of entries) sizes.set(e.target, [e.contentRect.width, e.contentRect.height]);
-  requestAnimationFrame(() => drawAll());
-});
-// Filling the canvases is most of a frame's cost and grows with their area (a 3440x1440
-// screen has four times the pixels of a laptop's): the pixel ratio is capped at 1.5 and a
-// canvas's backing store at 0.7 megapixels, which the browser scales up to the view.
-const MAX_CANVAS_PIXELS = 250000;
-// Size a canvas to its view (pixel ratio and area capped as above) without clearing it.
-function fit(canvas) {
+let dirty = true;
+const sizeWatch = new ResizeObserver(entries => { for (const e of entries) sizes.set(e.target, [e.contentRect.width, e.contentRect.height]); lanesKey = null; dirty = true; });
+function fit(canvas, maxPixels = 600000) {
   let size = sizes.get(canvas);
   if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, size[0] * size[1])));
-  const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
-  let resized = false;
-  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); resized = true; }
-  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { ctx, w, h, resized };
-}
-function setup(canvas) {
-  let size = sizes.get(canvas);
-  if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
-  const area = Math.max(1, size[0] * size[1]);
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(MAX_CANVAS_PIXELS / area));
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(maxPixels / Math.max(1, size[0] * size[1])));
   const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
-  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { ctx, w, h };
 }
-// near: points closer than this are dropped (a trail passing beside the camera would
-// otherwise smear across the whole view).
-function camera(C, target, w, h, fov, near = 0.5) {
+function camera(C, target, w, h, fov, near = 2) {
   const fwd = norm(sub(target, C)), right = norm(cross(fwd, [0, 0, 1])), up = cross(right, fwd);
   const focal = (h / 2) / Math.tan(fov * rad / 2);
   return p => { const d = sub(p, C), z = dot(d, fwd); return z < near ? null : [w / 2 + focal * dot(d, right) / z, h / 2 - focal * dot(d, up) / z, z]; };
 }
-function lineIn(ctx, P, a, b, color, width = 1, dash = null, alpha = 1, steps = 16) {
-  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.globalAlpha = alpha; ctx.setLineDash(dash || []);
-  ctx.beginPath(); let pen = false;
-  for (let i = 0; i <= steps; i++) { const q = P(add(a, mul(sub(b, a), i / steps))); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
-  ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1;
-}
-// Jet outline in body axes (m): x forward, y right, z up.
 const MESH = (() => {
   const tris = [], m = (a, b, c, shade) => { tris.push({ v: [a, b, c], shade }); tris.push({ v: [[a[0], -a[1], a[2]], [c[0], -c[1], c[2]], [b[0], -b[1], b[2]]], shade }); };
   m([3.5, 0.9, 0], [-4.5, 7.5, 0], [-6.5, 0.9, 0], 1.0);
@@ -291,503 +333,389 @@ function drawJet(ctx, P, A, B, tint, scale = 1) {
     const pts = t.v.map(p => add(A, mul(add(mul(f, p[0]), add(mul(r, p[1]), mul(u, p[2]))), scale)));
     const q = pts.map(P); if (q.some(x => !x)) return null;
     const n = norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0])));
-    const light = 0.45 + 0.55 * Math.abs(dot(n, norm([0.3, -0.4, 1])));
-    // the belly side darker, so upright and inverted read at a glance
-    const belly = dot(u, n) * (t.v[0][2] >= 0 ? 1 : 1) < 0;
-    return { q, z: (q[0][2] + q[1][2] + q[2][2]) / 3, light: light * t.shade, belly };
+    return { q, z: (q[0][2] + q[1][2] + q[2][2]) / 3, light: (0.45 + 0.55 * Math.abs(dot(n, norm([0.3, -0.4, 1])))) * t.shade, belly: dot(u, n) < 0 };
   }).filter(Boolean).sort((a, b) => b.z - a.z);
+  ctx.strokeStyle = '#0b1114';
   for (const t of tris) {
     ctx.fillStyle = tint; ctx.globalAlpha = 0.35 + 0.6 * t.light * (t.belly ? 0.55 : 1);
-    ctx.strokeStyle = '#0b1114';
     ctx.beginPath(); ctx.moveTo(t.q[0][0], t.q[0][1]); ctx.lineTo(t.q[1][0], t.q[1][1]); ctx.lineTo(t.q[2][0], t.q[2][1]); ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-}
-// Wingtip ribbon between frames i0..i1: the band shows the roll; inverted parts orange.
-function ribbon(ctx, P, arr, i0, i1, half, color, alpha, every = 1) {
-  const pts = [];
-  for (let i = Math.max(0, i0); i <= i1; i += every) {
-    const fr = arr[i], B = basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), c = posOf(fr), wr = enu(B.r);
-    pts.push({ c: P(c), l: P(sub(c, mul(wr, half))), r: P(add(c, mul(wr, half))), inv: B.u[2] < 0 });
-  }
-  for (let k = 1; k < pts.length; k++) {
-    const a = pts[k - 1], b = pts[k]; if (!a.l || !a.r || !b.l || !b.r) continue;
-    ctx.fillStyle = b.inv ? '#f29a4a' : color; ctx.globalAlpha = (b.inv ? 1.6 : 1) * alpha;
-    ctx.beginPath(); ctx.moveTo(a.l[0], a.l[1]); ctx.lineTo(b.l[0], b.l[1]); ctx.lineTo(b.r[0], b.r[1]); ctx.lineTo(a.r[0], a.r[1]); ctx.closePath(); ctx.fill();
   }
   ctx.globalAlpha = 1;
-  for (const [key, c, wd] of [['l', '#e5534b', 1], ['r', '#5fd38a', 1], ['c', color, 1.6]]) {
-    ctx.strokeStyle = c; ctx.lineWidth = wd; ctx.globalAlpha = Math.min(1, alpha * 5); ctx.beginPath(); let pen = false;
-    for (const s of pts) { const q = s[key]; if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1; ctx.lineWidth = 1;
 }
 
-// ---------- chase cameras ----------
-const orbit = { yaw: 0, pitch: 12, dist: 70 };
-const cams = new Map();   // controller id -> { canvas, label, read, sticks }
-function buildCams() {
-  const box = document.getElementById('cams'); box.innerHTML = ''; cams.clear();
-  const list = visible(), n = list.length;
-  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
-  box.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-  for (const c of list) {
-    const el = document.createElement('div'); el.className = 'panel cam';
-    el.innerHTML = `<canvas aria-label="${c.label} 追尾视角"></canvas><div class="label" style="color:${colorOf(c.id)}">${c.label}</div>
-      <div class="sticks"><div class="meter" title="俯仰杆"><i></i></div><div class="meter" title="滚转杆"><i></i></div><div class="meter" title="偏航杆"><i></i></div></div>
-      <div class="read"></div>`;
-    box.appendChild(el);
-    const canvas = el.querySelector('canvas');
-    dragOrbit(canvas, orbit, () => drawCams());
-    cams.set(c.id, { canvas, read: el.querySelector('.read'), meters: [...el.querySelectorAll('.meter i')] });
-  }
+// ---------- the shared 3D view: every controller in one picture ----------
+const orbit = { yaw: -30, pitch: 18, zoom: 1 };
+// Scenes where the aim is only a direction start every aircraft at the same point: they are
+// drawn side by side, 60 m apart across the starting heading, so they do not overlap.
+function spread(id) {
+  const sc = scenario(); if (!DIRECTION_ONLY.has(sc.kind)) return [0, 0, 0];
+  const list = IDX.controllers, k = list.findIndex(c => c.id === id);
+  return [(k - (list.length - 1) / 2) * 60, 0, 0];   // east of the start (heading north)
 }
-function drawCams() {
-  const data = runs(), sc = scenario();
-  for (const c of visible()) {
-    const cam = cams.get(c.id); if (!cam) continue;
-    const { ctx, w, h } = setup(cam.canvas);
-    const arr = data && data[c.id]; if (!arr) continue;
-    const i = indexAt(arr, st.t), fr = arr[i], B = basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), A = posOf(fr);
-    // camera heading: the direction travelled over the last second (stable while scrubbing)
-    const back = arr[Math.max(0, i - 6)], travel = sub(A, posOf(back));
-    let heading = Math.hypot(travel[0], travel[1]) > 20 ? Math.atan2(travel[0], travel[1]) : Math.atan2(enu(B.f)[0], enu(B.f)[1]);
-    const ch = heading + orbit.yaw * rad, cp = orbit.pitch * rad;
-    const dir = [Math.sin(ch) * Math.cos(cp), Math.cos(ch) * Math.cos(cp), -Math.sin(cp)];
-    const C = sub(add(A, [0, 0, 3]), mul(dir, orbit.dist));
-    const P = camera(C, add(A, [0, 0, 3 + orbit.dist * 0.22]), w, h, 62, orbit.dist * 0.6);   // the aircraft a little below centre
-    // sky and ground split at the horizon
-    const fwd = norm(sub(add(A, [0, 0, 3 + orbit.dist * 0.22]), C));
-    const hz = P(add(C, mul(norm([fwd[0], fwd[1], 0]), 1e6)));
-    const hy = hz ? Math.max(-h, Math.min(2 * h, hz[1])) : (fwd[2] > 0 ? 2 * h : -h);
-    ctx.fillStyle = '#122028'; ctx.fillRect(0, 0, w, Math.max(0, Math.min(h, hy)));
-    ctx.fillStyle = '#161b17'; ctx.fillRect(0, Math.max(0, Math.min(h, hy)), w, h);
-    if (hz) { ctx.strokeStyle = '#2c3a42'; ctx.beginPath(); ctx.moveTo(0, hy); ctx.lineTo(w, hy); ctx.stroke(); }
-    // grid 500 m below, for a sense of motion
-    const G = 400, z0 = A[2] - 500, gx = Math.round(A[0] / G) * G, gy = Math.round(A[1] / G) * G, span = 6;
-    for (let k = -span; k <= span; k++) {
-      lineIn(ctx, P, [gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0], '#26323a', 1, null, .7, 6);
-      lineIn(ctx, P, [gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0], '#26323a', 1, null, .7, 6);
-    }
-    const color = colorOf(c.id);
-    // battle: every enemy still in the air (for this controller), the one attacked marked
-    if (sc.kind === 'battle') {
-      const down = downBy(c.id, st.t), mono = MONO;
-      foesOf().forEach((foe, k) => {
-        const at = foeAt(foe, st.t); if (!at || down.has(k)) return;
-        const q = P(at.pos); if (!q) return;
-        const dist = Math.hypot(...sub(at.pos, A)), tint = foe[1] ? ELITE : '#e5534b', attacked = fr[F.tgt] === k;
-        if (dist < 3000) drawJet(ctx, P, at.pos, basis(at.pitch, at.yaw, 0), tint, Math.max(1, dist / 250));
-        ctx.strokeStyle = tint; ctx.lineWidth = attacked ? 2 : 1; ctx.beginPath();
-        ctx.arc(q[0], q[1], attacked ? 11 : 6, 0, 2 * Math.PI); ctx.stroke(); ctx.lineWidth = 1;
-        if (attacked || dist < 2500) {
-          ctx.fillStyle = tint; ctx.font = `11px ${mono}`;
-          ctx.fillText(`${attacked ? '目标 ' : ''}${foe[1] ? '精英 ' : ''}${(dist / 1000).toFixed(1)} km`, q[0] + 12, q[1] - 8);
-        }
-      });
-    }
-    // enemy: path and model
-    else if (withEnemy(sc.kind) && fr.length > F.er) {
-      ctx.strokeStyle = '#e5534b'; ctx.globalAlpha = .7; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
-      for (let k = Math.max(0, i - 60); k <= i; k++) { const q = P(enemyPos(arr[k])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
-      ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
-      const EB = basis(fr[F.ep], fr[F.eyaw], fr[F.er]), E = enemyPos(fr), q = P(E);
-      if (q) {
-        const dist = Math.hypot(...sub(E, A));
-        drawJet(ctx, P, E, EB, '#e5534b', Math.max(1, dist / 250));
-        ctx.fillStyle = '#e5534b'; ctx.font = `11px ${MONO}`;
-        ctx.fillText(`敌机 ${(dist / 1000).toFixed(2)} km`, q[0] + 10, q[1] - 8);
-      }
-    }
-    ribbon(ctx, P, arr, i - 20, i, 12, color, .16);   // the last second
-    // aim direction and ring, flight path, nose
-    const aim = enu([fr[F.ax], fr[F.ay], fr[F.az]]);
-    lineIn(ctx, P, A, add(A, mul(aim, 900)), '#f29a4a', 2, [8, 6]);
-    const ring = P(add(A, mul(aim, 900)));
-    if (ring) { ctx.strokeStyle = '#f29a4a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ring[0], ring[1], 7, 0, 2 * Math.PI); ctx.stroke(); ctx.lineWidth = 1; }
-    if (i > 0) { const v = norm(sub(A, posOf(arr[i - 1]))); lineIn(ctx, P, A, add(A, mul(v, 150)), '#5fd38a', 2); }
-    lineIn(ctx, P, A, add(A, mul(enu(B.f), 150)), '#f2f5f7', 1.5);
-    drawJet(ctx, P, A, B, color, 1.5);
-    // readout
-    const bank = fr[F.roll];
-    const readout = `<div><span>偏差</span>${fr[F.angle].toFixed(2)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
-      `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>` +
-      (sc.kind === 'battle' ? `<div><span>击落</span>${fr[F.kills]} / ${foesOf().length}</div>` : '');
-    if (cam.text !== readout) { cam.read.innerHTML = readout; cam.text = readout; }
-    [fr[F.sp], fr[F.sr], fr[F.sy]].forEach((v, k) => {
-      const m = cam.meters[k], x = Math.max(-1, Math.min(1, v));
-      const style = `left:${(50 + Math.min(0, x) * 50).toFixed(1)}%;width:${(Math.abs(x) * 50).toFixed(1)}%;background:${color}`;
-      if (m.dataset.s !== style) { m.style.cssText = style; m.dataset.s = style; }
-    });
-  }
-}
-
-// ---------- overlay of every path ----------
-const over = { yaw: -35, pitch: 28, dist: null };
-let extent = null;   // { centre, size } of the current scenario
-function computeExtent() {
-  const data = runs(); if (!data) { extent = null; return; }
-  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-  for (const c of IDX.controllers) {
-    const arr = data[c.id]; if (!arr) continue;
-    for (const fr of arr) { const p = posOf(fr); for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } }
-  }
-  const first = IDX.controllers.map(c => data[c.id]).find(Boolean);
-  extent = { centre: mul(add(lo, hi), .5), size: Math.max(400, Math.hypot(...sub(hi, lo))), z0: first ? first[0][F.z] : 3000 };
-}
-function drawOverlay() {
-  const { ctx, w, h } = setup(document.getElementById('overlay'));
-  const data = runs(), sc = scenario(); if (!data || !extent) return;
-  const dist = (over.dist || 1.15) * extent.size;
-  const ch = over.yaw * rad, cp = over.pitch * rad;
-  const C = add(extent.centre, mul([-Math.sin(ch) * Math.cos(cp), -Math.cos(ch) * Math.cos(cp), Math.sin(cp)], dist));
-  const P = camera(C, extent.centre, w, h, 50);
+function drawView() {
+  const { ctx, w, h } = fit(document.getElementById('view'), 900000);
   ctx.fillStyle = '#10181c'; ctx.fillRect(0, 0, w, h);
-  // reference plane at the start altitude, 1 km grid
-  const z0 = extent.z0, G = 1000, cx = Math.round(extent.centre[0] / G) * G, cy = Math.round(extent.centre[1] / G) * G, span = Math.ceil(extent.size / G) + 1;
-  for (let k = -span; k <= span; k++) {
-    lineIn(ctx, P, [cx + k * G, cy - span * G, z0], [cx + k * G, cy + span * G, z0], '#1d2830', 1, null, 1, 8);
-    lineIn(ctx, P, [cx - span * G, cy + k * G, z0], [cx + span * G, cy + k * G, z0], '#1d2830', 1, null, 1, 8);
+  const data = runs(), sc = scenario(); if (!data) return;
+  const list = IDX.controllers.filter(c => data[c.id]);
+  const now = list.map(c => { const arr = data[c.id]; const fr = frameAt(arr, st.t); return { c, arr, fr, pos: add(enu([fr[F.x], fr[F.y], fr[F.z]]), spread(c.id)), gone: ended(arr, st.t) }; });
+  const foes = data._foes || [];
+  const foesNow = foes.map((f, i) => ({ f, i, at: foeAt(f, st.t) })).filter(o => o.at);
+  // the scripted pursuit enemy travels in every run alike
+  const scripted = sc.kind === 'pursuit' && now[0] ? enu([now[0].fr[F.ex], now[0].fr[F.ey], now[0].fr[F.ez]]) : null;
+  // camera target and distance
+  const flying = now.filter(o => !o.gone);
+  let centre, size;
+  const followed = now.find(o => o.c.id === st.follow) || now[0];
+  if (st.cam === 'follow' && followed) { centre = followed.pos; size = 120; }
+  else if (st.cam === 'target' && followed) {
+    const tgt = followed.fr.length > F.tgt && followed.fr[F.tgt] >= 0 ? foeAt(foes[followed.fr[F.tgt]], st.t) : null;
+    centre = tgt ? tgt.pos : scripted || followed.pos; size = 400;
+  } else {
+    const pts = flying.map(o => o.pos).concat(scripted ? [scripted] : []);
+    for (const o of foesNow) if (flying.some(p => Math.hypot(...sub(o.at.pos, p.pos)) < 4000)) pts.push(o.at.pos);
+    if (!pts.length) pts.push(now[0].pos);
+    centre = mul(pts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / pts.length);
+    size = Math.max(250, ...pts.map(p => Math.hypot(...sub(p, centre)) * 2));
   }
-  const half = Math.max(8, extent.size / 90), jet = Math.max(1, extent.size / 160);
-  let enemyDone = false;
-  for (const c of visible()) {
-    const arr = data[c.id]; if (!arr) continue;
-    const i = indexAt(arr, st.t), color = colorOf(c.id);
-    if (sc.kind === 'battle' && !enemyDone) {
-      enemyDone = true;
-      foesOf().forEach(foe => {
-        ctx.strokeStyle = foe[1] ? ELITE : '#e5534b'; ctx.globalAlpha = .5; ctx.lineWidth = 1.2; ctx.setLineDash([4, 4]); ctx.beginPath(); let pen = false;
-        for (const p0 of foe[4]) { const q = P(enu([p0[1], p0[2], p0[3]])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
-        ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1;
-        const at = foeAt(foe, st.t);
-        if (at) drawJet(ctx, P, at.pos, basis(at.pitch, at.yaw, 0), foe[1] ? ELITE : '#e5534b', jet);
-      });
+  const dist = size * 1.4 * orbit.zoom;
+  let heading = orbit.yaw * rad;
+  if (st.cam === 'follow' && followed) { const f = enu(basis(followed.fr[F.pitch], followed.fr[F.yaw], 0).f); heading += Math.atan2(f[0], f[1]); }
+  const cp = orbit.pitch * rad;
+  const C = add(centre, mul([-Math.sin(heading) * Math.cos(cp), -Math.cos(heading) * Math.cos(cp), Math.sin(cp)], dist));
+  const P = camera(C, centre, w, h, 55, 2);
+  // horizon backdrop and a ground grid 400 m under the centre
+  const fwd = norm(sub(centre, C)), hz = P(add(C, mul(norm([fwd[0], fwd[1], 0]), 1e6)));
+  const hy = hz ? Math.max(-h, Math.min(2 * h, hz[1])) : (fwd[2] > 0 ? 2 * h : -h);
+  ctx.fillStyle = '#122028'; ctx.fillRect(0, 0, w, Math.max(0, Math.min(h, hy)));
+  ctx.fillStyle = '#151b17'; ctx.fillRect(0, Math.max(0, Math.min(h, hy)), w, h);
+  const G = Math.pow(10, Math.round(Math.log10(Math.max(50, size / 3)))), z0 = Math.max(0, centre[2] - 400), span = 8;
+  const gx = Math.round(centre[0] / G) * G, gy = Math.round(centre[1] / G) * G;
+  ctx.strokeStyle = '#25313a'; ctx.lineWidth = 1;
+  const seg = (a, b) => { const steps = 10; ctx.beginPath(); let pen = false;
+    for (let i = 0; i <= steps; i++) { const q = P(add(a, mul(sub(b, a), i / steps))); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; } ctx.stroke(); };
+  for (let k = -span; k <= span; k++) { seg([gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0]); seg([gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0]); }
+  const jetScale = Math.max(1, size / 70);
+  // enemies
+  for (const o of foesNow) {
+    const tint = o.f[1] === 2 ? '#ff6bd6' : o.f[1] === 1 ? '#ff6bd6' : '#e5534b';
+    drawJet(ctx, P, o.at.pos, basis(o.at.pitch, o.at.yaw, 0), tint, jetScale * (o.f[1] === 2 ? 3 : 1));
+    const q = P(o.at.pos); if (q) { ctx.fillStyle = tint; ctx.font = `11px ${MONO}`; ctx.fillText(o.f[1] === 2 ? '头目' : o.f[1] === 1 ? '精英' : '敌机', q[0] + 10, q[1] - 6); }
+  }
+  if (scripted) drawJet(ctx, P, scripted, basis(now[0].fr[F.ep], now[0].fr[F.eyaw], now[0].fr[F.er]), '#e5534b', jetScale);
+  // each controller: the last 4 s of path, the aircraft, the aim
+  for (const o of now) {
+    const color = colorOf(o.c.id), off = spread(o.c.id);
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.globalAlpha = o.gone ? .35 : .85; ctx.beginPath(); let pen = false;
+    const step = o.arr.length > 1 ? o.arr[1][F.t] - o.arr[0][F.t] : 1;
+    for (let k = Math.max(0, Math.floor((st.t - 4) / step)); k < o.arr.length && o.arr[k][F.t] <= st.t; k++) {
+      const q = P(add(enu([o.arr[k][F.x], o.arr[k][F.y], o.arr[k][F.z]]), off)); if (!q) { pen = false; continue; }
+      pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true;
     }
-    else if (withEnemy(sc.kind) && !enemyDone && arr[0].length > F.er) {
-      enemyDone = true;
-      ctx.strokeStyle = '#e5534b'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]); ctx.beginPath(); let pen = false;
-      for (const fr of arr) { const q = P(enemyPos(fr)); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
-      ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
-      const fr = arr[i]; drawJet(ctx, P, enemyPos(fr), basis(fr[F.ep], fr[F.eyaw], fr[F.er]), '#e5534b', jet);
+    const qh = P(o.pos); if (qh && pen) ctx.lineTo(qh[0], qh[1]);
+    ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    const B = basis(o.fr[F.pitch], o.fr[F.yaw], o.fr[F.roll]);
+    const crash = o.gone && crashedRun(o.c.id);
+    drawJet(ctx, P, o.pos, B, crash ? '#555' : color, jetScale);
+    if (!o.gone || !crash) {
+      const aim = enu([o.fr[F.ax], o.fr[F.ay], o.fr[F.az]]), end = P(add(o.pos, mul(aim, size * 0.25)));
+      const qp = P(o.pos);
+      if (end && qp) { ctx.strokeStyle = color; ctx.setLineDash([4, 4]); ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(qp[0], qp[1]); ctx.lineTo(end[0], end[1]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
     }
-    // whole path faint, travelled part as a ribbon
-    ctx.strokeStyle = color; ctx.globalAlpha = .25; ctx.beginPath(); let pen = false;
-    for (const fr of arr) { const q = P(posOf(fr)); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
-    ctx.stroke(); ctx.globalAlpha = 1;
-    // the band for the last 20 s (the whole path is the faint line above)
-    let i0 = i; while (i0 > 0 && arr[i0 - 1][F.t] >= arr[i][F.t] - 20) i0--;
-    ribbon(ctx, P, arr, i0, i, half, color, .18, 2);
-    const fr = arr[i];
-    drawJet(ctx, P, posOf(fr), basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), color, jet);
-    if (!withEnemy(sc.kind)) lineIn(ctx, P, posOf(fr), add(posOf(fr), mul(enu([fr[F.ax], fr[F.ay], fr[F.az]]), extent.size * .35)), color, 1, [5, 5], .7);
+    if (qh) { ctx.fillStyle = color; ctx.font = `11px ${MONO}`; ctx.fillText(shortName(o.c) + (o.gone ? crash ? ' ✕' : ' 清场' : ''), qh[0] + 10, qh[1] + 14); }
   }
 }
 
-// ---------- charts ----------
-const CHARTS = [
-  { key: 'angle', title: '偏差角（°，平方根刻度）', get: fr => fr[F.angle], sqrt: true },
-  { key: 'bank', title: '坡度（°，+ 右翼低）', get: fr => fr[F.roll], lo: -180, hi: 180, zero: true },
-  { key: 'p', title: '滚转角速度（°/s）', get: fr => fr[F.p], zero: true },
-  { key: 'q', title: '俯仰角速度（°/s）', get: fr => fr[F.q], zero: true },
-  { key: 'sp', title: '俯仰杆（+ 拉）', get: fr => fr[F.sp], lo: -1.05, hi: 1.05, zero: true },
-  { key: 'sr', title: '滚转杆（+ 右）', get: fr => fr[F.sr], lo: -1.05, hi: 1.05, zero: true },
-  { key: 'sy', title: '偏航杆（+ 右）', get: fr => fr[F.sy], lo: -1.05, hi: 1.05, zero: true },
-  { key: 'speed', title: '速度（m/s）', get: fr => fr[F.speed] },
-];
-function buildCharts() {
-  const box = document.getElementById('charts'); box.innerHTML = '';
-  for (const c of CHARTS) {
-    const el = document.createElement('div'); el.className = 'panel chart';
-    // curves below (drawn when the scene changes), the time cursor on a layer above
-    el.innerHTML = `<span class="title">${c.title}</span><div class="plot"><canvas aria-label="${c.title}"></canvas><canvas aria-hidden="true"></canvas></div>`;
+// ---------- gauges: one per controller, the same picture for each ----------
+// Artificial horizon (bank and pitch), the aim drawn where it is relative to the nose
+// (1 px per 0.25 deg, held at the edge with an arrow beyond), and the key readings.
+const gauges = new Map();
+function buildGauges() {
+  const box = document.getElementById('gauges'); box.innerHTML = ''; gauges.clear(); box.style.setProperty('--n', IDX.controllers.length);
+  for (const c of IDX.controllers) {
+    const el = document.createElement('div'); el.className = 'gauge';
+    el.innerHTML = `<div class="name"><span class="chip" style="background:${colorOf(c.id)}"></span>${shortName(c)}<button type="button" title="镜头跟随它">跟随</button></div>
+      <canvas aria-label="${c.label} 的姿态"></canvas><div class="read"></div>`;
+    el.querySelector('button').addEventListener('click', () => { st.follow = c.id; st.cam = 'follow'; save(); buildCamButtons(); dirty = true; });
     box.appendChild(el);
-    [c.canvas, c.cursor] = el.querySelectorAll('canvas');
-    c.key = null; c.cursorX = null;
-    const plot = el.querySelector('.plot');
-    const seek = e => { const r = plot.getBoundingClientRect(), L = 34, sc = scenario(), span = chartSpan(sc);
-      st.t = Math.max(0, Math.min(sc.seconds, span[0] + (e.clientX - r.left - L) / (r.width - L - 4) * (span[1] - span[0]))); drawAll(); };
-    plot.addEventListener('pointerdown', e => { seek(e); plot.setPointerCapture(e.pointerId); });
-    plot.addEventListener('pointermove', e => { if (e.buttons) seek(e); });
+    gauges.set(c.id, { el, canvas: el.querySelector('canvas'), read: el.querySelector('.read'), text: '' });
   }
 }
-// The time the charts show: the whole scene, or for scenes over 90 s (battles) the 60 s page
-// the cursor is in (490 s of stick traces from seven controllers in one strip was unreadable).
-function chartSpan(sc) {
-  if (sc.seconds <= 90) return [0, sc.seconds];
-  const t0 = Math.min(Math.floor(st.t / 60) * 60, Math.max(0, sc.seconds - 60));
-  return [t0, Math.min(t0 + 60, sc.seconds)];
-}
-// The curves only change with the scenario, condition, shown controllers, page or size: they
-// are drawn once on the lower canvas; each frame only moves the cursor on the layer above.
-function drawCharts() {
+function drawGauges() {
   const data = runs(), sc = scenario();
-  for (const c of CHARTS) {
-    const base = fit(c.canvas);
-    const span = chartSpan(sc);
-    const key = `${st.cond}|${st.scen}|${visible().map(v => v.id).join(',')}|${span[0]}|${c.canvas.width}x${c.canvas.height}`;
-    if (c.key !== key || base.resized) {
-      c.key = key;
-      base.ctx.clearRect(0, 0, base.w, base.h);
-      if (data) drawChartCurves(c, base.ctx, base.w, base.h, data, sc, span);
+  for (const c of IDX.controllers) {
+    const g = gauges.get(c.id), arr = data && data[c.id]; if (!g) continue;
+    const { ctx, w, h } = fit(g.canvas, 120000);
+    ctx.clearRect(0, 0, w, h);
+    if (!arr) continue;
+    const fr = frameAt(arr, st.t), gone = ended(arr, st.t), B = basis(fr[F.pitch], fr[F.yaw], fr[F.roll]);
+    const crash = gone && crashedRun(c.id);
+    g.el.classList.toggle('crashed', crash);
+    const cx = w / 2, cy = h / 2, R = Math.hypot(w, h);
+    // horizon: rotate by bank, shift by pitch (3 px per degree)
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-fr[F.roll] * rad);
+    const shift = fr[F.pitch] * 3;
+    ctx.fillStyle = '#1a3240'; ctx.fillRect(-R, -R + shift, 2 * R, R);
+    ctx.fillStyle = '#2a2a1e'; ctx.fillRect(-R, shift, 2 * R, R);
+    ctx.strokeStyle = '#7a8a90'; ctx.beginPath(); ctx.moveTo(-R, shift); ctx.lineTo(R, shift); ctx.stroke();
+    ctx.restore();
+    // the aim relative to the nose: x along the wing, y along the canopy
+    const aim = [fr[F.ax], fr[F.ay], fr[F.az]];
+    const fx = dot(aim, B.f), rx = dot(aim, B.r), ux = dot(aim, B.u);
+    let ax = Math.atan2(rx, fx) / rad * 4, ay = -Math.atan2(ux, fx) / rad * 4;
+    const lim = Math.min(w, h) / 2 - 8, mag = Math.hypot(ax, ay), out = mag > lim;
+    if (out) { ax *= lim / mag; ay *= lim / mag; }
+    const color = colorOf(c.id);
+    ctx.strokeStyle = '#f2f5f7'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - 16, cy); ctx.lineTo(cx - 5, cy); ctx.moveTo(cx + 5, cy); ctx.lineTo(cx + 16, cy); ctx.moveTo(cx, cy - 4); ctx.lineTo(cx, cy + 4); ctx.stroke();
+    ctx.strokeStyle = '#f29a4a'; ctx.lineWidth = 2; ctx.beginPath();
+    if (out) { const a = Math.atan2(ay, ax); ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a - .5), cy + ay - 9 * Math.sin(a - .5)); ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a + .5), cy + ay - 9 * Math.sin(a + .5)); }
+    else ctx.arc(cx + ax, cy + ay, 6, 0, 2 * Math.PI);
+    ctx.stroke(); ctx.lineWidth = 1;
+    // stick bars along the bottom: pitch, roll
+    for (const [k, v] of [[0, fr[F.sp]], [1, fr[F.sr]]]) {
+      const y = h - 12 + k * 6, x = Math.max(-1, Math.min(1, v));
+      ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(8, y, w - 16, 4);
+      ctx.fillStyle = color; ctx.fillRect(cx + Math.min(0, x) * (w / 2 - 8), y, Math.abs(x) * (w / 2 - 8), 4);
     }
-    const top = fit(c.cursor);
-    if (top.resized) c.cursorX = null;
-    if (c.cursorX !== null) top.ctx.clearRect(c.cursorX - 3, 0, 6, top.h);
-    if (!data) { c.cursorX = null; continue; }
-    const x = (c.L || 34) + (top.w - (c.L || 34) - 4) * (st.t - span[0]) / Math.max(span[1] - span[0], 1e-3);
-    top.ctx.strokeStyle = '#dbe4e9'; top.ctx.globalAlpha = .6; top.ctx.beginPath(); top.ctx.moveTo(x, 2); top.ctx.lineTo(x, top.h - 10); top.ctx.stroke(); top.ctx.globalAlpha = 1;
-    c.cursorX = x;
+    if (gone) { ctx.fillStyle = 'rgba(14,20,24,.6)'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = crash ? '#f06e5c' : '#5fd38a'; ctx.font = `600 13px ${MONO}`; ctx.textAlign = 'center';
+      ctx.fillText(crash ? '已坠地' : `${arr[arr.length - 1][F.t].toFixed(1)} s 全部击落`, cx, cy + 4); ctx.textAlign = 'start'; }
+    const bank = fr[F.roll];
+    let text = `<div><span>偏差</span>${fr[F.angle].toFixed(1)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
+               `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>`;
+    if (fr.length > F.kills && sc.kind === 'multi') text += `<div><span>击落</span>${fr[F.kills]}</div>`;
+    if (g.text !== text) { g.read.innerHTML = text; g.text = text; }
   }
 }
-function drawChartCurves(c, ctx, w, h, data, sc, span) {
-  const mono = MONO;
-  {
-    const tr = c.sqrt ? v => Math.sqrt(Math.max(0, v)) : v => v;
-    let lo = c.lo, hi = c.hi;
-    if (lo === undefined) {
-      lo = Infinity; hi = -Infinity;
-      for (const ctl of visible()) for (const fr of data[ctl.id] || []) {
-        if (fr[F.t] < span[0] || fr[F.t] > span[1]) continue;
-        const v = c.get(fr); lo = Math.min(lo, v); hi = Math.max(hi, v);
-      }
-      if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
-      if (c.sqrt) lo = 0;
-      if (c.zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
-      const pad = Math.max((hi - lo) * .08, .5); if (!c.sqrt) lo -= pad; hi += pad;
-    }
-    const L = 34, T0 = span[0], T = span[1] - span[0], X = t => L + (w - L - 4) * (t - T0) / T, Y = v => 4 + (h - 14) * (1 - (tr(v) - tr(lo)) / (tr(hi) - tr(lo)));
-    c.L = L;
-    ctx.font = `10px ${mono}`; ctx.fillStyle = '#84959f'; ctx.strokeStyle = '#1d2830';
-    const ticks = c.sqrt ? [0, 1, 5, 20, 60, 150].filter(v => v <= hi) : [lo, (lo + hi) / 2, hi];
-    for (const v of ticks) { ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - 4, Y(v)); ctx.stroke(); ctx.fillText(Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1), 2, Y(v) + 3); }
-    if (c.zero && lo < 0 && hi > 0) { ctx.strokeStyle = '#26323a'; ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(w - 4, Y(0)); ctx.stroke(); }
-    // time ticks: a round step giving about seven labels
-    const step = [1, 2, 5, 10, 20, 30, 60, 120].find(v => T / v <= 8) || 120;
-    for (let s = Math.ceil(T0 / step) * step; s <= T0 + T + 1e-6; s += step) if (X(s) + 18 < w) ctx.fillText(`${s}`, X(s) - 3, h - 1);
-    if (sc.switch_at > 0) { ctx.strokeStyle = '#84959f'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(sc.switch_at), 4); ctx.lineTo(X(sc.switch_at), h - 10); ctx.stroke(); ctx.setLineDash([]); }
-    for (const ctl of visible()) {
-      const arr = data[ctl.id]; if (!arr) continue;
-      ctx.strokeStyle = colorOf(ctl.id); ctx.lineWidth = 1.4; ctx.beginPath();
-      let pen = false;
+
+// ---------- timelines: one lane per controller, colour = value, whole scene ----------
+const LANES = [
+  { key: 'angle', title: '偏差角', get: fr => fr[F.angle], color: v => heat(Math.log10(1 + v) / Math.log10(46)), legend: '0° → 2° → 10° → 45°+（白色竖线 = 击落）' },
+  { key: 'bank', title: '坡度', get: fr => Math.abs(fr[F.roll]), color: v => cool(v / 180), legend: '水平 → 倒飞' },
+  { key: 'stick', title: '滚转杆', get: fr => Math.abs(fr[F.sr]), color: v => violet(v), legend: '0 → 满杆' },
+];
+function ramp(stops, u) {
+  u = Math.max(0, Math.min(1, u)); const k = Math.min(stops.length - 2, Math.floor(u * (stops.length - 1))), f = u * (stops.length - 1) - k;
+  return `rgb(${stops[k].map((a, i) => Math.round(a + (stops[k + 1][i] - a) * f)).join(',')})`;
+}
+const heat = u => ramp([[24, 72, 64], [70, 150, 90], [220, 200, 70], [235, 120, 50], [210, 50, 50]], u);
+const cool = u => ramp([[20, 34, 44], [50, 110, 160], [120, 190, 230], [242, 154, 74]], u);
+const violet = u => ramp([[22, 28, 36], [90, 70, 150], [200, 140, 240]], u);
+const LANE_H = 11, LANE_GAP = 2, GROUP_GAP = 12, LABEL_W = 150, TOP = 4;
+let lanesKey = null;
+function laneLayout() {
+  const n = IDX.controllers.length, groupH = n * (LANE_H + LANE_GAP) + 16;
+  return { n, groupH, height: TOP + LANES.length * (groupH + GROUP_GAP) + 14 };
+}
+function drawLanes() {
+  const sc = scenario(), data = runs();
+  const L = laneLayout();
+  document.getElementById('timeline').style.height = `${L.height}px`;
+  const key = `${st.cond}|${st.scen}`;
+  const base = document.getElementById('lanes');
+  if (lanesKey !== key) {
+    lanesKey = key;
+    const { ctx, w, h } = fit(base, 1200000);
+    ctx.clearRect(0, 0, w, h);
+    if (!data) return;
+    const T = sc.seconds, X = t => LABEL_W + (w - LABEL_W - 8) * t / T;
+    ctx.font = `11px ${MONO}`;
+    LANES.forEach((lane, g) => {
+      const y0 = TOP + g * (L.groupH + GROUP_GAP);
+      ctx.fillStyle = '#dbe4e9'; ctx.fillText(lane.title, 6, y0 + 10);
+      ctx.fillStyle = '#84959f'; ctx.fillText(lane.legend, LABEL_W, y0 + 10);
+      IDX.controllers.forEach((c, k) => {
+        const y = y0 + 16 + k * (LANE_H + LANE_GAP), arr = data[c.id];
+        ctx.fillStyle = colorOf(c.id); ctx.fillRect(6, y + 2, 8, LANE_H - 4);
+        ctx.fillStyle = '#84959f'; ctx.fillText(shortName(c), 18, y + LANE_H - 2);
+        if (!arr) return;
+        ctx.fillStyle = '#0c1114'; ctx.fillRect(LABEL_W, y, w - LABEL_W - 8, LANE_H);
+        for (let i = 0; i < arr.length; i++) {
+          const x0 = X(arr[i][F.t]), x1 = i + 1 < arr.length ? X(arr[i + 1][F.t]) : x0 + 2;
+          ctx.fillStyle = lane.color(lane.get(arr[i])); ctx.fillRect(x0, y, Math.max(1, x1 - x0 + 0.5), LANE_H);
+        }
+        if (g === 0 && data._kills && data._kills[c.id]) {   // kills: white ticks over the error lane
+          ctx.fillStyle = '#f2f5f7';
+          for (const [kt] of data._kills[c.id]) ctx.fillRect(X(kt) - 1, y - 1, 2, LANE_H + 2);
+        }
+        const last = arr[arr.length - 1];
+        if (last && last[F.t] < T - 0.5) { const crash = crashedRun(c.id); ctx.fillStyle = crash ? '#f06e5c' : '#5fd38a'; ctx.fillText(crash ? '✕ 坠地' : '✓ 全部击落', X(last[F.t]) + 4, y + LANE_H - 2); }
+      });
+    });
+    // time ticks under the last group
+    const step = [1, 2, 5, 10, 20, 30, 60, 120].find(v => T / v <= 12) || 120;
+    ctx.fillStyle = '#84959f';
+    for (let s = 0; s <= T + 1e-6; s += step) ctx.fillText(`${s}`, X(s) - 3, L.height - 2);
+  }
+  // cursor on the layer above
+  const top = fit(document.getElementById('lanesCursor'), 1200000);
+  top.ctx.clearRect(0, 0, top.w, top.h);
+  const x = LABEL_W + (top.w - LABEL_W - 8) * st.t / sc.seconds;
+  top.ctx.strokeStyle = '#f2f5f7'; top.ctx.globalAlpha = .8; top.ctx.beginPath(); top.ctx.moveTo(x, 0); top.ctx.lineTo(x, top.h); top.ctx.stroke(); top.ctx.globalAlpha = 1;
+}
+function seekFromLanes(e) {
+  const r = document.getElementById('timeline').getBoundingClientRect(), sc = scenario();
+  st.t = Math.max(0, Math.min(sc.seconds, (e.clientX - r.left - LABEL_W) / (r.width - LABEL_W - 8) * sc.seconds)); dirty = true;
+}
+{ const wrap = document.getElementById('timelineWrap');
+  wrap.addEventListener('pointerdown', e => { seekFromLanes(e); wrap.setPointerCapture(e.pointerId); });
+  wrap.addEventListener('pointermove', e => { if (e.buttons) seekFromLanes(e); }); }
+
+// ---------- detail: +-10 s around the cursor, every controller, offset error and bank ----------
+function drawDetail() {
+  const { ctx, w, h } = fit(document.getElementById('detail'), 500000);
+  ctx.clearRect(0, 0, w, h);
+  const data = runs(), sc = scenario(); if (!data) return;
+  const t0 = Math.max(0, Math.min(st.t - 10, sc.seconds - 20)), t1 = Math.min(sc.seconds, t0 + 20);
+  const L = 44, X = t => L + (w - L - 8) * (t - t0) / Math.max(t1 - t0, 1e-3);
+  const panels = [{ title: '偏差角（°，平方根刻度）', y0: 4, y1: h * 0.55 - 6, get: fr => fr[F.angle], lo: 0, hi: 60, tr: v => Math.sqrt(Math.max(0, v)), ticks: [0, 1, 5, 20, 60] },
+                  { title: '坡度（°）', y0: h * 0.55 + 4, y1: h - 16, get: fr => fr[F.roll], lo: -180, hi: 180, tr: v => v, ticks: [-180, -90, 0, 90, 180] }];
+  ctx.font = `10px ${MONO}`;
+  for (const p of panels) {
+    const Y = v => p.y1 - (p.y1 - p.y0) * (p.tr(Math.max(p.lo, Math.min(p.hi, v))) - p.tr(p.lo)) / (p.tr(p.hi) - p.tr(p.lo));
+    ctx.strokeStyle = '#1d2830'; ctx.fillStyle = '#84959f';
+    for (const v of p.ticks) { ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - 8, Y(v)); ctx.stroke(); ctx.fillText(`${v}`, 4, Y(v) + 3); }
+    ctx.fillText(p.title, L + 4, p.y0 + 10);
+    for (const c of IDX.controllers) {
+      const arr = data[c.id]; if (!arr) continue;
+      ctx.strokeStyle = colorOf(c.id); ctx.lineWidth = 1.6; ctx.beginPath(); let pen = false, last = null;
       for (const fr of arr) {
-        if (fr[F.t] < T0 - 0.5 || fr[F.t] > T0 + T + 0.5) { pen = false; continue; }
-        const x = X(fr[F.t]), y = Y(Math.max(lo, Math.min(hi, c.get(fr)))); pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true;
+        if (fr[F.t] < t0 - 0.5 || fr[F.t] > t1 + 0.5) continue;
+        if (p.get === panels[1].get && last !== null && Math.abs(p.get(fr) - last) > 180) pen = false;   // bank wrap
+        const x = X(fr[F.t]), y = Y(p.get(fr)); pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true; last = p.get(fr);
       }
       ctx.stroke(); ctx.lineWidth = 1;
     }
   }
+  const step = [1, 2, 5].find(v => (t1 - t0) / v <= 12) || 5;
+  ctx.fillStyle = '#84959f';
+  for (let s = Math.ceil(t0 / step) * step; s <= t1; s += step) ctx.fillText(`${s}`, X(s) - 3, h - 2);
+  ctx.strokeStyle = '#f2f5f7'; ctx.globalAlpha = .7; ctx.beginPath(); ctx.moveTo(X(st.t), 2); ctx.lineTo(X(st.t), h - 12); ctx.stroke(); ctx.globalAlpha = 1;
 }
 
-// ---------- scorecard ----------
-// [key, label, unit, better: -1 lower / +1 higher, kinds]
-const METRICS = [
-  ['cost', '综合代价', '', -1, 'all'],
-  ['to5', '到 5° 内', 's', -1, 'capture switch chain'],
-  ['to2', '到 2° 内', 's', -1, 'capture switch chain'],
-  ['settle', '稳定在 1° 内', 's', -1, 'capture switch chain'],
-  ['level', '对准且机翼水平', 's', -1, 'capture switch chain'],
-  ['overshoot', '过冲', '°', -1, 'capture switch chain'],
-  ['crashed', '坠地时刻（+20 代价）', 's', 0, 'track battle'],
-  ['lock_frac', '目标在导弹锁定范围内（头目 1 km）', '%', 1, 'battle'],
-  ['kills', '击落', '架', 1, 'battle'],
-  ['elite_kills', '其中精英', '架', 1, 'battle'],
-  ['to_shot', '选定目标到首次开火', 's', -1, 'battle'],
-  ['first_kill', '首个击落', 's', -1, 'battle'],
-  ['missiles', '导弹发射', '枚', 0, 'battle'],
-  ['gun_kills', '机炮击落', '架', 1, 'battle'],
-  ['on_lead', '1 km 内机头在提前量 2° 内', '%', 1, 'battle'],
-  ['mean_angle', '平均偏差', '°', -1, 'hold pursuit track battle'],
-  ['within2', '2° 内时间占比', '%', 1, 'hold pursuit track'],
-  ['within5', '5° 内时间占比', '%', 1, 'hold pursuit track'],
-  ['bank_rms', '坡度均方根', '°', -1, 'hold pursuit track'],
-  ['reversals', '滚转反向次数', '', -1, 'all'],
-  ['chatter', '杆量来回打', '次', -1, 'all'],
-  ['inverted', '倒飞时间', 's', -1, 'all'],
-  ['roll_effort', '平均滚转杆量', '', -1, 'all'],
-  ['pitch_sat', '俯仰满杆占比', '%', -1, 'all'],
-  ['roll_sat', '滚转满杆占比', '%', -1, 'all'],
-  ['peak_nz', '最大过载', 'g', 0, 'all'],
-  ['speed_loss', '速度损失', 'm/s', -1, 'all'],
-  ['alt_change', '高度变化', 'm', 0, 'all'],
-];
-function fmt(key, v) {
-  if (v === undefined) return null;
-  if (key === 'to_shot' && v === -2) return '无数据';
-  if (key === 'cost' && v < 0) return '—';
-  if (key === 'crashed') return v < 0 ? '—' : v.toFixed(1);
-  if (v < 0 && ['to5', 'to2', 'settle', 'level', 'mean_angle', 'within2', 'within5', 'bank_rms', 'to_shot', 'first_kill'].includes(key)) return null;
-  if (key === 'lock_frac' && v < 0) return null;
-  if (['within2', 'within5', 'pitch_sat', 'roll_sat', 'on_lead', 'lock_frac'].includes(key)) return (v * 100).toFixed(0);
-  if (['reversals', 'chatter', 'alt_change', 'speed_loss', 'kills', 'elite_kills', 'missiles', 'gun_kills'].includes(key)) return v.toFixed(0);
-  return v.toFixed(2);
-}
-let cardKey = null;
-function drawCard() {
-  const sc = scenario(), m = IDX.metrics[st.cond][st.scen], list = visible();
-  if (!m) return;
-  const key = `${st.cond}|${st.scen}|${list.map(c => c.id).join(',')}`;
-  if (key === cardKey) return;
-  cardKey = key;
-  const rows = METRICS.filter(r => r[4] === 'all' || r[4].includes(sc.kind));
-  let html = `<table><thead><tr><th>指标</th>${list.map(c => `<th style="color:${colorOf(c.id)}">${c.label}</th>`).join('')}</tr></thead><tbody>`;
-  for (const [key, label, unit, better] of rows) {
-    const vals = list.map(c => m[c.id][key]), shown = vals.map(v => fmt(key, v));
-    const valid = vals.filter((v, k) => shown[k] !== null && !isNaN(parseFloat(shown[k])));
-    const best = better === 0 || !valid.length ? null : better < 0 ? Math.min(...valid) : Math.max(...valid);
-    html += `<tr><td>${label}${unit ? `（${unit}）` : ''}</td>${vals.map((v, k) => shown[k] === null ? `<td class="na">${key === 'to_shot' ? '未开火' : '未达到'}</td>`
-      : `<td class="${best !== null && v === best && valid.length > 1 ? 'best' : ''}">${shown[k]}</td>`).join('')}</tr>`;
-  }
-  document.getElementById('card').innerHTML = html + '</tbody></table>';
-}
-
-// ---------- overview ----------
+// ---------- overview: every scene, every aircraft, every controller, ranked ----------
 function drawOverview() {
-  const list = visibleAll(), M = IDX.metrics[st.cond];
-  let html = `<table><thead><tr><th>场景（${IDX.plants.find(p => p.id === st.cond).title}）</th>${list.map(c => `<th style="color:${colorOf(c.id)}">${c.label}</th>`).join('')}</tr></thead><tbody>`;
-  const totals = {}, all = {};
-  list.forEach(c => { all[c.id] = 0; });
+  const list = IDX.controllers, conds = IDX.plants;
+  let html = '<table><thead><tr class="cond"><th></th>';
+  for (const c of conds) html += `<th class="gap" colspan="${list.length}">${c.title}</th>`;
+  html += '</tr><tr class="metric"><th>场景（综合代价，越低越好）</th>';
+  for (const c of conds) list.forEach((x, k) => { html += `<th class="${k ? '' : 'gap'}"><span class="chip" style="background:${colorOf(x.id)}"></span>${shortName(x)}</th>`; });
+  html += '</tr></thead><tbody>';
+  const rankSum = conds.map(() => list.map(() => 0)), firsts = conds.map(() => list.map(() => 0)), counted = conds.map(() => 0);
   for (const kind of KINDS) {
-    if (!IDX.scenarios.some(s => s.kind === kind)) continue;
-    html += `<tr class="group"><td colspan="${list.length + 1}">${KIND[kind]}</td></tr>`;
-    list.forEach(c => { totals[c.id] = null; });
-    for (const sc of IDX.scenarios.filter(s => s.kind === kind)) {
-      if (!M[sc.id]) continue;
-      const costs = list.map(c => M[sc.id][c.id] && M[sc.id][c.id].cost >= 0 ? M[sc.id][c.id].cost : null), best = Math.min(...costs.filter(v => v !== null));
-      list.forEach((c, k) => { if (costs[k] === null) return; totals[c.id] = (totals[c.id] || 0) + costs[k]; if (c.id !== 'recorded') all[c.id] += costs[k]; });
-      html += `<tr data-scen="${sc.id}"><td>${sc.title}</td>${costs.map(v => {
-        if (v === null) return '<td class="na">—</td>';
-        const r = Math.min(1, (v / Math.max(best, .05) - 1) / 1.5);   // 0 best .. 1 at 2.5x best
-        const bg = `rgba(${Math.round(60 + 180 * r)}, ${Math.round(160 - 90 * r)}, ${Math.round(110 - 60 * r)}, ${.12 + .25 * r})`;
-        return `<td style="background:${bg}" class="${v === best ? 'best' : ''}">${v.toFixed(2)}</td>`; }).join('')}</tr>`;
+    const scenes = IDX.scenarios.filter(s => s.kind === kind); if (!scenes.length) continue;
+    html += `<tr class="group"><td colspan="${1 + conds.length * list.length}">${KIND[kind]}</td></tr>`;
+    for (const sc of scenes) {
+      html += `<tr data-scen="${sc.id}"><td>${sc.title}</td>`;
+      conds.forEach((c, ci) => {
+        const M = metricsOf(c.id, sc.id), vals = list.map(x => M[x.id] ? M[x.id].cost : null), r = ranks(vals, -1);
+        if (vals.some(v => v !== null)) counted[ci]++;
+        list.forEach((x, k) => {
+          if (r[k] !== null) { rankSum[ci][k] += r[k]; if (r[k] === 0) firsts[ci][k]++; }
+          const crashed = M[x.id] && M[x.id].crashed >= 0 ? '✕' : '';
+          html += `<td class="cell ${k ? '' : 'gap'}" style="background:${rankColor(r[k], list.length)}">${vals[k] === null ? '—' : vals[k].toFixed(1)}${crashed}</td>`;
+        });
+      });
+      html += '</tr>';
     }
-    const tb = Math.min(...list.map(c => totals[c.id]).filter(v => v !== null));
-    html += `<tr class="total"><td>小计</td>${list.map(c => totals[c.id] === null ? '<td class="na">—</td>' : `<td class="${totals[c.id] === tb ? 'best' : ''}">${totals[c.id].toFixed(1)}</td>`).join('')}</tr>`;
   }
-  const ab = Math.min(...list.filter(c => c.id !== 'recorded').map(c => all[c.id]));
-  html += `<tr class="total"><td>合计（模拟）</td>${list.map(c => c.id === 'recorded' ? '<td class="na">—</td>' : `<td class="${all[c.id] === ab ? 'best' : ''}">${all[c.id].toFixed(1)}</td>`).join('')}</tr></tbody></table>`;
-  html += `<div class="explain"><p><b>综合代价</b>越低越好，每个场景一个数，权重是粗略的，具体差在哪里要看单场景页的指标。
-    捕获、换目标和连续：到 2° 的时间 + 0.5 × 稳定在 1° 内的时间 + 超过 1.5° 的过冲 ×2 + 多余的滚转反向 ×0.5 + 杆量来回打 ×0.2 + 倒飞时间 ×0.5（倒飞起始的场景不计倒飞）；没达到按场景时长计。
-    保持：偏差均方根 + 坡度均方根 ×0.05 + 滚转反向 ×0.3 + 杆量来回打 ×0.1。脚本追击：开始 3 s 后的平均偏差 ×0.5 + 不在 5° 内的时间占比 ×3 + 滚转反向 ×0.2 + 杆量来回打 ×0.05。
-    实战：未击落的比例 ×20 + 选定目标到首次开火的平均秒数（没开过火按 15）+ 1 km 内不在提前量 2° 内的比例 ×5；“游戏实录”缺开火数据，只列击落等指标，不给综合分。
-    头目战（LADON，不计击落）：不在导弹锁定范围内的比例 ×10（ECM：1 km 内才能锁定）+ 1 km 内不在提前量 2° 内的比例 ×10 + 平均偏差 ×0.2，滚转反向和杆量来回打按每分钟计。鼠标回放的实战按实录追击的方法计分。坠地后剩余的时间按完全偏离计。
-    虚拟飞行员按“离机头近、距离近”选目标，鼠标压在机炮提前量上，目标偏离机头 40° 以上时按住加速+减速做高G转弯；机头 15° 内、300–2500 m 保持 0.8 s 发射导弹（每 1.5 s 一枚，普通敌机必中；精英机要在 1500 m 内、8° 内发射才命中，且要两发）；1 km 内机炮命中累计 0.5 s 击落（精英 1.5 s）。敌机按录像轨迹飞、不会对模拟里的飞机做反应，并在你当时把它打下来的时刻退场。
-    实录追击：1 s 后对机炮提前量的平均偏差 ×0.5 + 不在 5° 内的占比 ×2 + 不在 2° 内的占比 ×2 + 滚转反向 ×0.2 + 杆量来回打 ×0.05；
-    “游戏实录”一列是当时游戏里实际飞出的结果，按同样方法打分，可用来核对模拟是否可信（模拟从同一状态出发但不带当时的角速度）。</p>
-    <p><b>模型</b>：姿态响应（延迟、游戏的输入平滑、响应曲线、拉杆/推杆权限、滚转加速度和上限、高G拉杆、方向舵约 5.4°/s）和航迹（速度方向滞后机头 0.2 s、重力、油门与速度）来自游戏时钟录下的飞行。
-    权限和满油门加速度按速度分段实测：差机体到 500 m/s 满杆约 43°/s、600–700 m/s 只剩 6–10°/s，极速约 640 m/s；Su-35 在 600–800 m/s 仍有 26–28°/s，极速约 795 m/s。
-    “迟钝机体”是差机体的延迟 ×1.3、权限 ×0.75，检验对模型误差的鲁棒性。录像场景只在当时所飞的机型上运行。场景清单见 dev/compare/scenes.txt。</p>
-    <p><b>控制器</b>：${IDX.controllers.map(c => `<span style="color:${colorOf(c.id)}">${c.label}</span>（${c.source}）`).join('；')}。点击任一行打开该场景。</p></div>`;
+  html += '</tbody><tfoot><tr><td>平均名次（越小越好）</td>';
+  conds.forEach((c, ci) => { const avg = rankSum[ci].map(v => v / Math.max(counted[ci], 1) + 1), best = Math.min(...avg);
+    avg.forEach((v, k) => { html += `<td class="${k ? '' : 'gap'}" style="color:${v === best ? '#5fd38a' : 'inherit'}">${v.toFixed(2)}</td>`; }); });
+  html += '</tr><tr><td>第一名次数</td>';
+  conds.forEach((c, ci) => { const best = Math.max(...firsts[ci]);
+    firsts[ci].forEach((v, k) => { html += `<td class="${k ? '' : 'gap'}" style="color:${v === best ? '#5fd38a' : 'inherit'}">${v}</td>`; }); });
+  html += '</tr></tfoot></table>';
+  html += `<div class="explain"><p><b>横评</b>：所有飞控在同一机体模型上飞同一组场景；有敌机的场景由同一个虚拟飞行员做同样的决策（选目标、瞄机炮提前量、油门、开火、低空拉起），
+    敌机按录像轨迹飞、不会对模拟里的飞机做反应，我方从敌机后方的标准位置出发。所以差别只来自飞控本身。每个格子按这一行同一机体内的名次着色，✕ 表示坠地。</p>
+    <p><b>机体</b>：${conds.map(c => c.title).join('；')}。姿态响应、按速度的权限和满油门加速度来自游戏时钟下的录像。</p>
+    <p><b>飞控</b>：${list.map(x => `<span style="color:${colorOf(x.id)}">${x.label}</span>（${x.source}）`).join('；')}。点击任一行打开该场景。</p></div>`;
   const box = document.getElementById('overview'); box.innerHTML = html;
-  box.querySelectorAll('tr[data-scen]').forEach(tr => tr.addEventListener('click', () => { st.scen = tr.dataset.scen; document.getElementById('scenario').value = st.scen; setTab('scene'); selectScenario(); }));
+  box.querySelectorAll('tr[data-scen]').forEach(tr => tr.addEventListener('click', () => { st.scen = tr.dataset.scen; document.getElementById('scene').value = st.scen; setTab('scene'); selectScene(); }));
 }
 
-// ---------- interaction ----------
-function dragOrbit(canvas, o, redraw) {
-  let last = null;
-  canvas.addEventListener('pointerdown', e => { last = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'; });
-  canvas.addEventListener('pointerup', () => { last = null; canvas.style.cursor = ''; });
-  canvas.addEventListener('pointermove', e => {
-    if (!last) return;
-    o.yaw += (e.clientX - last[0]) * .4; o.pitch = Math.max(-80, Math.min(85, o.pitch + (e.clientY - last[1]) * .3));
-    last = [e.clientX, e.clientY]; redraw();
-  });
-  canvas.addEventListener('wheel', e => { e.preventDefault();
-    if (o.dist === null || o === over) o.dist = Math.max(.2, Math.min(4, (o.dist || 1.15) * (e.deltaY > 0 ? 1.12 : 1 / 1.12)));
-    else o.dist = Math.max(20, Math.min(600, o.dist * (e.deltaY > 0 ? 1.12 : 1 / 1.12)));
-    redraw(); }, { passive: false });
-  canvas.addEventListener('dblclick', () => { if (o === over) Object.assign(o, { yaw: -35, pitch: 28, dist: null }); else Object.assign(o, { yaw: 0, pitch: 12, dist: 70 }); redraw(); });
+// ---------- controls ----------
+function fillScenes() {
+  const sel = document.getElementById('scene');
+  sel.innerHTML = KINDS.filter(k => IDX.scenarios.some(s => s.kind === k)).map(k =>
+    `<optgroup label="${KIND[k]}">${IDX.scenarios.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.id} · ${s.title}</option>`).join('')}</optgroup>`).join('');
+  sel.value = st.scen;
 }
-dragOrbit(document.getElementById('overlay'), over, () => drawOverlay());
-
-function buildChips() {
-  const box = document.getElementById('chips'); box.innerHTML = '';
-  for (const c of IDX.controllers) {
-    const b = document.createElement('button'); b.type = 'button'; b.className = 'chip' + (st.hidden.has(c.id) ? ' off' : '');
-    b.title = c.source; b.setAttribute('aria-pressed', String(!st.hidden.has(c.id)));
-    b.innerHTML = `<i style="background:${colorOf(c.id)}"></i>${c.label}`;
-    b.addEventListener('click', () => {
-      if (st.hidden.has(c.id)) st.hidden.delete(c.id); else if (visibleAll().length > 1) st.hidden.add(c.id);
-      save(); buildChips(); buildCams(); drawAll(); if (st.tab === 'overview') drawOverview();
-    });
+function buildCondButtons() {
+  const box = document.getElementById('conds'); box.innerHTML = '';
+  for (const c of IDX.plants) {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = c.title.replace(/（.*）/, ''); b.title = c.title;
+    b.setAttribute('aria-pressed', String(c.id === st.cond));
+    b.addEventListener('click', () => { st.cond = c.id; save(); buildCondButtons(); loadCond(st.cond, () => { lanesKey = null; dirty = true; }); });
     box.appendChild(b);
   }
 }
-function fillSelects() {
-  const cond = document.getElementById('cond');
-  cond.innerHTML = IDX.plants.map(p => `<option value="${p.id}">${p.title}</option>`).join(''); cond.value = st.cond;
-  const sel = document.getElementById('scenario');
-  const here = IDX.scenarios.filter(available);
-  if (!here.some(s => s.id === st.scen) && here.length) st.scen = here[0].id;
-  sel.innerHTML = KINDS.filter(k => here.some(s => s.kind === k)).map(k => `<optgroup label="${KIND[k]}">${here.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.title}</option>`).join('')}</optgroup>`).join('');
-  sel.value = st.scen;
+function buildCamButtons() {
+  const box = document.getElementById('cams'); box.innerHTML = '';
+  const follow = IDX.controllers.find(c => c.id === st.follow) || IDX.controllers[0];
+  for (const [id, label] of [['group', '全局'], ['follow', `跟随 ${shortName(follow)}`], ['target', '跟随目标']]) {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.setAttribute('aria-pressed', String(st.cam === id));
+    b.addEventListener('click', () => { st.cam = id; save(); buildCamButtons(); dirty = true; });
+    box.appendChild(b);
+  }
 }
-function selectScenario() {
-  save(); st.t = 0; computeExtent(); buildCams();
-  const sc = scenario(); document.getElementById('note').textContent = sc.note || '';
-  drawAll();
+function selectScene() {
+  const sc = scenario(); st.t = 0; lanesKey = null; save();
+  document.getElementById('note').textContent = sc.note || '';
+  drawBoard(); dirty = true;
 }
 function setTab(tab) {
   st.tab = tab; save();
   document.getElementById('tabScene').setAttribute('aria-pressed', String(tab === 'scene'));
   document.getElementById('tabOverview').setAttribute('aria-pressed', String(tab === 'overview'));
-  document.getElementById('scene').hidden = tab !== 'scene';
+  document.getElementById('scenePage').hidden = tab !== 'scene';
   document.getElementById('overview').hidden = tab !== 'overview';
-  document.getElementById('transport').style.visibility = tab === 'scene' ? '' : 'hidden';
-  document.getElementById('scenario').disabled = tab !== 'scene';
-  document.getElementById('note').style.visibility = tab === 'scene' ? '' : 'hidden';
-  if (tab === 'overview') drawOverview(); else drawAll();
+  document.getElementById('scene').disabled = tab !== 'scene';
+  document.getElementById('note').hidden = tab !== 'scene';
+  if (tab === 'overview') drawOverview(); else { lanesKey = null; dirty = true; }
 }
-function drawAll() {
-  if (st.tab !== 'scene') return;
-  const T = scenario().seconds;
-  document.getElementById('clock').textContent = `${st.t.toFixed(2)} s`;
-  document.getElementById('scrub').value = String(Math.round(st.t / T * 1000));
-  // per-part drawing time, smoothed (window.ac8compare.timing, for finding stutter)
-  const timing = st.timing || (st.timing = {});
-  for (const [name, draw] of [['cams', drawCams], ['overlay', drawOverlay], ['card', drawCard], ['charts', drawCharts]]) {
-    const t0 = performance.now(); draw();
-    timing[name] = (timing[name] || 0) * 0.9 + (performance.now() - t0) * 0.1;
-  }
-}
+// orbit / zoom on the view
+{ const canvas = document.getElementById('view'); let last = null;
+  canvas.addEventListener('pointerdown', e => { last = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener('pointerup', () => { last = null; });
+  canvas.addEventListener('pointermove', e => { if (!last) return;
+    orbit.yaw += (e.clientX - last[0]) * .4; orbit.pitch = Math.max(-80, Math.min(85, orbit.pitch + (e.clientY - last[1]) * .3)); last = [e.clientX, e.clientY]; dirty = true; });
+  canvas.addEventListener('wheel', e => { e.preventDefault(); orbit.zoom = Math.max(.15, Math.min(6, orbit.zoom * (e.deltaY > 0 ? 1.12 : 1 / 1.12))); dirty = true; }, { passive: false });
+  canvas.addEventListener('dblclick', () => { Object.assign(orbit, { yaw: -30, pitch: 18, zoom: 1 }); dirty = true; }); }
 
-document.getElementById('cond').addEventListener('change', e => {
-  st.cond = e.target.value; fillSelects(); save();
-  loadCond(st.cond, () => { st.t = 0; computeExtent(); buildCams(); drawAll(); if (st.tab === 'overview') drawOverview(); });
-});
-document.getElementById('scenario').addEventListener('change', e => { st.scen = e.target.value; selectScenario(); });
-document.getElementById('scrub').addEventListener('input', e => { st.t = e.target.value / 1000 * scenario().seconds; drawAll(); });
-document.getElementById('speed').addEventListener('change', e => { st.speed = parseFloat(e.target.value); });
+document.getElementById('scene').addEventListener('change', e => { st.scen = e.target.value; selectScene(); });
 document.getElementById('tabScene').addEventListener('click', () => setTab('scene'));
 document.getElementById('tabOverview').addEventListener('click', () => setTab('overview'));
+document.getElementById('scrub').addEventListener('input', e => { st.t = e.target.value / 1000 * scenario().seconds; dirty = true; });
+document.getElementById('speed').addEventListener('change', e => { st.speed = parseFloat(e.target.value); });
 const playBtn = document.getElementById('play');
 function setPlaying(on) { st.playing = on; playBtn.textContent = on ? '❚❚ 暂停' : '▶ 播放'; if (on && st.t >= scenario().seconds - 0.01) st.t = 0; }
 playBtn.addEventListener('click', () => setPlaying(!st.playing));
 document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.target.tagName === 'SELECT') return;
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!st.playing); }
-  else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
-    e.preventDefault(); st.t = Math.max(0, Math.min(scenario().seconds, st.t + (e.code === 'ArrowRight' ? .05 : -.05) * (e.shiftKey ? 10 : 1))); drawAll();
-  }
+  else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') { e.preventDefault(); st.t = Math.max(0, Math.min(scenario().seconds, st.t + (e.code === 'ArrowRight' ? .1 : -.1) * (e.shiftKey ? 10 : 1))); dirty = true; }
 });
-let lastTick = null;
-// Playback redraws at most 30 times a second (a 144 Hz display would otherwise redraw every
-// view 144 times a second).
-let lastDraw = 0;
+// one loop: playback, and at most 30 redraws a second
+let lastTick = null, lastDraw = 0;
 function tick(now) {
   if (st.playing && lastTick !== null) {
     st.t += (now - lastTick) / 1000 * st.speed;
-    if (st.t >= scenario().seconds) { st.t = scenario().seconds; setPlaying(false); lastDraw = 0; }
-    if (now - lastDraw >= 1000 / 30 - 2) { lastDraw = now; drawAll(); }
+    if (st.t >= scenario().seconds) { st.t = scenario().seconds; setPlaying(false); }
+    dirty = true;
   }
-  lastTick = now; requestAnimationFrame(tick);
+  lastTick = now;
+  if (dirty && st.tab === 'scene' && now - lastDraw >= 1000 / 30 - 2) {
+    dirty = false; lastDraw = now;
+    document.getElementById('clock').textContent = `${st.t.toFixed(1)} s`;
+    document.getElementById('scrub').value = String(Math.round(st.t / scenario().seconds * 1000));
+    drawView(); drawGauges(); drawLanes(); drawDetail();
+  }
+  requestAnimationFrame(tick);
 }
-window.addEventListener('resize', () => drawAll());
-window.ac8compare = st;   // debugging
+window.ac8review = st;   // debugging
+window.ac8draw = () => { drawView(); drawGauges(); drawLanes(); drawDetail(); };
 
-fillSelects(); buildChips(); buildCams(); buildCharts();
-loadCond(st.cond, () => { computeExtent(); setTab(st.tab); document.getElementById('note').textContent = scenario().note || ''; requestAnimationFrame(tick); });
+fillScenes(); buildCondButtons(); buildCamButtons(); buildGauges();
+loadCond(st.cond, () => { setTab(st.tab); selectScene(); requestAnimationFrame(tick); });
 })();
 </script>
 </body>
