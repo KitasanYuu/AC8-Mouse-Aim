@@ -88,10 +88,15 @@ def receive(port):
     sock.settimeout(1.0)
     print(f"listening for telemetry on udp 127.0.0.1:{port}")
     while True:
+        # A contacts packet with many aircraft and the class census runs past 4 KB (an
+        # oversized datagram raised and stopped this thread); any one bad packet is dropped.
         try:
-            data, _ = sock.recvfrom(4096)
+            data, _ = sock.recvfrom(65535)
         except socket.timeout:
             HUB.flush_idle()
+            continue
+        except OSError as error:
+            print(f"dropped a packet: {error}")
             continue
         text = data.decode("utf-8", "replace").strip()
         if text.startswith("{") and text.endswith("}"):
