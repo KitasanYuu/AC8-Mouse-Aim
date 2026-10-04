@@ -10,6 +10,10 @@ local frame_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll"
 local camera_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_camera"))
 local release_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_release"))
 local perf_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_perf"))
+-- Optional: other aircraft for the telemetry stream (contacts.lua).
+local send_native = package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_send")
+local contacts = dofile(directory .. "contacts.lua")
+if send_native then contacts.init(send_native) end
 local current_address = nil
 local startup_address, startup_time = nil, 0
 local next_search = 0
@@ -144,6 +148,7 @@ else
                 release_native()
                 current_address=nil
                 startup_address=incoming_address
+                contacts.reset()
                 startup_time=0
             end
             if not pause_gameplay or not pause_gameplay:IsValid() then
@@ -192,10 +197,16 @@ else
             local throttle,brake=0,0
             pcall(function() throttle=tonumber(pawn.InputThrottle) or 0 end)
             pcall(function() brake=tonumber(pawn.InputBrake) or 0 end)
+            -- The game's world clock: positions and attitudes advance by game frames.
+            local game_time=-1
+            pcall(function() game_time=tonumber(pause_gameplay:GetTimeSeconds(pawn)) or -1 end)
             local on,target_pitch,target_yaw,follow=frame_native(address,pitch,yaw,roll,
                 camera_pitch,camera_yaw,camera_roll,fov,ox,oy,oz,paused and 1 or 0,gazing and 1 or 0,
-                throttle,brake)
+                throttle,brake,
+                assert(rotation_component(position,"X")),assert(rotation_component(position,"Y")),
+                assert(rotation_component(position,"Z")),game_time)
             assert(on~=nil,'Native frame rejected')
+            pcall(contacts.update,pawn,game_time)
             local desired_camera
             if gazing then
                 aim_camera.seed(camera,rotation_component)

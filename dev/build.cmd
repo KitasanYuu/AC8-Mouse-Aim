@@ -16,7 +16,7 @@ if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /EHsc /O2 /MD /LD /Fo"build\\" ^
   /I"deps\ue4ss-source\deps\first\LuaMadeSimple\include" ^
   /I"deps\ue4ss-source\deps\first\LuaRaw\include" ^
-  src\mouse_aim.cpp ^
+  src\mouse_aim.cpp src\telemetry.cpp ^
   src\vendor\minhook\src\buffer.c ^
   src\vendor\minhook\src\hook.c ^
   src\vendor\minhook\src\trampoline.c ^

@@ -18,6 +18,8 @@
 #include <mutex>
 #include <array>
 #include "vendor/minhook/include/MinHook.h"
+bool telemetry_send(int port, const char* data, int length);  // telemetry.cpp
+bool gamepad_read(float values[6], unsigned& buttons);        // telemetry.cpp
 #include "yaw_signature.h"
 #include "flight_math.h"
 #include "free_look.h"
@@ -57,6 +59,8 @@ struct Config {
     // the aim ring then darted across the screen with each mouse move and drifted back
     // over ~0.6 s; War Thunder's camera follows the mouse closely and the ring stays put.
     float camera_follow = 12.0f;
+    // Live telemetry to dev/telemetry (UDP port on 127.0.0.1); 0 = off.
+    int telemetry_port = 0;
 };
 
 struct Pose {
@@ -76,6 +80,12 @@ std::atomic<bool> trace_enabled{false};
 // Axes the player is flying by keyboard (1 pitch, 2 roll, 4 yaw), for trace analysis.
 std::atomic<int> keyboard_axes{0};
 std::atomic<float> input_throttle{0}, input_brake{0};  // the game's InputThrottle / InputBrake
+// The player's own axis input as the game wrote it, before the override (game convention).
+std::atomic<float> raw_axis_pitch{0}, raw_axis_yaw{0}, raw_axis_roll{0};
+// Actor position (cm) and the flight path derived from it (game thread only).
+double actor_x=0, actor_y=0, actor_z=0, previous_actor[3]{};
+bool actor_valid=false;
+flight::V path_velocity{}, path_raw_velocity{}, path_accel{};
 int aircraft_serial=0;  // game thread only
 std::atomic<bool> game_paused{false};
 std::atomic<bool> gaze_active{false};
@@ -129,6 +139,8 @@ std::atomic<bool> recenter_requested{true};
 float previous_pitch{}, previous_yaw{}, previous_roll{};
 float filtered_pitch_rate{}, filtered_yaw_rate{}, filtered_roll_rate{};
 unsigned long long previous_pose_clock{}, telemetry_tick{};
+// The game's world clock (s) for this pose and the previous one; -1 when unknown.
+double game_time=-1, previous_game_time=-1;
 Config config;
 wchar_t module_folder[MAX_PATH]{};
 wchar_t status_path[MAX_PATH]{};
@@ -196,6 +208,7 @@ void load_config() {
     config.roll_slot = std::clamp(read_config_int(L"roll_slot", config.roll_slot), 0, 2);
     config.input_probe = read_config_int(L"input_probe", 0);
     config.camera_follow = std::clamp(read_config_float(L"camera_follow", config.camera_follow), 1.0f, 60.0f);
+    config.telemetry_port = std::clamp(read_config_int(L"telemetry_port", 0), 0, 65535);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
         config.pitch_slot = 0;
         config.roll_slot = 2;
@@ -371,21 +384,59 @@ void mouse_loop() {
     }
 }
 
+// One JSON object per frame to dev/telemetry: attitude, aim, body rates, flight path,
+// position, the mod's stick commands and the player's own input (controller convention:
+// pull, right, right positive), the gamepad, game inputs and the logic's state.
+// ctl: 1 the mod flies, 0 the player does (F8 off, gaze, autopilot).
+void send_telemetry(long long clock,float dt,const flight::LogicOutput& output,bool manual,bool controlling) {
+    if(config.telemetry_port<=0) return;
+    char packet[1600];
+    int n=std::snprintf(packet,sizeof(packet),
+        "{\"t\":%.4f,\"dt\":%.4f,\"att\":[%.3f,%.3f,%.3f],\"aim\":[%.3f,%.3f],\"rate\":[%.2f,%.2f,%.2f],"
+        "\"vel\":[%.2f,%.2f,%.2f],\"acc\":[%.2f,%.2f,%.2f],\"pos\":[%.2f,%.2f,%.2f],\"stick\":[%.3f,%.3f,%.3f],"
+        "\"raw\":[%.3f,%.3f,%.3f],\"in\":[%.2f,%.2f],\"gt\":%.4f,\"ctl\":%d,\"kb\":%d,\"manual\":%d,\"aircraft\":%d,",
+        double(clock)/perf_frequency.QuadPart,dt,pose_pitch.load(),pose_yaw.load(),pose_roll.load(),
+        target_pitch.load(),target_yaw.load(),filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,
+        path_velocity.x,path_velocity.y,path_velocity.z,path_accel.x,path_accel.y,path_accel.z,
+        actor_x/100,actor_y/100,actor_z/100,output.pitch,output.roll,output.yaw,
+        raw_axis_pitch.load()*config.pitch_sign,raw_axis_roll.load()*config.roll_sign,raw_axis_yaw.load()*config.yaw_sign,
+        input_throttle.load(),input_brake.load(),game_time,controlling?1:0,keyboard_axes.load(),manual?1:0,aircraft_serial);
+    float pad[6]{}; unsigned buttons=0;
+    if(n>0 && gamepad_read(pad,buttons))
+        n+=std::snprintf(packet+n,sizeof(packet)-n,"\"pad\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u],",
+                         pad[0],pad[1],pad[2],pad[3],pad[4],pad[5],buttons);
+    if(n>0 && n<int(sizeof(packet))-8) { packet[n++]='"'; packet[n++]='d'; packet[n++]='"'; packet[n++]=':'; packet[n++]='['; }
+    for(int i=0;i<flight::DiagCount && n>0 && n<int(sizeof(packet))-32;++i)
+        n+=std::snprintf(packet+n,sizeof(packet)-n,i?",%.3f":"%.3f",output.diag[i]);
+    if(n>0 && n<int(sizeof(packet))-4) { packet[n++]=']'; packet[n++]='}'; telemetry_send(config.telemetry_port,packet,n); }
+}
+
 void update_commands() {
     using namespace flight;
-    if (!active.load() || !enabled.load() || game_paused.load() || yielding()) {
+    // Not flying for the player: F8 off, gaze or autopilot. The flight state is still
+    // measured and recorded, so a mission flown by hand can be compared with the mod.
+    const bool controlling=enabled.load() && !yielding();
+    if (!active.load() || game_paused.load() || !controlling) {
         free_look.reset();
         logic_reset();
         desired_aim_valid=false;
         command_pitch.store(0); command_roll.store(0); command_yaw.store(0);
         if(game_paused.load() || yielding()) { mouse_dx.store(0); mouse_dy.store(0); }
-        previous_pose_clock = 0;
-        return;
+        if(!active.load() || game_paused.load() || config.telemetry_port<=0) { previous_pose_clock = 0; return; }
     }
     const auto now = GetTickCount64();
     const auto frame_clock=perf_clock();
-    const float elapsed=previous_pose_clock ?
+    // Time since the previous pose by the game's own clock. Attitude and position advance
+    // by game frames, and the wall clock between calls jittered 9-18 ms against them
+    // (logged: per-frame displacement uncorrelated with the wall interval), which made
+    // the measured rates and flight path noisy. The wall clock is only a fallback.
+    float elapsed=previous_pose_clock ?
         static_cast<float>(double(frame_clock-previous_pose_clock)/perf_frequency.QuadPart) : 0.0f;
+    if(previous_pose_clock && game_time>=0 && previous_game_time>=0) {
+        const double game_elapsed=game_time-previous_game_time;
+        if(game_elapsed<=0) return;   // same game frame again: nothing has moved
+        elapsed=static_cast<float>(game_elapsed);
+    }
     const float dt=previous_pose_clock ? std::clamp(elapsed,0.002f,0.1f) : 1.0f/60;
     const Basis b = basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load());
     const Basis old = basis(previous_pitch,previous_yaw,previous_roll);
@@ -399,6 +450,23 @@ void update_commands() {
         recenter_requested.store(true);
         log_line("pose jump %.1f deg in %.3fs: target re-anchored to nose",jump,elapsed);
     }
+    // Flight path: velocity from the actor position, acceleration from the velocity,
+    // both low-passed (position steps are frame-quantized).
+    {
+        const double px[3]={actor_x,actor_y,actor_z};
+        if(actor_valid && previous_pose_clock && elapsed>0.0005f && elapsed<=0.2f) {
+            const V raw{float((px[0]-previous_actor[0])/elapsed/100),float((px[1]-previous_actor[1])/elapsed/100),
+                        float((px[2]-previous_actor[2])/elapsed/100)};
+            const V raw_accel=(raw-path_raw_velocity)*(1.0f/elapsed);
+            path_raw_velocity=raw;
+            path_velocity=path_velocity+(raw-path_velocity)*(1-std::exp(-elapsed/0.05f));
+            path_accel=path_accel+(raw_accel-path_accel)*(1-std::exp(-elapsed/0.15f));
+        } else {
+            path_velocity=path_raw_velocity=path_accel=V{};
+        }
+        for(int i=0;i<3;++i) previous_actor[i]=px[i];
+        actor_valid=true;
+    }
     if (!previous_pose_clock || elapsed>0.2f) {
         omega={};
         filtered_pitch_rate=filtered_yaw_rate=filtered_roll_rate=0;
@@ -409,6 +477,19 @@ void update_commands() {
     filtered_roll_rate += (-dot(omega,b.f)-filtered_roll_rate)*a;
     previous_pitch=pose_pitch.load(); previous_yaw=pose_yaw.load(); previous_roll=pose_roll.load();
     previous_pose_clock=frame_clock;
+    previous_game_time=game_time;
+    if(!controlling) {
+        flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),b.f.x,b.f.y,b.f.z,
+            filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load(),aircraft_serial,
+            input_throttle.load(),input_brake.load(),
+            path_velocity.x,path_velocity.y,path_velocity.z,path_accel.x,path_accel.y,path_accel.z,float(actor_z/100)};
+        flight::LogicOutput output{};
+        const flight::FlightPath path=flight::flight_path(b,input);
+        output.diag[flight::DiagSpeed]=path.speed; output.diag[flight::DiagAoa]=path.aoa;
+        output.diag[flight::DiagBeta]=path.beta; output.diag[flight::DiagNz]=path.nz;
+        send_telemetry(frame_clock,dt,output,!foreground_is_game(),false);
+        return;
+    }
     V aim=basis(target_pitch.load(),target_yaw.load(),0).f;
     if(!desired_aim_valid) { desired_aim=aim; desired_aim_valid=true; }
     const bool manual = !foreground_is_game();
@@ -438,7 +519,8 @@ void update_commands() {
     // Lift-vector maneuver paradigm (docs/maneuver-spec.md), see flight_logic.h.
     flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),aim.x,aim.y,aim.z,
         filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load(),aircraft_serial,
-        input_throttle.load(),input_brake.load()};
+        input_throttle.load(),input_brake.load(),
+        path_velocity.x,path_velocity.y,path_velocity.z,path_accel.x,path_accel.y,path_accel.z,float(actor_z/100)};
     flight::LogicOutput output{};
     logic.step(logic_state,&input,&output);
     if(output.event[0]) log_line("%s",output.event);
@@ -446,6 +528,7 @@ void update_commands() {
     command_yaw.store(manual?0:output.yaw*config.yaw_sign);
     command_roll.store(manual?0:output.roll*config.roll_sign);
     if(trace_enabled.load()) log_line("TRACE %s",output.trace);
+    send_telemetry(frame_clock,dt,output,manual,true);
     if(now-telemetry_tick>=10000) {
         telemetry_tick=now;
         log_line("guidance %s",output.trace);
@@ -458,12 +541,13 @@ void release_controls() {
     command_pitch.store(0); command_yaw.store(0); command_roll.store(0);
     mouse_dx.store(0); mouse_dy.store(0);
     previous_pose_clock=0; free_look.reset(); desired_aim_valid=false; logic_reset();
+    actor_valid=false;
     receive_camera(0,0,0,0,0);
 }
 
 // Called synchronously on the game thread. Fixed numeric arguments replace
 // the pipe queue, sscanf and the camera-target disk snapshot entirely.
-void receive_pose(const double (&v)[15]) {
+void receive_pose(const double (&v)[19]) {
     const uintptr_t address=static_cast<uintptr_t>(v[0]);
     const float pitch=float(v[1]),yaw=float(v[2]),roll=float(v[3]);
     const float view_pitch=float(v[4]),view_yaw=float(v[5]),view_roll=float(v[6]);
@@ -471,6 +555,8 @@ void receive_pose(const double (&v)[15]) {
     const bool paused=v[11]!=0,gazing=v[12]!=0;
     input_throttle.store(float(std::clamp(v[13],-2.0,2.0)));
     input_brake.store(float(std::clamp(v[14],-2.0,2.0)));
+    actor_x=v[15]; actor_y=v[16]; actor_z=v[17];
+    game_time=v[18];
     if(gaze_active.exchange(gazing)!=gazing) {
         mouse_dx.store(0); mouse_dy.store(0);
         command_pitch.store(0); command_yaw.store(0); command_roll.store(0);
@@ -488,6 +574,7 @@ void receive_pose(const double (&v)[15]) {
     if (aircraft.load() != static_cast<uintptr_t>(address)) {
         aircraft.store(static_cast<uintptr_t>(address));
         ++aircraft_serial;  // tells the flight logic to identify the new aircraft afresh
+        actor_valid=false;
         autopilot_active.store(false);
         roll_reference.store(roll);
         previous_pose_clock = 0;
@@ -880,6 +967,12 @@ uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context)
     }
     if(perf_enabled.load()) ++perf_player_inputs;
     if(config.input_probe) probe_input_block(pawn);
+    if(config.telemetry_port>0) {
+        __try {
+            const float* axes = reinterpret_cast<const float*>(pawn + 0x2268);
+            raw_axis_pitch.store(axes[config.pitch_slot]); raw_axis_yaw.store(axes[1]); raw_axis_roll.store(axes[config.roll_slot]);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     if(!active.load() || GetTickCount64()-pose_tick.load()>1000 || !enabled.load() ||
        game_paused.load() || yielding() || !foreground_is_game()) return original(state,context);
     // Manual pitch also suspends automatic roll, matching MouseFlight maneuvers.
@@ -1111,7 +1204,7 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_begin(void*) {
 extern "C" __declspec(dllexport) int ac8_mouseaim_frame(lua_State* state) {
     if(!running.load() || !on_bridge_thread()) return 0;
     PerfSpan timing(perf_bridge);
-    LuaView lua(state); double v[15]{};
+    LuaView lua(state); double v[19]{};
     if(!read_numbers(lua,v) || !live_pointer_number(v[0])) { release_controls(); return 0; }
     for(size_t i=1;i<11;++i) if(std::abs(v[i])>1e12) { release_controls(); return 0; }
     if((v[11]!=0 && v[11]!=1) || (v[12]!=0 && v[12]!=1)) { release_controls(); return 0; }
@@ -1120,6 +1213,19 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_frame(lua_State* state) {
     lua.set_number(on?1:0); lua.set_number(look_pitch.load()); lua.set_number(look_yaw.load());
     lua.set_number(config.camera_follow);
     return 4;
+}
+
+// Forwards one JSON text from Lua (contacts: other aircraft) to the telemetry stream.
+// Returns 1 when sent, 0 when telemetry is off (Lua then backs off).
+extern "C" __declspec(dllexport) int ac8_mouseaim_send(lua_State* state) {
+    if(!running.load() || !on_bridge_thread()) return 0;
+    LuaView lua(state);
+    if(lua.get_stack_size()!=1 || !lua.is_string(1)) return 0;
+    const std::string_view text=lua.get_string(1);
+    const bool sent=config.telemetry_port>0 && text.size()<60000 &&
+        telemetry_send(config.telemetry_port,text.data(),static_cast<int>(text.size()));
+    lua.set_number(sent?1:0);
+    return 1;
 }
 
 extern "C" __declspec(dllexport) int ac8_mouseaim_camera(lua_State* state) {

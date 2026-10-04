@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AC8 飞行重建</title>
+<style>
+/* Layout: a flight-test bench. The 3D chase view dominates; instruments and the
+   ground track sit on the right; strip charts run along the bottom. Dark only:
+   it sits beside the game. */
+:root {
+  --bg: #0e1418;
+  --panel: #151d22;
+  --rule: #26323a;
+  --grid: #1d2830;
+  --ink: #dbe4e9;
+  --muted: #84959f;
+  --nose: #f2f5f7;
+  --path: #5fd38a;
+  --aim: #f29a4a;
+  --trail: #4fb3d9;
+  --warn: #f06e5c;
+  --craft: #9fb4c1;
+  --enemy: #e5534b;
+  --friend: #5aa9ff;
+  --selected: #f5d04c;
+  --font: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Consolas", "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 13px; line-height: 1.5; }
+.app { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; gap: 10px; padding: 10px 14px; }
+.bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.bar h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 600; letter-spacing: .02em; }
+.pill { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--rule); color: var(--muted); }
+.pill.live { color: var(--path); border-color: var(--path); }
+.pill.warn { color: var(--warn); border-color: var(--warn); }
+.pill.on { color: var(--aim); border-color: var(--aim); }
+select, button, input[type=range] { font: inherit; color: var(--ink); }
+select, button { background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 8px; }
+button { cursor: pointer; }
+button:hover, select:hover { border-color: var(--muted); }
+:focus-visible { outline: 2px solid var(--trail); outline-offset: 1px; }
+.spacer { flex: 1; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 10px; min-height: 0; }
+@media (max-width: 1000px) { .main { grid-template-columns: minmax(0, 1fr); } .app { height: auto; } .view { height: 60vh; } }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; min-width: 0; min-height: 0; }
+.view { position: relative; }
+.view canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+.view .hint { position: absolute; right: 10px; bottom: 8px; color: var(--muted); font-size: 11px; pointer-events: none; }
+.side { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; min-height: 0; overflow: auto; }
+.instruments { padding: 10px 12px; display: grid; gap: 8px; }
+.readings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; }
+.reading { display: grid; }
+.reading .k { font-size: 11px; color: var(--muted); }
+.reading .v { font-family: var(--mono); font-size: 15px; font-variant-numeric: tabular-nums; }
+.reading .v small { font-size: 11px; color: var(--muted); margin-left: 2px; }
+.flags { display: flex; gap: 6px; flex-wrap: wrap; }
+.sticks { display: grid; grid-template-columns: 3.5em minmax(0, 1fr) 3.5em; gap: 4px 8px; align-items: center; font-size: 12px; }
+.sticks .val { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.meter { position: relative; height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+.meter i { position: absolute; top: 0; bottom: 0; background: var(--trail); }
+.meter.center::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--muted); }
+.map { position: relative; }
+.map canvas { width: 100%; height: 100%; display: block; }
+.title { font-size: 11px; color: var(--muted); letter-spacing: .06em; }
+.map .title { position: absolute; left: 10px; top: 6px; }
+.charts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.target { display: grid; gap: 4px; border-top: 1px solid var(--rule); padding-top: 8px; }
+.target .name { font-family: var(--mono); color: var(--selected); overflow-wrap: anywhere; }
+@media (max-width: 1000px) { .charts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.chart { padding: 4px 8px 6px; height: 112px; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.chart canvas { width: 100%; height: 100%; display: block; }
+.transport { display: flex; gap: 8px; align-items: center; }
+.transport input[type=range] { flex: 1; accent-color: var(--trail); min-width: 120px; }
+.clock { font-family: var(--mono); min-width: 7ch; text-align: right; font-variant-numeric: tabular-nums; }
+.empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 20px; pointer-events: none; }
+.empty b { color: var(--ink); }
+.empty code { font-family: var(--mono); color: var(--aim); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="bar">
+    <h1>AC8 飞行重建</h1>
+    <label for="source" class="title">数据</label>
+    <select id="source"><option value="live">实时（游戏中）</option></select>
+    <span class="pill" id="status">连接中…</span>
+    <span class="pill" id="rec" hidden></span>
+    <div class="spacer"></div>
+    <div class="transport" id="transport" hidden>
+      <button id="play" type="button">▶ 播放</button>
+      <select id="speed" aria-label="播放速度"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+      <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="时间">
+      <span class="clock" id="clock">0.0 s</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="panel view">
+      <canvas id="scene" aria-label="三维追尾视角"></canvas>
+      <div class="empty" id="empty">
+        <div><b>还没有收到数据。</b><br>在游戏目录的 <code>config.ini</code> [control] 中设置 <code>telemetry_port=49731</code>，<br>进入任务后这里会实时重建飞行。也可以在左上角选择一段录像回放。</div>
+      </div>
+      <span class="hint">拖动旋转视角 · 滚轮缩放 · 双击复位</span>
+    </div>
+    <div class="side">
+      <div class="panel instruments">
+        <div class="readings" id="readings"></div>
+        <div class="flags" id="flags"></div>
+        <div class="sticks" id="sticks"></div>
+        <div class="target" id="target"></div>
+      </div>
+      <div class="panel map" style="height: 260px"><span class="title">俯视航迹（最近 2 分钟，上为北）</span><canvas id="map"></canvas></div>
+      <div></div>
+    </div>
+  </div>
+
+  <div class="charts" id="charts"></div>
+</div>
+
+<script>
+(() => {
+'use strict';
+// ---------- data ----------
+// A frame: t (s), dt, att [pitch, yaw, roll] deg, aim [pitch, yaw], rate [pitch, yaw, roll] deg/s,
+// vel/acc [x, y, z] (Unreal world: X north, Y east, Z up; m/s, m/s^2), pos [x, y, z] m,
+// stick [pitch, roll, yaw] controller convention (pull, right, right positive),
+// in [throttle, brake], kb (keyboard axes 1 pitch 2 roll 4 yaw), manual, aircraft, d (logic state).
+const D = { angle: 0, pitchErr: 1, yawErr: 2, rollErr: 3, w: 4, push: 5, tail: 6, pitchWant: 7, rollWant: 8,
+            pitchPred: 9, rollPred: 10, coming: 11, speed: 12, aoa: 13, beta: 14, nz: 15 };
+const rad = Math.PI / 180;
+let frames = [];          // current buffer (live: last 2 minutes; replay: whole recording)
+let contacts = [];        // other aircraft snapshots (~10 Hz): {gt, selected, me, c: [[id, class, x, y, z, pitch, yaw, roll, speed, hidden]]}
+const gtOf = fr => (fr.gt !== undefined && fr.gt >= 0) ? fr.gt : fr.t;
+function contactsAt(gt) {
+  let lo = 0, hi = contacts.length - 1, best = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (contacts[m].gt <= gt) { best = m; lo = m + 1; } else hi = m - 1; }
+  return best >= 0 && gt - contacts[best].gt < 1 ? best : -1;
+}
+// Every contact's samples between the snapshot `ci` and `seconds` before it: id -> [contact].
+function contactTrails(ci, seconds) {
+  const trails = new Map(), end = contacts[ci].gt;
+  let k0 = ci; while (k0 > 0 && end - contacts[k0 - 1].gt < seconds) k0--;
+  for (let k = k0; k <= ci; k++) for (const c of contacts[k].c) {
+    if (c[C.hidden]) continue;
+    let list = trails.get(c[C.id]); if (!list) { list = []; trails.set(c[C.id], list); }
+    list.push(c);
+  }
+  return trails;
+}
+const C = { id: 0, cls: 1, x: 2, y: 3, z: 4, pitch: 5, yaw: 6, roll: 7, speed: 8, hidden: 9, enemy: 10 };
+// Friend or foe: the game's IsPlayerTarget comes and goes for an enemy (logged: most
+// enemy aircraft flagged only part of the time, friendlies never), so a class flagged
+// once in this flight counts as hostile throughout. Older recordings have no flag.
+const enemyClasses = new Set();
+function noteSides(snap) { for (const c of snap.c) if (c.length > C.enemy && c[C.enemy] === 1) enemyClasses.add(c[C.cls]); }
+const isEnemy = c => c.length <= C.enemy || c[C.enemy] === 1 || enemyClasses.has(c[C.cls]);
+const contactPos = c => [c[C.y], c[C.x], c[C.z]];   // east, north, up
+let cursor = -1;          // index of the frame shown
+let mode = 'live';
+let playing = false, speed = 1, replayTime = 0;
+
+// ---------- vector helpers (Unreal world -> east/north/up) ----------
+const enu = v => [v[1], v[0], v[2]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };
+// Same as flight::basis (src/flight_math.h), in Unreal coordinates.
+function basis(p, y, r) {
+  p *= rad; y *= rad; r *= rad;
+  const f = [Math.cos(p) * Math.cos(y), Math.cos(p) * Math.sin(y), Math.sin(p)];
+  const right = [-Math.sin(y), Math.cos(y), 0];
+  const up = cross(f, right);
+  return { f, r: sub(mul(right, Math.cos(r)), mul(up, Math.sin(r))), u: add(mul(up, Math.cos(r)), mul(right, Math.sin(r))) };
+}
+const dirOf = (p, y) => [Math.cos(p * rad) * Math.cos(y * rad), Math.cos(p * rad) * Math.sin(y * rad), Math.sin(p * rad)];
+
+// ---------- canvas helpers ----------
+const col = (() => { const s = getComputedStyle(document.documentElement); const g = n => s.getPropertyValue(n).trim();
+  return { ink: g('--ink'), muted: g('--muted'), grid: g('--grid'), rule: g('--rule'), nose: g('--nose'), path: g('--path'),
+           enemy: g('--enemy'), friend: g('--friend'), selected: g('--selected'),
+           aim: g('--aim'), trail: g('--trail'), warn: g('--warn'), craft: g('--craft'), panel: g('--panel'), mono: g('--mono') }; })();
+function setup(canvas) {
+  const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+// ---------- 3D chase view ----------
+const orbit = { yaw: 0, pitch: 14, dist: 75 };
+const WING = 12;   // half span drawn for wingtip ribbons (m); real ~7.5, widened to stay visible
+let camHeading = null;
+// Jet outline in body axes (m): x forward, y right, z up.
+const MESH = (() => {
+  const tris = [], m = (a, b, c, shade) => { tris.push({ v: [a, b, c], shade }); tris.push({ v: [[a[0], -a[1], a[2]], [c[0], -c[1], c[2]], [b[0], -b[1], b[2]]], shade }); };
+  m([3.5, 0.9, 0], [-4.5, 7.5, 0], [-6.5, 0.9, 0], 1.0);          // wing
+  m([-5.6, 0.7, 0.1], [-8.6, 3.4, 0.1], [-8.9, 0.7, 0.1], 0.9);   // tailplane
+  m([9.5, 0, 0.1], [-8.9, 0.95, 0.15], [-8.9, 0, 0.15], 0.8);     // fuselage top
+  tris.push({ v: [[-5.2, 0, 0.5], [-8.9, 0, 4.2], [-9.0, 0, 0.5]], shade: 0.7 });   // fin
+  tris.push({ v: [[9.5, 0, 0.1], [-8.9, 0, 1.0], [-8.9, 0, -0.6]], shade: 0.6 });   // fuselage side
+  return tris;
+})();
+function drawScene() {
+  const { ctx, w, h } = setup(document.getElementById('scene'));
+  if (cursor < 0) return;
+  const fr = frames[cursor], B = basis(fr.att[0], fr.att[1], fr.att[2]);
+  const A = enu(fr.pos), f = enu(B.f), r = enu(B.r), u = enu(B.u);
+  // camera behind the nose's heading, smoothed, plus the user's orbit
+  const heading = Math.atan2(f[0], f[1]) / rad;
+  if (camHeading === null) camHeading = heading;
+  let dh = ((heading - camHeading + 540) % 360) - 180; camHeading += dh * 0.15;
+  const ch = (camHeading + orbit.yaw) * rad, cp = orbit.pitch * rad;
+  const back = [Math.sin(ch) * Math.cos(cp), Math.cos(ch) * Math.cos(cp), Math.sin(cp)];
+  const C = sub(add(A, mul([0, 0, 1], 4)), mul([back[0], back[1], -back[2]], orbit.dist));
+  const fwd = norm(sub(A, C)), right = norm(cross(fwd, [0, 0, 1])), up = cross(right, fwd);
+  const focal = (h / 2) / Math.tan(32 * rad);
+  const P = p => { const d = sub(p, C), z = dot(d, fwd); return z < 0.5 ? null : [w / 2 + focal * dot(d, right) / z, h / 2 - focal * dot(d, up) / z, z]; };
+  const line = (a, b, color, width = 1, dash = null, alpha = 1) => {
+    // clip against the near plane in a few steps
+    const steps = 24; ctx.strokeStyle = color; ctx.lineWidth = width; ctx.globalAlpha = alpha; ctx.setLineDash(dash || []);
+    ctx.beginPath(); let pen = false;
+    for (let i = 0; i <= steps; i++) { const q = P(add(a, mul(sub(b, a), i / steps))); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+    ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  };
+  // sky / ground backdrop split at the horizon
+  const hz = P(add(C, mul([fwd[0], fwd[1], 0], 1e6)));
+  const hy = hz ? Math.max(-h, Math.min(2 * h, hz[1])) : (fwd[2] > 0 ? 2 * h : -h);
+  ctx.fillStyle = '#122028'; ctx.fillRect(0, 0, w, Math.max(0, Math.min(h, hy)));
+  ctx.fillStyle = '#161b17'; ctx.fillRect(0, Math.max(0, Math.min(h, hy)), w, h);
+  // ground grid on the world zero plane, 1 km spacing around the aircraft
+  const G = 1000, gx = Math.round(A[0] / G) * G, gy = Math.round(A[1] / G) * G, span = 8;
+  for (let i = -span; i <= span; i++) {
+    line([gx + i * G, gy - span * G, 0], [gx + i * G, gy + span * G, 0], col.rule, 1, null, .8);
+    line([gx - span * G, gy + i * G, 0], [gx + span * G, gy + i * G, 0], col.rule, 1, null, .8);
+  }
+  line(A, [A[0], A[1], 0], col.muted, 1, [3, 5], .5);            // drop line to the zero plane
+  // trail: last 30 s as a ribbon between the wingtips, so the roll stays visible.
+  // Centre line, left tip red and right tip green (navigation lights); the band is
+  // pale while upright and orange while inverted. Half span drawn at WING m.
+  const t0 = fr.t - 30, samples = [];
+  for (let i = Math.max(0, cursor - 4000); i <= cursor; i += 2) {
+    const s = frames[i]; if (s.t < t0) continue;
+    const sb = basis(s.att[0], s.att[1], s.att[2]), c = enu(s.pos), wr = enu(sb.r);
+    samples.push({ c: P(c), l: P(sub(c, mul(wr, WING))), r: P(add(c, mul(wr, WING))), inverted: sb.u[2] < 0 });
+  }
+  for (let k = 1; k < samples.length; k++) {
+    const a = samples[k - 1], b2 = samples[k];
+    if (!a.l || !a.r || !b2.l || !b2.r) continue;
+    ctx.fillStyle = b2.inverted ? col.aim : col.ink; ctx.globalAlpha = b2.inverted ? .35 : .12;
+    ctx.beginPath(); ctx.moveTo(a.l[0], a.l[1]); ctx.lineTo(b2.l[0], b2.l[1]); ctx.lineTo(b2.r[0], b2.r[1]); ctx.lineTo(a.r[0], a.r[1]); ctx.closePath(); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  for (const [key, color, width] of [['l', '#e5534b', 1.2], ['r', '#5fd38a', 1.2], ['c', col.trail, 2]]) {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath(); let pen = false;
+    for (const s of samples) { const q = s[key]; if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+    ctx.stroke();
+  }
+  ctx.lineWidth = 1;
+  // aim, flight path and nose
+  const aimDir = enu(dirOf(fr.aim[0], fr.aim[1]));
+  line(A, add(A, mul(aimDir, 900)), col.aim, 2, [8, 6]);
+  const aimEnd = P(add(A, mul(aimDir, 900)));
+  if (aimEnd) { ctx.strokeStyle = col.aim; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(aimEnd[0], aimEnd[1], 7, 0, 2 * Math.PI); ctx.stroke(); ctx.lineWidth = 1; }
+  const v = enu(fr.vel), vs = Math.hypot(v[0], v[1], v[2]);
+  if (vs > 1) line(A, add(A, mul(v, 160 / vs)), col.path, 2.5);
+  line(A, add(A, mul(f, 160)), col.nose, 1.5);
+  // other aircraft: a model within 2 km, a marker beyond; the selected target highlighted
+  const ci = contactsAt(gtOf(fr));
+  if (ci >= 0) {
+    const snap = contacts[ci];
+    // trails of every aircraft, last 30 s; the selected target as a wingtip ribbon
+    for (const [id, list] of contactTrails(ci, 30)) {
+      const sel = id === snap.selected, last = list[list.length - 1];
+      const color = sel ? col.selected : isEnemy(last) ? col.enemy : col.friend;
+      if (sel) {
+        const pts = list.map(c => { const cb = basis(c[C.pitch], c[C.yaw], c[C.roll]), wr = enu(cb.r), p0 = contactPos(c);
+          return { l: P(sub(p0, mul(wr, WING))), r: P(add(p0, mul(wr, WING))), inverted: cb.u[2] < 0 }; });
+        for (let k = 1; k < pts.length; k++) {
+          const a = pts[k - 1], b2 = pts[k]; if (!a.l || !a.r || !b2.l || !b2.r) continue;
+          ctx.fillStyle = b2.inverted ? col.aim : col.selected; ctx.globalAlpha = b2.inverted ? .35 : .18;
+          ctx.beginPath(); ctx.moveTo(a.l[0], a.l[1]); ctx.lineTo(b2.l[0], b2.l[1]); ctx.lineTo(b2.r[0], b2.r[1]); ctx.lineTo(a.r[0], a.r[1]); ctx.closePath(); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      ctx.strokeStyle = color; ctx.lineWidth = sel ? 2 : 1.2; ctx.globalAlpha = sel ? .9 : .6; ctx.beginPath(); let tpen = false;
+      for (const c of list) { const q = P(contactPos(c)); if (!q) { tpen = false; continue; } tpen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); tpen = true; }
+      ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    }
+    for (const c of snap.c) {
+      if (c[C.hidden]) continue;
+      const pos = contactPos(c), q = P(pos); if (!q) continue;
+      const dist = Math.hypot(pos[0] - A[0], pos[1] - A[1], pos[2] - A[2]), sel = c[C.id] === snap.selected;
+      const color = sel ? col.selected : isEnemy(c) ? col.enemy : col.friend;
+      if (dist < 2000) {
+        const cb = basis(c[C.pitch], c[C.yaw], c[C.roll]);
+        drawAircraft(ctx, P, pos, enu(cb.f), enu(cb.r), enu(cb.u), color);
+      } else {
+        ctx.strokeStyle = color; ctx.lineWidth = sel ? 2 : 1.2; ctx.beginPath();
+        ctx.moveTo(q[0], q[1] - 6); ctx.lineTo(q[0] + 6, q[1]); ctx.lineTo(q[0], q[1] + 6); ctx.lineTo(q[0] - 6, q[1]); ctx.closePath(); ctx.stroke(); ctx.lineWidth = 1;
+      }
+      ctx.fillStyle = color; ctx.font = `11px ${col.mono}`;
+      ctx.fillText(`${sel ? '目标 ' : ''}${(dist / 1000).toFixed(1)} km`, q[0] + 9, q[1] - 7);
+    }
+  }
+  drawAircraft(ctx, P, A, f, r, u, null);
+  // legend
+  ctx.font = `12px ${col.mono}`;
+  [['机头', col.nose], ['航迹（速度方向）', col.path], ['鼠标目标方向', col.aim], ['轨迹 30 s（中线）', col.trail], ['左翼尖', '#e5534b'], ['右翼尖', '#5fd38a'], ['倒飞段', col.aim], ['敌机', col.enemy], ['友机', col.friend], ['选中目标', col.selected]].forEach(([label, c], i) => {
+    ctx.fillStyle = c; ctx.fillRect(12, 14 + i * 18, 14, 3); ctx.fillStyle = col.ink; ctx.fillText(label, 32, 19 + i * 18);
+  });
+}
+
+function drawAircraft(ctx, P, A, f, r, u, tint) {
+  const tris = MESH.map(t => {
+    const pts = t.v.map(p => add(A, add(mul(f, p[0]), add(mul(r, p[1]), mul(u, p[2])))));
+    const q = pts.map(P); if (q.some(x => !x)) return null;
+    const n = norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0])));
+    const light = 0.45 + 0.55 * Math.abs(dot(n, norm([0.3, -0.4, 1])));
+    return { q, z: (q[0][2] + q[1][2] + q[2][2]) / 3, light: light * t.shade };
+  }).filter(Boolean).sort((a, b) => b.z - a.z);
+  for (const t of tris) {
+    if (tint) { ctx.fillStyle = tint; ctx.globalAlpha = 0.45 + 0.5 * t.light; }
+    else { const c = Math.round(110 + 120 * t.light); ctx.fillStyle = `rgb(${c - 18},${c},${c + 12})`; }
+    ctx.strokeStyle = '#0b1114';
+    ctx.beginPath(); ctx.moveTo(t.q[0][0], t.q[0][1]); ctx.lineTo(t.q[1][0], t.q[1][1]); ctx.lineTo(t.q[2][0], t.q[2][1]); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- ground track ----------
+function drawMap() {
+  const { ctx, w, h } = setup(document.getElementById('map'));
+  if (cursor < 0) return;
+  const fr = frames[cursor], t0 = fr.t - 120;
+  const pts = [];
+  for (let i = Math.max(0, cursor - 12000); i <= cursor; i++) if (frames[i].t >= t0) pts.push(enu(frames[i].pos));
+  const A = enu(fr.pos);
+  let x0 = A[0], x1 = A[0], y0 = A[1], y1 = A[1];
+  for (const p of pts) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }
+  const span = Math.max(x1 - x0, y1 - y0, 2000) * 1.15, s = Math.min(w, h - 20) / span;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, X = x => w / 2 + (x - cx) * s, Y = y => (h + 14) / 2 - (y - cy) * s;
+  ctx.strokeStyle = col.trail; ctx.lineWidth = 1.5; ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))); ctx.stroke();
+  const B = basis(fr.att[0], fr.att[1], fr.att[2]), f = enu(B.f), aim = enu(dirOf(fr.aim[0], fr.aim[1]));
+  ctx.setLineDash([5, 4]); ctx.strokeStyle = col.aim; ctx.beginPath(); ctx.moveTo(X(A[0]), Y(A[1]));
+  ctx.lineTo(X(A[0] + aim[0] * span * .25), Y(A[1] + aim[1] * span * .25)); ctx.stroke(); ctx.setLineDash([]);
+  const ci = contactsAt(gtOf(fr));
+  if (ci >= 0) {
+    const snap = contacts[ci];
+    for (const [id, list] of contactTrails(ci, 120)) {
+      const sel = id === snap.selected, last = list[list.length - 1];
+      ctx.strokeStyle = sel ? col.selected : isEnemy(last) ? col.enemy : col.friend;
+      ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = sel ? .8 : .5; ctx.beginPath();
+      list.forEach((c, k) => { const p = contactPos(c); k ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1])); });
+      ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    }
+    for (const c of snap.c) {
+      if (c[C.hidden]) continue;
+      const p = contactPos(c), sel = c[C.id] === snap.selected;
+      ctx.fillStyle = sel ? col.selected : isEnemy(c) ? col.enemy : col.friend; ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), sel ? 4.5 : 3, 0, 2 * Math.PI); ctx.fill();
+    }
+  }
+  const hd = Math.atan2(f[0], f[1]);
+  ctx.save(); ctx.translate(X(A[0]), Y(A[1])); ctx.rotate(hd);
+  ctx.fillStyle = col.nose; ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 3); ctx.lineTo(-6, 7); ctx.closePath(); ctx.fill(); ctx.restore();
+  // scale bar
+  const bar = [500, 1000, 2000, 5000, 10000, 20000].find(v => v * s > 60) || 20000;
+  ctx.strokeStyle = col.muted; ctx.beginPath(); ctx.moveTo(12, h - 12); ctx.lineTo(12 + bar * s, h - 12); ctx.stroke();
+  ctx.fillStyle = col.muted; ctx.font = `11px ${col.mono}`; ctx.fillText(bar >= 1000 ? `${bar / 1000} km` : `${bar} m`, 16 + bar * s, h - 8);
+}
+
+// ---------- instruments ----------
+function fmt(v, d = 0) { return Number.isFinite(v) ? v.toFixed(d) : '–'; }
+function drawInstruments() {
+  const el = document.getElementById('readings'), flags = document.getElementById('flags'), sticks = document.getElementById('sticks');
+  if (cursor < 0) { el.innerHTML = ''; flags.innerHTML = ''; sticks.innerHTML = ''; return; }
+  const fr = frames[cursor], d = fr.d || [];
+  const rows = [
+    ['速度', `${fmt(d[D.speed])}<small>m/s</small>`], ['', `${fmt(d[D.speed] * 3.6)}<small>km/h</small>`], ['高度', `${fmt(fr.pos[2])}<small>m</small>`],
+    ['攻角', `${fmt(d[D.aoa], 1)}<small>°</small>`], ['侧滑', `${fmt(d[D.beta], 1)}<small>°</small>`], ['过载', `${fmt(d[D.nz], 2)}<small>g</small>`],
+    ['俯仰速率', `${fmt(fr.rate[0])}<small>°/s</small>`], ['滚转速率', `${fmt(fr.rate[2])}<small>°/s</small>`], ['偏航速率', `${fmt(fr.rate[1], 1)}<small>°/s</small>`],
+    ['离目标', `${fmt(d[D.angle], 1)}<small>°</small>`], ['坡度', `${fmt(fr.att[2])}<small>°</small>`], ['俯仰角', `${fmt(fr.att[0])}<small>°</small>`],
+  ];
+  el.innerHTML = rows.map(([k, v]) => `<div class="reading"><span class="k">${k || '&nbsp;'}</span><span class="v">${v}</span></div>`).join('');
+  const highG = fr.in[0] > 0.5 && fr.in[1] > 0.5;
+  const f = [];
+  if (fr.manual) f.push('<span class="pill warn">游戏不在前台</span>');
+  else if (fr.ctl === 0) f.push('<span class="pill on">手动飞行</span>');
+  else f.push('<span class="pill live">MOD 控制</span>');
+  if (fr.kb) f.push(`<span class="pill on">键盘接管 ${[fr.kb & 1 ? '俯仰' : '', fr.kb & 2 ? '滚转' : '', fr.kb & 4 ? '偏航' : ''].filter(Boolean).join('/')}</span>`);
+  if (highG) f.push('<span class="pill on">高G</span>');
+  if (d[D.push] > 0.5) f.push('<span class="pill">推杆模式</span>');
+  if (d[D.tail] > 0.5) f.push('<span class="pill">正后方掉头</span>');
+  flags.innerHTML = f.join('');
+  const bar = (v, centered) => {
+    const x = Math.max(-1, Math.min(1, v));
+    const style = centered ? (x >= 0 ? `left:50%;width:${x * 50}%` : `left:${50 + x * 50}%;width:${-x * 50}%`) : `left:0;width:${Math.max(0, x) * 100}%`;
+    return `<div class="meter${centered ? ' center' : ''}"><i style="${style}"></i></div>`;
+  };
+  // selected target and the game's own speed
+  const tEl = document.getElementById('target'), ci = contactsAt(gtOf(fr));
+  if (ci < 0) tEl.innerHTML = '<span class="title">没有敌机数据</span>';
+  else {
+    const snap = contacts[ci], c = snap.c.find(c => c[C.id] === snap.selected);
+    const gameSpeed = snap.me >= 0 ? `游戏速度 <b>${fmt(snap.me)}</b> m/s（计算 ${fmt(d[D.speed])}）` : '';
+    if (!c) tEl.innerHTML = `<span class="title">未选中目标 · 敌 ${snap.c.filter(isEnemy).length} · 友 ${snap.c.filter(c => !isEnemy(c)).length}</span><span>${gameSpeed}</span>`;
+    else {
+      const me = enu(fr.pos), tp = contactPos(c), rel = sub(tp, me), dist = Math.hypot(rel[0], rel[1], rel[2]);
+      // closure from the previous snapshot of the same target
+      let closure = NaN;
+      for (let k = ci - 1; k >= 0 && snap.gt - contacts[k].gt < 1.5; k--) {
+        const old = contacts[k].c.find(o => o[C.id] === c[C.id]);
+        if (old && snap.gt - contacts[k].gt > 0.2) {
+          const fo = frames.find(x => gtOf(x) >= contacts[k].gt) || fr;
+          const before = Math.hypot(...sub(contactPos(old), enu(fo.pos)));
+          closure = (before - dist) / (snap.gt - contacts[k].gt); break;
+        }
+      }
+      const tb = basis(c[C.pitch], c[C.yaw], c[C.roll]), mb = basis(fr.att[0], fr.att[1], fr.att[2]);
+      const crossing = Math.acos(Math.max(-1, Math.min(1, dot(tb.f, mb.f)))) / rad;
+      tEl.innerHTML = `<span class="title">选中目标 · 敌 ${snap.c.filter(isEnemy).length} · 友 ${snap.c.filter(c => !isEnemy(c)).length}</span><span class="name">${c[C.cls]}</span>` +
+        `<span>距离 <b>${fmt(dist / 1000, 2)}</b> km · 接近 <b>${fmt(closure)}</b> m/s · 高度差 <b>${fmt(rel[2])}</b> m</span>` +
+        `<span>目标速度 <b>${fmt(c[C.speed])}</b> m/s · 航向夹角 <b>${fmt(crossing)}</b>°</span><span>${gameSpeed}</span>`;
+    }
+  }
+  const bars = [];
+  if (fr.ctl !== 0) bars.push(['MOD 俯仰', fr.stick[0], true], ['MOD 滚转', fr.stick[1], true], ['MOD 偏航', fr.stick[2], true]);
+  if (fr.raw) bars.push(['玩家俯仰', fr.raw[0], true], ['玩家滚转', fr.raw[1], true], ['玩家偏航', fr.raw[2], true]);
+  bars.push(['加速', fr.in[0], false], ['减速', fr.in[1], false]);
+  if (fr.pad) bars.push(['手柄左 X', fr.pad[0], true], ['手柄左 Y', fr.pad[1], true], ['手柄右 X', fr.pad[2], true],
+                        ['手柄右 Y', fr.pad[3], true], ['手柄 LT', fr.pad[4], false], ['手柄 RT', fr.pad[5], false]);
+  sticks.innerHTML = bars.map(([k, v, c]) => `<span>${k}</span>${bar(v, c)}<span class="val">${fmt(v, 2)}</span>`).join('');
+}
+
+// ---------- strip charts ----------
+const CHARTS = [
+  { key: 'angle', title: '离目标角度 °', get: fr => fr.d[D.angle], min: 0, fixed: false },
+  { key: 'speed', title: '速度 m/s（实线计算，虚线游戏）', get: fr => fr.d[D.speed], fixed: false, game: true },
+  { key: 'range', title: '到选中目标距离 km', get: fr => targetRange(fr), fixed: false, min: 0 },
+  { key: 'aoa', title: '攻角 °', get: fr => fr.d[D.aoa], fixed: false, zero: true },
+  { key: 'nz', title: '过载 g', get: fr => fr.d[D.nz], fixed: false, zero: true },
+  { key: 'pitch', title: '俯仰杆（实线 MOD，虚线玩家；拉为正）', get: fr => fr.ctl === 0 ? NaN : fr.stick[0], player: fr => fr.raw ? fr.raw[0] : NaN, lo: -1, hi: 1, zero: true },
+  { key: 'roll', title: '滚转杆（实线 MOD，虚线玩家；右为正）', get: fr => fr.ctl === 0 ? NaN : fr.stick[1], player: fr => fr.raw ? fr.raw[1] : NaN, lo: -1, hi: 1, zero: true },
+];
+function targetRange(fr) {
+  const ci = contactsAt(gtOf(fr)); if (ci < 0) return NaN;
+  const snap = contacts[ci], c = snap.c.find(c => c[C.id] === snap.selected); if (!c) return NaN;
+  return Math.hypot(...sub(contactPos(c), enu(fr.pos))) / 1000;
+}
+const gameSpeedAt = fr => { const ci = contactsAt(gtOf(fr)); return ci >= 0 && contacts[ci].me >= 0 ? contacts[ci].me : NaN; };
+const chartBox = document.getElementById('charts');
+CHARTS.forEach(c => { const div = document.createElement('div'); div.className = 'panel chart';
+  div.innerHTML = `<span class="title">${c.title}</span><canvas aria-label="${c.title}"></canvas>`; chartBox.appendChild(div); c.canvas = div.querySelector('canvas'); });
+function drawCharts() {
+  if (cursor < 0) { CHARTS.forEach(c => setup(c.canvas)); return; }
+  const tEnd = frames[cursor].t, window_ = 20, tStart = tEnd - window_;
+  let i0 = cursor; while (i0 > 0 && frames[i0 - 1].t >= tStart) i0--;
+  const span = frames.slice(i0, cursor + 1);
+  for (const c of CHARTS) {
+    const { ctx, w, h } = setup(c.canvas);
+    let lo = c.lo, hi = c.hi;
+    if (lo === undefined) {
+      lo = Infinity; hi = -Infinity;
+      for (const fr of span) { for (const v of [c.get(fr), c.game ? gameSpeedAt(fr) : NaN]) if (Number.isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }
+      if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
+      if (c.min !== undefined) lo = Math.min(lo, c.min);
+      if (c.zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+      const pad = Math.max((hi - lo) * 0.1, 0.5); lo -= c.min === 0 ? 0 : pad; hi += pad;
+    }
+    const L = 34, X = t => L + (w - L - 4) * (t - tStart) / window_, Y = v => 4 + (h - 8) * (1 - (v - lo) / (hi - lo));
+    ctx.font = `10px ${col.mono}`; ctx.fillStyle = col.muted; ctx.strokeStyle = col.grid;
+    for (const v of [lo, (lo + hi) / 2, hi]) { ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - 4, Y(v)); ctx.stroke(); ctx.fillText(Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1), 2, Y(v) + 3); }
+    if (c.zero && lo < 0 && hi > 0) { ctx.strokeStyle = col.rule; ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(w - 4, Y(0)); ctx.stroke(); }
+    const plot = (get, color, dash) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash(dash || []); ctx.beginPath(); let pen = false;
+      for (const fr of span) { const v = get(fr); if (!Number.isFinite(v)) { pen = false; continue; }
+        const x = X(fr.t), y = Y(Math.max(lo, Math.min(hi, v))); pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true; }
+      ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
+    };
+    plot(c.get, c.key === 'angle' ? col.aim : c.key === 'speed' ? col.path : c.key === 'range' ? col.selected : col.trail);
+    if (c.game) plot(gameSpeedAt, col.ink, [4, 3]);
+    if (c.player) plot(c.player, col.aim, [4, 3]);
+  }
+}
+
+function drawAll() {
+  document.getElementById('empty').hidden = cursor >= 0;
+  drawScene(); drawMap(); drawInstruments(); drawCharts();
+  if (mode !== 'live' && frames.length) {
+    const T0 = frames[0].t, T = frames[frames.length - 1].t - T0;
+    document.getElementById('clock').textContent = `${(frames[cursor].t - T0).toFixed(1)} s`;
+    document.getElementById('scrub').value = String(Math.round(1000 * (frames[cursor].t - T0) / Math.max(T, 1e-6)));
+  }
+}
+let dirty = true;
+function frameLoop(now) {
+  if (mode !== 'live' && playing && frames.length) {
+    replayTime += (now - (frameLoop.last || now)) / 1000 * speed;
+    const T0 = frames[0].t, target = T0 + replayTime;
+    while (cursor < frames.length - 1 && frames[cursor + 1].t <= target) cursor++;
+    if (cursor >= frames.length - 1) setPlaying(false);
+    dirty = true;
+  }
+  frameLoop.last = now;
+  if (dirty) { dirty = false; drawAll(); }
+  requestAnimationFrame(frameLoop);
+}
+
+// ---------- live stream ----------
+let source = null, liveCount = 0, liveStamp = performance.now(), liveRate = 0, lastFrameAt = 0;
+const statusEl = document.getElementById('status');
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = 'pill' + (cls ? ' ' + cls : ''); }
+function acceptLive(list) {
+  for (const fr of list) {
+    if (fr.type === 'contacts') { contacts.push(fr); noteSides(fr); continue; }
+    const last = frames[frames.length - 1];
+    if (last && (fr.t < last.t || fr.t - last.t > 5 || fr.aircraft !== last.aircraft)) { frames = []; contacts = contacts.filter(c => c.gt >= gtOf(fr) - 1); camHeading = null; }
+    frames.push(fr);
+  }
+  const keep = frames.length ? frames[frames.length - 1].t - 120 : 0;
+  let cut = 0; while (cut < frames.length && frames[cut].t < keep) cut++;
+  if (cut > 0) frames = frames.slice(cut);
+  const keepGt = frames.length ? gtOf(frames[frames.length - 1]) - 120 : 0;
+  let cc = 0; while (cc < contacts.length && contacts[cc].gt < keepGt) cc++;
+  if (cc > 0) contacts = contacts.slice(cc);
+  cursor = frames.length - 1; liveCount += list.length; lastFrameAt = performance.now(); dirty = true;
+}
+function startLive() {
+  stopLive(); mode = 'live'; frames = []; contacts = []; enemyClasses.clear(); cursor = -1; camHeading = null; dirty = true;
+  document.getElementById('transport').hidden = true;
+  source = new EventSource('/stream');
+  source.addEventListener('backlog', e => acceptLive(JSON.parse(e.data)));
+  source.onmessage = e => acceptLive(JSON.parse(e.data));
+  source.onerror = () => setStatus('与本地服务断开，正在重连…', 'warn');
+}
+function stopLive() { if (source) { source.close(); source = null; } }
+setInterval(() => {
+  const now = performance.now();
+  if (mode === 'live') {
+    liveRate = liveCount / ((now - liveStamp) / 1000); liveCount = 0; liveStamp = now;
+    if (source && source.readyState === 1) {
+      if (now - lastFrameAt < 1500) setStatus(`实时 ${liveRate.toFixed(0)} 帧/秒`, 'live');
+      else setStatus(frames.length ? '游戏暂停或未在任务中' : '等待游戏数据…');
+    }
+  }
+  fetch('/status').then(r => r.json()).then(s => {
+    const rec = document.getElementById('rec');
+    rec.hidden = !s.recording; if (s.recording) rec.textContent = `录制中 ${s.recording}`;
+  }).catch(() => {});
+}, 1000);
+
+// ---------- replay ----------
+async function loadRecordings() {
+  const sel = document.getElementById('source');
+  try {
+    const items = await (await fetch('/recordings')).json();
+    const current = sel.value;
+    sel.innerHTML = '<option value="live">实时（游戏中）</option>' + items.map(it =>
+      `<option value="${it.name}">${it.name.replace('flight-', '').replace('.jsonl', '')}（${(it.bytes / 1048576).toFixed(1)} MB）</option>`).join('');
+    sel.value = [...sel.options].some(o => o.value === current) ? current : 'live';
+  } catch (e) { /* server not reachable */ }
+}
+async function startReplay(name) {
+  stopLive(); mode = 'replay'; setPlaying(false); setStatus('加载录像…');
+  const text = await (await fetch('/recordings/' + encodeURIComponent(name))).text();
+  const all = text.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
+  frames = all.filter(x => x.type !== 'contacts'); contacts = all.filter(x => x.type === 'contacts');
+  enemyClasses.clear(); contacts.forEach(noteSides);
+  cursor = frames.length ? 0 : -1; replayTime = 0; camHeading = null; dirty = true;
+  document.getElementById('transport').hidden = false;
+  setStatus(frames.length ? `回放 ${((frames[frames.length - 1].t - frames[0].t)).toFixed(0)} 秒，${frames.length} 帧` : '录像为空');
+}
+function setPlaying(on) {
+  playing = on; document.getElementById('play').textContent = on ? '❚❚ 暂停' : '▶ 播放';
+  if (on && cursor >= frames.length - 1) { cursor = 0; replayTime = 0; }
+  if (on && frames.length) replayTime = frames[cursor].t - frames[0].t;
+}
+document.getElementById('source').addEventListener('change', e => e.target.value === 'live' ? startLive() : startReplay(e.target.value));
+document.getElementById('source').addEventListener('focus', loadRecordings);
+document.getElementById('play').addEventListener('click', () => setPlaying(!playing));
+document.getElementById('speed').addEventListener('change', e => { speed = Number(e.target.value); });
+document.getElementById('scrub').addEventListener('input', e => {
+  if (!frames.length) return;
+  const T0 = frames[0].t, target = T0 + (frames[frames.length - 1].t - T0) * Number(e.target.value) / 1000;
+  let lo = 0, hi = frames.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; frames[m].t < target ? lo = m + 1 : hi = m; }
+  cursor = lo; replayTime = frames[cursor].t - T0; camHeading = null; dirty = true;
+});
+document.addEventListener('keydown', e => { if (e.code === 'Space' && mode !== 'live' && document.activeElement.tagName !== 'SELECT') { e.preventDefault(); setPlaying(!playing); } });
+
+// ---------- orbit controls ----------
+const scene = document.getElementById('scene');
+let drag = null;
+scene.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, yaw: orbit.yaw, pitch: orbit.pitch }; scene.setPointerCapture(e.pointerId); scene.style.cursor = 'grabbing'; });
+scene.addEventListener('pointermove', e => { if (!drag) return; orbit.yaw = drag.yaw - (e.clientX - drag.x) * 0.4; orbit.pitch = Math.max(-80, Math.min(85, drag.pitch + (e.clientY - drag.y) * 0.3)); dirty = true; });
+scene.addEventListener('pointerup', () => { drag = null; scene.style.cursor = 'grab'; });
+scene.addEventListener('wheel', e => { e.preventDefault(); orbit.dist = Math.max(25, Math.min(1500, orbit.dist * Math.exp(e.deltaY * 0.001))); dirty = true; }, { passive: false });
+scene.addEventListener('dblclick', () => { orbit.yaw = 0; orbit.pitch = 14; orbit.dist = 75; dirty = true; });
+new ResizeObserver(() => { dirty = true; }).observe(document.body);
+
+// For inspection from the browser console: ac8.frames, ac8.contacts, ac8.cursor.
+window.ac8 = { get frames() { return frames; }, get contacts() { return contacts; }, get cursor() { return cursor; } };
+loadRecordings();
+startLive();
+requestAnimationFrame(frameLoop);
+})();
+</script>
+</body>
+</html>

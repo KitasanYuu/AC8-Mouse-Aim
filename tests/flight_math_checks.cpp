@@ -246,7 +246,19 @@ int main() {
             logic_step(tuning,state,in,out);
             assert(std::abs(out.pitch)<=1 && std::abs(out.roll)<=1 && std::abs(out.yaw)<=1);
         }
-        assert(out.roll>0.5f && std::strstr(out.trace,"abi=3"));
+        assert(out.roll>0.5f && std::strstr(out.trace,"abi=5"));
+        // Flight path: level flight along the nose is 0 deg AoA at 1 g; a nose 5 deg above a
+        // level flight path is +5 deg AoA; pulling 3 g extra along the canopy reads 4 g.
+        {
+            LogicInput fp{};
+            fp.vel_x=250;
+            FlightPath path=flight_path(basis(0,0,0),fp);
+            assert(close_to(path.speed,250) && close_to(path.aoa,0) && close_to(path.nz,1,1e-3f));
+            path=flight_path(basis(5,0,0),fp);
+            assert(close_to(path.aoa,5,0.01f));
+            fp.acc_z=3*9.81f;
+            assert(close_to(flight_path(basis(0,0,0),fp).nz,4,1e-3f));
+        }
         // Throttle and brake held together (or the single high-G button) is a high-G turn.
         LogicInput high{0,0,0, 0,1,0, 0,0,0, 1.0f/60, 0, 0, 1, 1};
         logic_step(tuning,state,high,out);

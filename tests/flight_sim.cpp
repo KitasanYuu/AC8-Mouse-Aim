@@ -35,6 +35,11 @@ constexpr Truth weak{0.24f,0.36f,0.45f,40,17,0.3f,1.1f, 0.22f,0.06f,121,1.3f,97,
 // in game logs vs 61 at cruise, with the same timing; full push ~27 deg/s upright,
 // 20 on the side and far less inverted (logged).
 constexpr Truth combat{0.24f,0.36f,0.27f,40,17,0.3f,1.1f, 0.16f,0.06f,200,1.3f,150,0.6f, 8};
+// Fitted to telemetry recorded on the game clock (2026-10-04, a 16 min mouse mission and a
+// 15 min gamepad run of the same mission): the stick reaches the aircraft sooner but
+// through slower input smoothing, small deflections do much less (curve 1.5 / 1.7), and
+// rolls top out near 105 deg/s.
+constexpr Truth measured{0.12f,0.20f,0.6f,50,25,0.3f,1.5f, 0.14f,0.25f,220,1.3f,105,0.6f, 0, 0.10f};
 
 V turn(V v,V toward,float a) { return v*std::cos(a)+toward*std::sin(a); }
 
@@ -51,8 +56,19 @@ float rate_noise=2.0f;  // deg/s, white noise on the measured rates; reproduces 
 
 // A target that keeps moving, as an enemy in a turning fight does: bearing changes at
 // yaw_rate from yaw0, elevation weaves around elev by amp with the given period.
-struct Chase { const char* name; float yaw0, yaw_rate, elev, amp, period, yaw_amp=0; };
+struct Chase { const char* name; float yaw0, yaw_rate, elev, amp, period, yaw_amp=0, nudge=0; };
 V chase_direction(const Chase& c,float t) {
+    if(c.nudge>0) {
+        // Mouse micro-corrections (logged): the target jumps about a degree every
+        // c.period seconds in an arbitrary direction and then holds.
+        float p=c.elev, y=c.yaw0;
+        for(int k=1;k<=int(t/c.period);++k) {
+            const unsigned h=static_cast<unsigned>(k)*2654435761u;
+            const float a=(h%3600)*0.1f*0.017453292f;
+            p+=c.nudge*std::sin(a); y+=c.nudge*std::cos(a);
+        }
+        return basis(p,y,0).f;
+    }
     const float phase=2*3.14159265f*t/c.period;
     return basis(c.elev+c.amp*std::sin(phase),c.yaw0+c.yaw_rate*t+c.yaw_amp*std::sin(phase+1.0f),0).f;
 }
@@ -182,6 +198,9 @@ const Chase chases[]={
         // A tail chase: the target jinks a few degrees either side of the nose (logged:
         // rolled left and right at full stick).
         {"chase tail jinking",3,8,0,3,3,6},
+        // Settled on a target the player nudges by ~1 deg every 0.7 s (logged: the wings
+        // rocked +-20 deg at 59 roll reversals a minute while within 3 deg).
+        {"mouse nudges 1 deg/0.7 s",2,0,0,0,0.7f,0,1.0f},
 };
 // Lower is better. Responsiveness first (time to reach 2 deg, then to settle), with
 // penalties only for clear overshoot (>1.5 deg) and repeated roll reversals. The
@@ -241,6 +260,20 @@ int main(int argc,char** argv) {
         else if(key=="truth") truth_pick=int(value);
         else if(key=="ident_memory") tuning.ident_memory=value;
         else if(key=="model_gravity") tuning.plant.pitch_gravity=value;
+        else if(key=="model_pitch_delay") tuning.plant.pitch_delay=value;
+        else if(key=="model_pitch_input") tuning.plant.pitch_input=value;
+        else if(key=="model_pitch_release") tuning.plant.pitch_release=value;
+        else if(key=="model_pitch_tau") tuning.plant.pitch_tau=value;
+        else if(key=="model_pitch_curve") tuning.plant.pitch_curve=value;
+        else if(key=="model_pitch_pull") tuning.plant.pitch_pull=value;
+        else if(key=="model_pitch_push") tuning.plant.pitch_push=value;
+        else if(key=="model_push_gravity") tuning.plant.push_gravity=value;
+        else if(key=="model_roll_delay") tuning.plant.roll_delay=value;
+        else if(key=="model_roll_input") tuning.plant.roll_input=value;
+        else if(key=="model_roll_accel") tuning.plant.roll_accel=value;
+        else if(key=="model_roll_curve") tuning.plant.roll_curve=value;
+        else if(key=="model_roll_max_rate") tuning.plant.roll_max_rate=value;
+        else if(key=="model_roll_tau") tuning.plant.roll_tau=value;
         else if(key=="noise") rate_noise=value;
         else if(key=="pitch_trim") tuning.pitch_trim=value;
         else if(key=="pitch_trim_limit") tuning.pitch_trim_limit=value;
@@ -295,7 +328,7 @@ int main(int argc,char** argv) {
     }
     if(trace_case>=0) {
         verbose=true;
-        const Truth& truth=truth_pick==3?combat:truth_pick==2?weak:truth_pick==1?sluggish:nominal;
+        const Truth& truth=truth_pick==4?measured:truth_pick==3?combat:truth_pick==2?weak:truth_pick==1?sluggish:nominal;
         const int n=int(sizeof(cases)/sizeof(cases[0]));
         if(trace_case<n) fly(truth,cases[trace_case].roll,unit(cases[trace_case].target),tuning,8);
         else if(trace_case<n+int(sizeof(chains)/sizeof(chains[0]))) { const Chain& c=chains[trace_case-n]; fly(truth,0,unit(c.first),tuning,8,c.next,c.at); }
@@ -304,12 +337,12 @@ int main(int argc,char** argv) {
     }
     std::printf("score %.1f\n",score(tuning));
     bool ok=true;
-    for(const Truth* truth:{&nominal,&sluggish,&weak,&combat}) {
-        std::printf("%s plant\n  %-26s %8s %8s %8s %9s %9s %8s %5s %5s %5s\n",truth==&nominal?"nominal":truth==&sluggish?"sluggish":truth==&weak?"weak":"combat",
+    for(const Truth* truth:{&nominal,&sluggish,&weak,&combat,&measured}) {
+        std::printf("%s plant\n  %-26s %8s %8s %8s %9s %9s %8s %5s %5s %5s\n",truth==&nominal?"nominal":truth==&sluggish?"sluggish":truth==&weak?"weak":truth==&combat?"combat":"measured",
                     "maneuver","to 2deg","settled","level","overshoot","roll rev","chatter","dips","inv","half");
         auto row=[&](const char* name,const Result& r) {
             std::printf("  %-26s %7.2fs %7.2fs %7.2fs %8.1fdeg %9d %8d %5d %4.1fs %4.2fs\n",name,r.to2,r.settle,r.done,r.overshoot,r.reversals,r.chatter,r.dips,r.inverted,r.half);
-            if(truth!=&sluggish && (r.settle<0 || r.overshoot>3.0f)) ok=false;
+            if(truth!=&sluggish && truth!=&measured && (r.settle<0 || r.overshoot>3.0f)) ok=false;
         };
         for(const Case& c:cases) row(c.name,fly(*truth,c.roll,unit(c.target),tuning));
         for(const Chain& c:chains) row(c.name,fly(*truth,0,unit(c.first),tuning,10,c.next,c.at));

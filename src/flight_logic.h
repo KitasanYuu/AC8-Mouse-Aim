@@ -15,7 +15,7 @@
 #include "maneuver.h"
 namespace flight {
 // Bump when LogicInput, LogicOutput or the exported functions change.
-constexpr int logic_abi=3;
+constexpr int logic_abi=5;
 // Controller convention: positive pitch raises the nose, roll rolls right, yaw yaws right.
 struct LogicInput {
     float pitch,yaw,roll;              // aircraft attitude, degrees
@@ -25,12 +25,23 @@ struct LogicInput {
     int keyboard;                      // axes flown by keyboard: 1 pitch, 2 roll, 4 yaw
     int aircraft;                      // changes whenever the player's aircraft changes
     float throttle,brake;              // the game's own InputThrottle / InputBrake (0..1)
+    // Flight path from the actor position: world velocity (m/s), acceleration (m/s^2)
+    // and altitude (m). Recorded for the whole-aircraft model; not used for control yet.
+    float vel_x,vel_y,vel_z;
+    float acc_x,acc_y,acc_z;
+    float altitude;
 };
+// Per-frame internal state for the telemetry stream (LogicOutput::diag).
+enum Diag { DiagAngle, DiagPitchError, DiagYawError, DiagRollError, DiagTurnWeight, DiagPushing, DiagTail,
+            DiagPitchWant, DiagRollWant, DiagPitchPred, DiagRollPred, DiagPitchComing,
+            DiagSpeed, DiagAoa, DiagBeta, DiagNz, DiagCount };
 struct LogicOutput {
     float pitch,roll,yaw;              // axis values to write (before input-sign config)
     char trace[400];                   // per-frame diagnostic text
     char event[128];                   // non-empty when something notable happened
+    float diag[16];                    // see Diag
 };
+static_assert(DiagCount==16);
 struct Tuning {
     ManeuverTuning maneuver;
     Plant plant;
@@ -445,6 +456,21 @@ inline float desired_rate(float error,float cap,float stoppable,float gain) {
     return std::copysign(std::min({cap,stoppable,gain*std::abs(error)}),error);
 }
 
+// Speed (m/s), angle of attack and sideslip (deg, nose above / right of the flight path)
+// and normal load factor (g along the canopy, 1 in level flight).
+struct FlightPath { float speed=0, aoa=0, beta=0, nz=0; };
+inline FlightPath flight_path(const Basis& b,const LogicInput& in) {
+    FlightPath p;
+    const V v{in.vel_x,in.vel_y,in.vel_z};
+    p.speed=std::sqrt(dot(v,v));
+    if(p.speed>1) {
+        p.aoa=std::atan2(-dot(v,b.u),dot(v,b.f))/rad;
+        p.beta=std::atan2(dot(v,b.r),dot(v,b.f))/rad;
+    }
+    p.nz=(in.acc_x*b.u.x+in.acc_y*b.u.y+(in.acc_z+9.81f)*b.u.z)/9.81f;
+    return p;
+}
+
 inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicOutput& out) {
     out=LogicOutput{};
     if(s.cal.step>=0 && calibration_hold(s,in,out)) return;
@@ -624,6 +650,12 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
         in.pitch_rate,in.yaw_rate,in.roll_rate,out.pitch,out.yaw,out.roll,out.pitch,out.roll,
         in.keyboard,logic_abi,pitch_want,roll_want,pitch_pred,roll_pred,s.pitch_trim,
         p.pitch_pull,p.pitch_push,p.pitch_tau,p.roll_accel,p.roll_tau);
+    const FlightPath path=flight_path(b,in);
+    {
+        const float values[DiagCount]={g.angle,g.pitch_error,g.yaw_error,g.roll_error,g.turn_weight,g.pushing?1.0f:0.0f,
+            g.tail?1.0f:0.0f,pitch_want,roll_want,pitch_pred,roll_pred,pitch_coming,path.speed,path.aoa,path.beta,path.nz};
+        for(int i=0;i<DiagCount;++i) out.diag[i]=values[i];
+    }
     // Automatic maneuver trace: starts when the nose is more than 4 deg off target and
     // stops after 2 s within 1 deg, so every maneuver is recorded without pressing F4.
     // Compact enough for the event line; fields documented in docs/maneuver-spec.md.
@@ -635,10 +667,11 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
             if(s.settled_for>2) s.recording=false;
         }
         if(s.recording && !out.event[0])
-            snprintf(out.event,sizeof(out.event),"AT %.3f %.1f %.2f %d %d %.1f %.1f %.1f %.1f %.1f %.3f %.3f %.0f %.0f %.0f %.0f %d %.0f %.2f %.2f %.2f %d",
+            snprintf(out.event,sizeof(out.event),"AT %.3f %.1f %.2f %d %d %.1f %.1f %.1f %.1f %.1f %.3f %.3f %.0f %.0f %.0f %.0f %d %.0f %.2f %.2f %.2f %d %.1f %.1f %.1f %.2f %.0f",
                      in.dt,g.angle,w,g.tail?1:0,g.pushing?1:0,g.pitch_error,g.roll_error,in.roll,
                      in.pitch_rate,in.roll_rate,out.pitch,out.roll,pitch_want,roll_want,pitch_pred,roll_pred,in.keyboard,
-                     pitch_coming,s.pitch_scale,s.roll_scale,s.push_scale,high_g?1:0);
+                     pitch_coming,s.pitch_scale,s.roll_scale,s.push_scale,high_g?1:0,
+                     path.speed,path.aoa,path.beta,path.nz,in.altitude);
     }
 }
 

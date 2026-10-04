@@ -153,7 +153,8 @@ $files = @(
     'Scripts\camera.lua',
     'Scripts\gaze.lua',
     'Scripts\gaze_probe.lua',
-    'Scripts\rig_math.lua'
+    'Scripts\rig_math.lua',
+    'Scripts\contacts.lua'
 )
 if ($IncludeConfig) { $files += 'config.ini' }
 $changes = @()
@@ -163,9 +164,10 @@ foreach ($file in $files) {
     $destination = Join-Path $game $relative
     Assert-GamePath $destination
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing build file: $source" }
-    if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { throw "Installed file missing: $destination" }
-    if ((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) {
-        $changes += [pscustomobject]@{ Relative=$relative; Source=$source; Destination=$destination }
+    # A file new in this version is added (there is nothing to back up for it).
+    $isNew = -not (Test-Path -LiteralPath $destination -PathType Leaf)
+    if ($isNew -or (Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) {
+        $changes += [pscustomobject]@{ Relative=$relative; Source=$source; Destination=$destination; New=$isNew }
     }
 }
 if (-not $changes.Count) {
@@ -185,21 +187,28 @@ $started = @()
 try {
     foreach ($change in $changes) {
         $backup = Join-Path $snapshot $change.Relative
-        New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
-        Copy-Item -LiteralPath $change.Destination -Destination $backup
-        $started += [pscustomobject]@{ Destination=$change.Destination; Backup=$backup }
+        if ($change.New) {
+            $started += [pscustomobject]@{ Destination=$change.Destination; Backup=$null }
+        } else {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+            Copy-Item -LiteralPath $change.Destination -Destination $backup
+            $started += [pscustomobject]@{ Destination=$change.Destination; Backup=$backup }
+        }
         Copy-Item -LiteralPath $change.Source -Destination $change.Destination -Force
         if ((Get-FileHash -LiteralPath $change.Source).Hash -ne
             (Get-FileHash -LiteralPath $change.Destination).Hash) {
             throw "Deployment verification failed: $($change.Relative)"
         }
-        Write-Host "Updated $($change.Relative)"
+        Write-Host "$(if ($change.New) { 'Added' } else { 'Updated' }) $($change.Relative)"
     }
-    [pscustomobject]@{ GamePath=$game; Files=@($changes | ForEach-Object Relative) } |
+    [pscustomobject]@{ GamePath=$game; Files=@($changes | Where-Object { -not $_.New } | ForEach-Object Relative) } |
         ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $snapshot 'manifest.json') -Encoding UTF8
     Set-Content -LiteralPath $cache -Value $game -Encoding UTF8
     Write-Host "Backup for rollback: $snapshot"
 } catch {
-    foreach ($entry in $started) { Copy-Item -LiteralPath $entry.Backup -Destination $entry.Destination -Force }
+    foreach ($entry in $started) {
+        if ($entry.Backup) { Copy-Item -LiteralPath $entry.Backup -Destination $entry.Destination -Force }
+        elseif (Test-Path -LiteralPath $entry.Destination) { Remove-Item -LiteralPath $entry.Destination -Force }
+    }
     throw
 }
