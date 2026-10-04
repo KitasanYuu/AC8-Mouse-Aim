@@ -437,8 +437,8 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         int bosses = 0, elites = 0; for (const Foe& f : c.encounter->foes) { bosses += f.boss; elites += f.elite; }
         char note[200];
         if (c.kind == Single) std::snprintf(note, sizeof(note), "敌机轨迹取自录像（%s）；我方从敌机后方 1 km 出发，全程用机炮跟踪（不计击落）。", elites ? "精英" : "普通");
-        else std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；我方从敌机后方 1.5 km 的标准位置出发。",
-                           int(c.encounter->foes.size()), elites, bosses);
+        else std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；我方从敌机后方 %s 的标准位置出发。",
+                           int(c.encounter->foes.size()), elites, bosses, bosses ? "800 m（取头目当时的速度）" : "1.5 km");
         c.note = note;
         add(c);
     }

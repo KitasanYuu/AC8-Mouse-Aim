@@ -28,7 +28,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 13px; line-height: 1.45; }
-.page { display: grid; gap: 10px; padding: 10px 14px 18px; max-width: 3440px; margin: 0 auto; }
+.page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 10px 14px 18px; max-width: 3440px; margin: 0 auto; }
 .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .bar h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 600; }
 .note { color: var(--muted); font-size: 12px; }
@@ -62,21 +62,22 @@ td.total { font-weight: 700; }
 .legend i { display: inline-block; width: 26px; height: 8px; border-radius: 2px; vertical-align: 0; margin: 0 4px 0 10px; }
 
 /* replay */
-.replay { display: grid; gap: 8px; padding: 8px 12px 12px; }
+.replay { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px 12px 12px; }
 .replay-head { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .transport { display: flex; gap: 8px; align-items: center; flex: 1 1 320px; }
 .transport input[type=range] { flex: 1; min-width: 140px; accent-color: #4fb3d9; }
 .clock { font-family: var(--mono); min-width: 8ch; text-align: right; font-variant-numeric: tabular-nums; }
-.replay-body { display: grid; gap: 8px; }
+.replay-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .view { position: relative; height: clamp(320px, 44vh, 620px); background: #10181c; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
-.view canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+.view canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
 .view .hint { position: absolute; right: 8px; bottom: 6px; color: var(--muted); font-size: 11px; pointer-events: none; }
 .gauges { display: grid; grid-template-columns: repeat(var(--n, 5), minmax(0, 1fr)); gap: 8px; }
 .gauge { border: 1px solid var(--rule); border-radius: 5px; padding: 6px 8px 7px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; background: #121a1f; }
 .gauge .name { grid-column: 1 / -1; }
 .gauge .name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .gauge .name button { margin-left: auto; padding: 0 6px; font-size: 11px; }
-.gauge canvas { width: 100%; height: clamp(110px, 13vh, 200px); display: block; }
+.gauge .screen { position: relative; min-width: 0; height: clamp(110px, 13vh, 200px); }
+.gauge canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .gauge .read { font-family: var(--mono); font-size: 12px; display: grid; align-content: center; gap: 2px; font-variant-numeric: tabular-nums; min-width: 9ch; }
 .gauge .read span { color: var(--muted); margin-right: 4px; }
 .gauge.crashed { opacity: .55; }
@@ -87,7 +88,7 @@ td.total { font-weight: 700; }
 .timeline canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .timeline-wrap { position: relative; cursor: crosshair; }
 .detail-wrap { height: 170px; position: relative; }
-.detail-wrap canvas { width: 100%; height: 100%; display: block; }
+.detail-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 
 /* overview */
 .overview { padding: 8px 12px 12px; overflow-x: auto; }
@@ -345,6 +346,7 @@ function drawJet(ctx, P, A, B, tint, scale = 1) {
 
 // ---------- the shared 3D view: every controller in one picture ----------
 const orbit = { yaw: -30, pitch: 18, zoom: 1 };
+let camHeading = null;
 // Scenes where the aim is only a direction start every aircraft at the same point: they are
 // drawn side by side, 60 m apart across the starting heading, so they do not overlap.
 function spread(id) {
@@ -366,7 +368,7 @@ function drawView() {
   const flying = now.filter(o => !o.gone);
   let centre, size;
   const followed = now.find(o => o.c.id === st.follow) || now[0];
-  if (st.cam === 'follow' && followed) { centre = followed.pos; size = 120; }
+  if (st.cam === 'follow' && followed) { centre = followed.pos; size = 60; }
   else if (st.cam === 'target' && followed) {
     const tgt = followed.fr.length > F.tgt && followed.fr[F.tgt] >= 0 ? foeAt(foes[followed.fr[F.tgt]], st.t) : null;
     centre = tgt ? tgt.pos : scripted || followed.pos; size = 400;
@@ -379,23 +381,36 @@ function drawView() {
   }
   const dist = size * 1.4 * orbit.zoom;
   let heading = orbit.yaw * rad;
-  if (st.cam === 'follow' && followed) { const f = enu(basis(followed.fr[F.pitch], followed.fr[F.yaw], 0).f); heading += Math.atan2(f[0], f[1]); }
+  if (st.cam === 'follow' && followed) {   // behind the nose's heading, smoothed (as on the reconstruction page)
+    const f = enu(basis(followed.fr[F.pitch], followed.fr[F.yaw], 0).f), want = Math.atan2(f[0], f[1]);
+    camHeading = camHeading === null ? want : camHeading + (((want - camHeading) / rad + 540) % 360 - 180) * rad * 0.2;
+    heading += camHeading;
+  } else camHeading = null;
   const cp = orbit.pitch * rad;
   const C = add(centre, mul([-Math.sin(heading) * Math.cos(cp), -Math.cos(heading) * Math.cos(cp), Math.sin(cp)], dist));
   const P = camera(C, centre, w, h, 55, 2);
-  // horizon backdrop and a ground grid 400 m under the centre
+  // horizon backdrop and the ground: a 1 km grid on the zero plane, the same in every view
+  // (a grid that scaled with the view made every speed look alike)
   const fwd = norm(sub(centre, C)), hz = P(add(C, mul(norm([fwd[0], fwd[1], 0]), 1e6)));
   const hy = hz ? Math.max(-h, Math.min(2 * h, hz[1])) : (fwd[2] > 0 ? 2 * h : -h);
   ctx.fillStyle = '#122028'; ctx.fillRect(0, 0, w, Math.max(0, Math.min(h, hy)));
   ctx.fillStyle = '#151b17'; ctx.fillRect(0, Math.max(0, Math.min(h, hy)), w, h);
-  const G = Math.pow(10, Math.round(Math.log10(Math.max(50, size / 3)))), z0 = Math.max(0, centre[2] - 400), span = 8;
+  const G = 1000, z0 = 0, span = Math.max(8, Math.min(30, Math.ceil((dist + Math.max(0, centre[2])) / G) + 6));
   const gx = Math.round(centre[0] / G) * G, gy = Math.round(centre[1] / G) * G;
   ctx.strokeStyle = '#25313a'; ctx.lineWidth = 1;
   const seg = (a, b) => { const steps = 10; ctx.beginPath(); let pen = false;
     for (let i = 0; i <= steps; i++) { const q = P(add(a, mul(sub(b, a), i / steps))); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; } ctx.stroke(); };
   for (let k = -span; k <= span; k++) { seg([gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0]); seg([gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0]); }
+  { const q0 = P(centre), q1 = P([centre[0], centre[1], z0]);   // drop line to the ground
+    if (q0 && q1) { ctx.setLineDash([3, 5]); ctx.strokeStyle = '#84959f'; ctx.globalAlpha = .5; ctx.beginPath(); ctx.moveTo(q0[0], q0[1]); ctx.lineTo(q1[0], q1[1]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; } }
   const jetScale = Math.max(1, size / 70);
   // enemies
+  for (const o of foesNow) {   // enemy trails, the last 6 s
+    const pts = o.f[4]; ctx.strokeStyle = o.f[1] ? '#ff6bd6' : '#e5534b'; ctx.globalAlpha = .55; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
+    for (const pt of pts) { if (pt[0] < st.t - 6 || pt[0] > st.t) continue; const q = P(enu([pt[1], pt[2], pt[3]])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+    const qn = P(o.at.pos); if (qn && pen) ctx.lineTo(qn[0], qn[1]);
+    ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  }
   for (const o of foesNow) {
     const tint = o.f[1] === 2 ? '#ff6bd6' : o.f[1] === 1 ? '#ff6bd6' : '#e5534b';
     drawJet(ctx, P, o.at.pos, basis(o.at.pitch, o.at.yaw, 0), tint, jetScale * (o.f[1] === 2 ? 3 : 1));
@@ -434,7 +449,7 @@ function buildGauges() {
   for (const c of IDX.controllers) {
     const el = document.createElement('div'); el.className = 'gauge';
     el.innerHTML = `<div class="name"><span class="chip" style="background:${colorOf(c.id)}"></span>${shortName(c)}<button type="button" title="镜头跟随它">跟随</button></div>
-      <canvas aria-label="${c.label} 的姿态"></canvas><div class="read"></div>`;
+      <div class="screen"><canvas aria-label="${c.label} 的姿态"></canvas></div><div class="read"></div>`;
     el.querySelector('button').addEventListener('click', () => { st.follow = c.id; st.cam = 'follow'; save(); buildCamButtons(); dirty = true; });
     box.appendChild(el);
     gauges.set(c.id, { el, canvas: el.querySelector('canvas'), read: el.querySelector('.read'), text: '' });
@@ -658,7 +673,9 @@ function buildCamButtons() {
   }
 }
 function selectScene() {
-  const sc = scenario(); st.t = 0; lanesKey = null; save();
+  const sc = scenario(); st.t = 0; lanesKey = null;
+  st.cam = DIRECTION_ONLY.has(sc.kind) ? 'group' : 'follow'; orbit.yaw = DIRECTION_ONLY.has(sc.kind) ? -30 : 0; orbit.pitch = DIRECTION_ONLY.has(sc.kind) ? 18 : 10; orbit.zoom = 1;
+  buildCamButtons(); save();
   document.getElementById('note').textContent = sc.note || '';
   drawBoard(); dirty = true;
 }
@@ -679,7 +696,7 @@ function setTab(tab) {
   canvas.addEventListener('pointermove', e => { if (!last) return;
     orbit.yaw += (e.clientX - last[0]) * .4; orbit.pitch = Math.max(-80, Math.min(85, orbit.pitch + (e.clientY - last[1]) * .3)); last = [e.clientX, e.clientY]; dirty = true; });
   canvas.addEventListener('wheel', e => { e.preventDefault(); orbit.zoom = Math.max(.15, Math.min(6, orbit.zoom * (e.deltaY > 0 ? 1.12 : 1 / 1.12))); dirty = true; }, { passive: false });
-  canvas.addEventListener('dblclick', () => { Object.assign(orbit, { yaw: -30, pitch: 18, zoom: 1 }); dirty = true; }); }
+  canvas.addEventListener('dblclick', () => { const d = DIRECTION_ONLY.has(scenario().kind); Object.assign(orbit, { yaw: d ? -30 : 0, pitch: d ? 18 : 10, zoom: 1 }); dirty = true; }); }
 
 document.getElementById('scene').addEventListener('change', e => { st.scen = e.target.value; selectScene(); });
 document.getElementById('tabScene').addEventListener('click', () => setTab('scene'));
