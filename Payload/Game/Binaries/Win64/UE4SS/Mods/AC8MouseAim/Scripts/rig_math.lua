@@ -23,15 +23,16 @@ local function quaternion(f,u)
     end
     return {x,y,z,w}
 end
-function M.step(forward,up,target,dt)
-    -- Quaternion.Slerp(current, LookRotation(target, up), 1-exp(-5*dt)).
+function M.step(forward,up,target,dt,rate)
+    -- Quaternion.Slerp(current, LookRotation(target, up), 1-exp(-rate*dt)); MouseFlight used 5.
+    rate=rate or 5
     -- Choose the pole fallback from target direction, as MouseFlight does.
     local desired_up=math.abs(target.Z)>0.9 and up or {X=0,Y=0,Z=1}
     if dot(cross(desired_up,target),cross(desired_up,target))<1e-8 then desired_up={X=0,Y=1,Z=0} end
     local a,b=quaternion(forward,up),quaternion(target,desired_up)
     local c=0; for i=1,4 do c=c+a[i]*b[i] end
     if c<0 then c=-c; for i=1,4 do b[i]=-b[i] end end
-    local t=1-math.exp(-5*dt)
+    local t=1-math.exp(-rate*dt)
     local wa,wb=1-t,t
     if c<0.9995 then
         local theta=math.acos(math.min(1,c)); local s=math.sin(theta)

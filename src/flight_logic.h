@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Flight logic: maneuver guidance plus stick shaping. Built into the main DLL and,
 // for development, also as ac8_flight_logic.dll, which the main DLL hot-swaps while
 // the game runs. Everything crossing that boundary is plain data behind a fixed ABI.
@@ -15,7 +15,7 @@
 #include "maneuver.h"
 namespace flight {
 // Bump when LogicInput, LogicOutput or the exported functions change.
-constexpr int logic_abi=1;
+constexpr int logic_abi=3;
 // Controller convention: positive pitch raises the nose, roll rolls right, yaw yaws right.
 struct LogicInput {
     float pitch,yaw,roll;              // aircraft attitude, degrees
@@ -23,10 +23,12 @@ struct LogicInput {
     float pitch_rate,yaw_rate,roll_rate; // filtered body rates, degrees/second
     float dt;
     int keyboard;                      // axes flown by keyboard: 1 pitch, 2 roll, 4 yaw
+    int aircraft;                      // changes whenever the player's aircraft changes
+    float throttle,brake;              // the game's own InputThrottle / InputBrake (0..1)
 };
 struct LogicOutput {
     float pitch,roll,yaw;              // axis values to write (before input-sign config)
-    char trace[320];                   // per-frame diagnostic text
+    char trace[400];                   // per-frame diagnostic text
     char event[128];                   // non-empty when something notable happened
 };
 struct Tuning {
@@ -40,15 +42,46 @@ struct Tuning {
     float pitch_kd=0.25f;              // stick per deg/s of predicted rate error
     float roll_kv=1.5f;                // roll acceleration per deg/s of rate error (1/s)
     float pitch_brake=0.45f, roll_brake=0.45f;
-    float pitch_gain=2.0f, roll_gain=2.0f;
-    float pitch_trim=0.5f, pitch_trim_limit=4.0f; // slow integral on small pitch error
+    float pitch_unload=0;              // opposite authority used to slow a wanted rotation (0 = full)
+    // pitch_gain 2.5: 2 began easing off ~40 deg out and crept in (logged); 3 overshot.
+    float pitch_gain=2.5f, roll_gain=2.0f;
+    // Lead: the target's own motion across the nose is flown as a rate on top of closing
+    // the error, so a moving target (a turning enemy) is followed, not trailed. Without
+    // it a 20 deg/s turner was trailed by a steady 13 deg (sim), and turns in combat
+    // stalled half way (reported). Gain, low-pass (s), limit (deg/s).
+    float lead_gain=1.0f, lead_filter=0.2f, lead_max=60.0f;
+    // Extra gain fraction inside the last few degrees: the nose crept the final 1-2 deg
+    // into the ~1.3 deg aim circle (logged); 0.4 settled faster in sim, 0.8 overshot.
+    float pitch_gain_near=0.4f;
+    // Integral on small pitch error. 1.5/8 wound up and oscillated through the vertical
+    // in sim (weak jet, straight down); 1.0/4 with the trim kept through maneuvers.
+    float pitch_trim=1.0f, pitch_trim_limit=4.0f;
+    float pitch_trim_keep=1;           // keep the trim through maneuvers (0 = decay)
+    // High-G turn (throttle and brake held together, or the single high-G button, which
+    // sets both): the pull is this much stronger. Logged: full pull held 33-38 deg/s
+    // outside it and 45-55 inside, with 77-90 for the first second; the model and the
+    // authority estimate (1-2 s to follow) under-predicted the turn, braking late.
+    float highg_pull=1.4f;
     // Stick slew (full scale per second). The game smooths stick input, so faster
     // swings are averaged away and only make the model-based loop chatter.
     float pitch_slew=20.0f, roll_slew=20.0f;
+    // Rate observer (1/s): the model carries the rate between frames and the noisy
+    // measurement corrects it at this rate. Raw measured rates fed straight into the
+    // predictor made the stick chatter ~100 reversals/min in combat (logged).
+    float rate_observer=3.0f;
     float yaw_dead=0.2f, yaw_gain=1.5f, yaw_max_rate=6.0f, yaw_damping=0.45f, yaw_limit=0.6f;
     float yaw_slew=5.0f;
     float calibrate=0;                 // change to a new positive value to run input calibration
     float auto_trace=1;                // record each maneuver automatically (compact AT lines)
+    // Online identification of the current aircraft: memory of the estimate (s) and
+    // seconds of informative data before it is fully trusted. 0 memory disables it.
+    float ident_memory=15.0f, ident_trust=3.0f;
+    // Fast control-authority estimate (memory s; 0 = off): the response to the stick
+    // changes within seconds with speed (full pull held a median 37-40 deg/s in combat vs
+    // 61 at cruise in calibration), and an over-strong model predicts too much pitch from
+    // the commands in flight, brakes with full push mid-turn and stutters (logged).
+    float authority_memory=2.0f, authority_filter=1.0f, authority_trust=0.6f;
+    float authority_min=0.35f, authority_max=2.0f;  // high-G turns pitched ~2x the model (logged)
 };
 // Recent commands, newest at head, for predicting what is still in flight.
 struct AxisHistory {
@@ -81,16 +114,178 @@ struct Calibration {
     int end_count=0;
     float samples[24]{};               // rate every 0.1 s during the hold
 };
+// Online identification. Aircraft differ widely (logged: roll 95 vs 238 deg/s^2 at
+// full stick, pull 28 vs 47 deg/s), so each aircraft's authority and response time are
+// identified in flight. A bank of candidate models runs in parallel on the stick actually
+// sent, through the same delay, game smoothing and rate filter as the measurement, and
+// the one that has tracked the measured rate best recently is used (output error; no
+// differentiation, so filter lag and noise do not bias it). Least squares on rate
+// derivatives was tried first and drifted badly under timing mismatch in simulation.
+// The game's input pipeline (delay, smoothing, curve exponents) stays from calibration.
+struct ModelBank {
+    static constexpr int delays=3, pitch_scales=7, pitch_taus=6, roll_scales=7, roll_taus=4;
+    static constexpr float delay_extra[delays]={0.0f,0.06f,0.12f};  // seconds beyond calibration
+    static constexpr float pitch_scale[pitch_scales]={0.35f,0.45f,0.58f,0.72f,0.86f,1.0f,1.2f};
+    static constexpr float pitch_tau[pitch_taus]={0.25f,0.35f,0.5f,0.7f,0.95f,1.3f};
+    static constexpr float roll_scale[roll_scales]={0.3f,0.4f,0.52f,0.66f,0.82f,1.0f,1.3f};
+    static constexpr float roll_tau[roll_taus]={0.45f,0.65f,0.9f,1.3f};
+    static constexpr int np=delays*pitch_scales*pitch_taus, nr=delays*roll_scales*roll_taus;
+    float pf[delays]{}, rf[delays]{};   // game smoothing state per delay candidate
+    float pr[np]{}, pm[np]{}, pj[np]{}; // model rate, filtered as measured, tracking cost
+    float rr[nr]{}, rm[nr]{}, rj[nr]{};
+};
+// The game's input smoothing: build-up time constant, faster release toward or past 0.
+inline float input_smooth(float f,float u,float dt,float build,float release) {
+    const float tc=(u*f<0 || std::abs(u)<std::abs(f)) ? release : build;
+    return f+(u-f)*(1-std::exp(-dt/tc));
+}
+// Stick command leaving a delay window this frame (the one that now reaches the game's
+// smoothing), matching predict(): the newest entry is this frame's command.
+inline bool leaving_command(const AxisHistory& h,float delay,float& u,float& dt) {
+    constexpr int size=AxisHistory::size;
+    int n=0;
+    float back=0;
+    while(n<size-1 && back<delay) {
+        const float step=h.dt[(h.head-n+size)%size];
+        if(step<=0) return false;
+        back+=step; ++n;
+    }
+    const int i=(h.head-n+size)%size;
+    u=h.u[i]; dt=h.dt[i];
+    return dt>0;
+}
+struct Identification {
+    static constexpr unsigned valid_tag=0x1D3A0004u;  // layout version, survives resets only if it matches
+    unsigned tag=0;
+    int aircraft=-1;
+    ModelBank bank;
+    float pitch_seen=0, roll_seen=0;    // seconds of informative data
+    float report=0;
+    bool primed=false;
+    void reset(int id,const Plant&) { *this=Identification{}; tag=valid_tag; aircraft=id; }
+    // Cost-weighted best model; near-ties average (log space for scale and tau) so the
+    // estimate moves smoothly instead of jumping between grid points.
+    static void best(const float* cost,int n_scale,int n_tau,const float* scales,const float* taus,
+                     float& extra,float& scale,float& tau) {
+        const int n=ModelBank::delays*n_scale*n_tau;
+        float lowest=cost[0];
+        for(int i=1;i<n;++i) lowest=std::min(lowest,cost[i]);
+        const float spread=0.15f*lowest+1e-3f;
+        float wsum=0, ld=0, ls=0, lt=0;
+        for(int d=0;d<ModelBank::delays;++d) for(int i=0;i<n_scale;++i) for(int j=0;j<n_tau;++j) {
+            const float w=std::exp(-(cost[(d*n_scale+i)*n_tau+j]-lowest)/spread);
+            wsum+=w; ld+=w*ModelBank::delay_extra[d]; ls+=w*std::log(scales[i]); lt+=w*std::log(taus[j]);
+        }
+        extra=ld/wsum; scale=std::exp(ls/wsum); tau=std::exp(lt/wsum);
+    }
+    // Calibrated values until enough informative data, then the identified ones.
+    Plant adapt(const Plant& prior,float trust_after) const {
+        Plant e=prior;
+        if(tag!=valid_tag || trust_after<=0) return e;
+        const float pw=smoothstep(0,trust_after,pitch_seen), rw=smoothstep(0,trust_after,roll_seen);
+        float pd=0, ps=1, pt=prior.pitch_tau, rd=0, rs=1, rt=prior.roll_tau;
+        best(bank.pj,ModelBank::pitch_scales,ModelBank::pitch_taus,ModelBank::pitch_scale,ModelBank::pitch_tau,pd,ps,pt);
+        best(bank.rj,ModelBank::roll_scales,ModelBank::roll_taus,ModelBank::roll_scale,ModelBank::roll_tau,rd,rs,rt);
+        const float pscale=1+(ps-1)*pw, rscale=1+(rs-1)*rw;
+        e.pitch_delay=prior.pitch_delay+pd*pw;
+        e.pitch_pull=prior.pitch_pull*pscale;
+        e.pitch_push=prior.pitch_push*pscale;
+        e.pitch_tau=prior.pitch_tau+(pt-prior.pitch_tau)*pw;
+        e.roll_delay=prior.roll_delay+rd*rw;
+        e.roll_accel=prior.roll_accel*rscale;
+        e.roll_tau=prior.roll_tau+(rt-prior.roll_tau)*rw;
+        // Keep the calibrated ratio of usable maximum rate to full-stick steady rate.
+        const float ratio=prior.roll_max_rate/(prior.roll_accel*prior.roll_tau);
+        e.roll_max_rate=std::clamp(ratio*e.roll_accel*e.roll_tau,30.0f,250.0f);
+        return e;
+    }
+    // Feed one frame after this frame's commands were pushed: q/r are the measured
+    // (host-filtered) rates and up the canopy's world-up component.
+    void observe(const Plant& p,const AxisHistory& pitch_history,const AxisHistory& roll_history,
+                 float q,float r,float up,float dt,bool usable,float memory,LogicOutput& out) {
+        ModelBank& m=bank;
+        constexpr int ps=ModelBank::pitch_scales, pt=ModelBank::pitch_taus;
+        constexpr int rs=ModelBank::roll_scales, rt=ModelBank::roll_taus;
+        if(!primed || dt<=0 || dt>0.05f) {
+            // Start (or resync after a gap) every candidate from the measured rate.
+            for(int i=0;i<ModelBank::np;++i) m.pr[i]=m.pm[i]=q;
+            for(int i=0;i<ModelBank::nr;++i) m.rr[i]=m.rm[i]=r;
+            primed=true;
+            return;
+        }
+        const float filter=1-std::exp(-12*dt);  // the host's rate filter
+        const float forget=memory>0?std::exp(-dt/memory):1;
+        const float gravity=p.pitch_gravity*up, cap=1.5f*p.roll_max_rate;
+        bool pitch_info=false, roll_info=false;
+        for(int d=0;d<ModelBank::delays;++d) {
+            float u=0, udt=0;
+            if(leaving_command(pitch_history,p.pitch_delay+ModelBank::delay_extra[d],u,udt))
+                m.pf[d]=input_smooth(m.pf[d],u,udt,p.pitch_input,p.pitch_release);
+            if(leaving_command(roll_history,p.roll_delay+ModelBank::delay_extra[d],u,udt))
+                m.rf[d]+=(u-m.rf[d])*(1-std::exp(-udt/p.roll_input));
+            const float pa=std::pow(std::min(std::abs(m.pf[d]),1.0f),p.pitch_curve);
+            const float drive=m.pf[d]>=0?p.pitch_pull*pa:-p.push_authority(up)*pa;
+            const bool pinfo=usable && (std::abs(m.pf[0])>0.1f || std::abs(q)>5);
+            pitch_info|=pinfo;
+            for(int i=0;i<ps;++i) for(int j=0;j<pt;++j) {
+                const int k=(d*ps+i)*pt+j;
+                m.pr[k]+=dt*(ModelBank::pitch_scale[i]*drive-gravity-m.pr[k])/ModelBank::pitch_tau[j];
+                m.pm[k]+=(m.pr[k]-m.pm[k])*filter;
+                const float e=q-m.pm[k];
+                m.pj[k]=m.pj[k]*forget+(pinfo?e*e*dt:0);
+            }
+            const float ra=std::copysign(p.roll_accel*std::pow(std::min(std::abs(m.rf[d]),1.0f),p.roll_curve),m.rf[d]);
+            const bool rinfo=usable && (std::abs(m.rf[0])>0.1f || std::abs(r)>10);
+            roll_info|=rinfo;
+            for(int i=0;i<rs;++i) for(int j=0;j<rt;++j) {
+                const int k=(d*rs+i)*rt+j;
+                m.rr[k]=std::clamp(m.rr[k]+dt*(ModelBank::roll_scale[i]*ra-m.rr[k]/ModelBank::roll_tau[j]),-cap,cap);
+                m.rm[k]+=(m.rr[k]-m.rm[k])*filter;
+                const float e=r-m.rm[k];
+                m.rj[k]=m.rj[k]*forget+(rinfo?e*e*dt:0);
+            }
+        }
+        if(!usable) {
+            // Keyboard flying: keep candidates synced to reality, but learn nothing.
+            for(int i=0;i<ModelBank::np;++i) m.pr[i]=m.pm[i]=q;
+            for(int i=0;i<ModelBank::nr;++i) m.rr[i]=m.rm[i]=r;
+        }
+        if(pitch_info) pitch_seen+=dt;
+        if(roll_info) roll_seen+=dt;
+        report+=dt;
+        if(report>5 && !out.event[0]) {
+            report=0;
+            const Plant e=adapt(p,1);
+            snprintf(out.event,sizeof(out.event),"ident: pitch %.0f/%.0f tau %.2f +%.2fs | roll %.0f tau %.2f +%.2fs | data %.0f/%.0fs",
+                     e.pitch_pull,e.pitch_push,e.pitch_tau,e.pitch_delay-p.pitch_delay,e.roll_accel,e.roll_tau,
+                     e.roll_delay-p.roll_delay,pitch_seen,roll_seen);
+        }
+    }
+};
 struct LogicState {
+    Identification ident;              // kept across resets; reset only for a new aircraft
     Maneuver maneuver;
     CommandSlew yaw, pitch_out, roll_out;
     AxisHistory pitch_history, roll_history;
     float pitch_trim=0;
     float pitch_smoothed=0, roll_smoothed=0; // game input smoothing state, as of one delay ago
+    float pitch_rate_est=0, roll_rate_est=0;  // observer estimates, in measured-rate terms
+    bool observer_primed=false;
     bool tail_logged=false;
+    bool high_g_logged=false;
     bool recording=false;              // automatic per-maneuver trace
     float settled_for=0;
     Calibration cal;
+    // Authority estimate: responses to the delayed stick at unit authority (and pitch's
+    // gravity part), and their decayed correlation with the measured rates.
+    // Pull and push are estimated separately: inverted, a full push gave 2-10 deg/s
+    // against ~21 upright (logged), far from what one shared scale can describe.
+    float pull_unit=0, push_unit=0, pitch_free=0, roll_unit=0;
+    float pull_f=0, push_f=0, pitch_yf=0, roll_f=0, roll_yf=0;   // the same, low-passed
+    float s_uu=0, s_dd=0, s_ud=0, s_uy=0, s_dy=0, roll_zz=0, roll_zy=0;
+    float pitch_scale=1, push_scale=1, roll_scale=1;
+    float aim_prev[3]{}, lead_pitch=0, lead_yaw=0;  // target motion across the nose (deg/s)
+    bool aim_primed=false;
 };
 // Returns true while a test input is being held (output already written).
 inline bool calibration_hold(LogicState& s,const LogicInput& in,LogicOutput& out) {
@@ -163,39 +358,47 @@ inline Tuning read_tuning(const wchar_t* path) {
         if(end!=text && std::isfinite(parsed)) value=parsed;
     };
     auto& m=t.maneuver;
-    get(L"near_end",m.near_end); get(L"far_start",m.far_start);
-    get(L"near_bank_gain",m.near_bank_gain); get(L"near_bank_max",m.near_bank_max);
-    get(L"push_enter",m.push_enter); get(L"push_exit",m.push_exit); get(L"choice_margin",m.choice_margin);
-    get(L"pull_full",m.pull_full); get(L"pull_none",m.pull_none);
-    get(L"tail_enter",m.tail_enter); get(L"tail_exit",m.tail_exit); get(L"tail_bank",m.tail_bank);
-    get(L"latch_limit",m.latch_limit); get(L"rollout_lead",m.rollout_lead);
+    get(L"near_end",m.near_end); get(L"far_start",m.far_start); get(L"level_per_deg",m.level_per_deg); get(L"rollout_rate",m.rollout_rate);
+    get(L"rollout_lag",m.rollout_lag); get(L"pursuit_ahead",m.pursuit_ahead); get(L"push_enter",m.push_enter); get(L"push_exit",m.push_exit);
+    get(L"push_roll_enter",m.push_roll_enter); get(L"push_roll_exit",m.push_roll_exit); get(L"push_below",m.push_below); get(L"pursuit_speed",m.pursuit_speed); get(L"level_inside",m.level_inside); get(L"slice_ease",m.slice_ease); get(L"slice_hold",m.slice_hold); get(L"chase_slice",m.chase_slice); get(L"push_below_exit",m.push_below_exit); get(L"choice_margin",m.choice_margin); get(L"push_bias",m.push_bias);
+    get(L"tail_enter",m.tail_enter); get(L"tail_exit",m.tail_exit); get(L"tail_bank",m.tail_bank); get(L"latch_limit",m.latch_limit);
+    get(L"overlap_max",m.overlap_max); get(L"upright",m.upright); get(L"slice_bank",m.slice_bank); get(L"slice_deep",m.slice_deep);
+    get(L"slice_from",m.slice_from); get(L"invert_min_angle",m.invert_min_angle);
     auto& p=t.plant;
     get(L"pitch_delay",p.pitch_delay); get(L"pitch_input",p.pitch_input);
+    get(L"pitch_release",p.pitch_release);
     get(L"pitch_tau",p.pitch_tau); get(L"pitch_curve",p.pitch_curve);
     get(L"pitch_pull",p.pitch_pull); get(L"pitch_push",p.pitch_push); get(L"pitch_gravity",p.pitch_gravity);
+    get(L"push_gravity",p.push_gravity);
     get(L"roll_delay",p.roll_delay); get(L"roll_input",p.roll_input);
     get(L"roll_accel",p.roll_accel); get(L"roll_curve",p.roll_curve);
     get(L"roll_max_rate",p.roll_max_rate); get(L"roll_tau",p.roll_tau);
     get(L"pitch_kd",t.pitch_kd); get(L"roll_kv",t.roll_kv);
-    get(L"pitch_brake",t.pitch_brake); get(L"roll_brake",t.roll_brake);
+    get(L"pitch_brake",t.pitch_brake); get(L"roll_brake",t.roll_brake); get(L"pitch_unload",t.pitch_unload); get(L"pitch_trim_keep",t.pitch_trim_keep); get(L"highg_pull",t.highg_pull); get(L"pitch_gain_near",t.pitch_gain_near);
+    get(L"lead_gain",t.lead_gain); get(L"lead_filter",t.lead_filter); get(L"lead_max",t.lead_max);
     get(L"pitch_gain",t.pitch_gain); get(L"roll_gain",t.roll_gain);
     get(L"pitch_trim",t.pitch_trim); get(L"pitch_trim_limit",t.pitch_trim_limit);
     get(L"pitch_slew",t.pitch_slew); get(L"roll_slew",t.roll_slew);
+    get(L"rate_observer",t.rate_observer);
     get(L"yaw_dead",t.yaw_dead); get(L"yaw_gain",t.yaw_gain); get(L"yaw_max_rate",t.yaw_max_rate);
     get(L"yaw_damping",t.yaw_damping); get(L"yaw_limit",t.yaw_limit); get(L"yaw_slew",t.yaw_slew);
     get(L"calibrate",t.calibrate);
     get(L"auto_trace",t.auto_trace);
+    get(L"ident_memory",t.ident_memory); get(L"ident_trust",t.ident_trust);
+    get(L"authority_memory",t.authority_memory); get(L"authority_min",t.authority_min);
+    get(L"authority_max",t.authority_max); get(L"authority_filter",t.authority_filter);
+    get(L"authority_trust",t.authority_trust);
     return t;
 }
 
 // Plant steps, inverses and stopping distances from the measured model.
 inline float pitch_steady(const Plant& p,float u,float upright) {
     const float a=std::pow(std::min(std::abs(u),1.0f),p.pitch_curve);
-    return (u>=0 ? p.pitch_pull*a : -p.pitch_push*a)-p.pitch_gravity*upright;
+    return (u>=0 ? p.pitch_pull*a : -p.push_authority(upright)*a)-p.pitch_gravity*upright;
 }
-inline float pitch_input_for(const Plant& p,float aero) {
+inline float pitch_input_for(const Plant& p,float aero,float upright=0) {
     return aero>=0 ? std::min(1.0f,std::pow(aero/p.pitch_pull,1/p.pitch_curve))
-                   : -std::min(1.0f,std::pow(-aero/p.pitch_push,1/p.pitch_curve));
+                   : -std::min(1.0f,std::pow(-aero/p.push_authority(upright),1/p.pitch_curve));
 }
 inline float roll_accel_for(const Plant& p,float u) {
     return std::copysign(p.roll_accel*std::pow(std::min(std::abs(u),1.0f),p.roll_curve),u);
@@ -208,8 +411,8 @@ inline float roll_input_for(const Plant& p,float accel) {
 // the model (Smith predictor). smoothed is the smoothing state one delay ago; it is
 // advanced here by the command leaving the delay window.
 template<class Step>
-inline void predict(const AxisHistory& h,float delay,float smoothing,float rate,float& smoothed,Step step,
-                    float& predicted,float& filtered,float& travel) {
+inline void predict(const AxisHistory& h,float delay,float smoothing,float release,float rate,float& smoothed,Step step,
+                    float& predicted,float& filtered,float& travel,bool advance=true) {
     constexpr int size=AxisHistory::size;
     int n=0;
     float back=0;
@@ -219,11 +422,11 @@ inline void predict(const AxisHistory& h,float delay,float smoothing,float rate,
         back+=dt; ++n;
     }
     const int leaving=(h.head-n+size)%size;
-    if(h.dt[leaving]>0) smoothed+=(h.u[leaving]-smoothed)*(1-std::exp(-h.dt[leaving]/smoothing));
+    if(advance && h.dt[leaving]>0) smoothed=input_smooth(smoothed,h.u[leaving],h.dt[leaving],smoothing,release);
     predicted=rate; filtered=smoothed; travel=0;
     for(int k=n-1;k>=0;--k) {
         const int i=(h.head-k+size)%size;
-        filtered+=(h.u[i]-filtered)*(1-std::exp(-h.dt[i]/smoothing));
+        filtered=input_smooth(filtered,h.u[i],h.dt[i],smoothing,release);
         predicted=step(predicted,filtered,h.dt[i]);
         travel+=predicted*h.dt[i];
     }
@@ -246,78 +449,196 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
     out=LogicOutput{};
     if(s.cal.step>=0 && calibration_hold(s,in,out)) return;
     s.maneuver.t=t.maneuver;
-    const Plant& p=t.plant;
+    if(s.ident.tag!=Identification::valid_tag || s.ident.aircraft!=in.aircraft) s.ident.reset(in.aircraft,t.plant);
+    Plant base=t.ident_memory>0 ? s.ident.adapt(t.plant,t.ident_trust) : t.plant;
+    // Applied to the model before the authority estimate, so the estimate does not absorb
+    // the high-G turn and over-predict the pull for seconds after it ends.
+    const bool high_g=in.throttle>0.5f && in.brake>0.5f;
+    if(high_g) base.pitch_pull*=std::max(t.highg_pull,0.1f);
+    if(high_g!=s.high_g_logged && !out.event[0]) {
+        s.high_g_logged=high_g;
+        snprintf(out.event,sizeof(out.event),"high-G turn %s",high_g?"on":"off");
+    }
     const Basis b=basis(in.pitch,in.yaw,in.roll);
-    const Guidance g=s.maneuver.step(b,{in.aim_x,in.aim_y,in.aim_z},p,in.pitch_rate);
+    const float upright=b.u.z;
+    // Advance the game's input smoothing by the commands now reaching the aircraft.
+    {
+        float unused_pred=0, unused_filtered=0, unused_travel=0;
+        auto hold=[](float r,float,float) { return r; };
+        predict(s.pitch_history,base.pitch_delay,base.pitch_input,base.pitch_release,0,s.pitch_smoothed,hold,
+                unused_pred,unused_filtered,unused_travel);
+        predict(s.roll_history,base.roll_delay,base.roll_input,base.roll_input,0,s.roll_smoothed,hold,
+                unused_pred,unused_filtered,unused_travel);
+    }
+    // Authority: least squares of the measured rate on the unit-authority response, both
+    // low-passed over authority_filter so a modest lag mismatch is not read as authority,
+    // with exponential forgetting, a prior of 1 worth ~0.3 s of 20 deg/s response, and
+    // only authority_trust of the estimated change applied (a slower-than-modelled
+    // aircraft still reads somewhat weak, and full trust overshot it in sim).
+    Plant p=base;
+    if(t.authority_memory>0 && in.dt>0) {
+        const float kp=1-std::exp(-in.dt/base.pitch_tau), forget=std::exp(-in.dt/t.authority_memory);
+        s.pull_unit+=(pitch_steady(base,std::max(s.pitch_smoothed,0.0f),0)-s.pull_unit)*kp;
+        s.push_unit+=(pitch_steady(base,std::min(s.pitch_smoothed,0.0f),upright)+base.pitch_gravity*upright-s.push_unit)*kp;
+        s.pitch_free+=(-base.pitch_gravity*upright-s.pitch_free)*kp;
+        s.roll_unit=std::clamp(s.roll_unit+in.dt*(roll_accel_for(base,s.roll_smoothed)-s.roll_unit/base.roll_tau),
+                               -base.roll_max_rate,base.roll_max_rate);
+        const float kf=t.authority_filter>0?1-std::exp(-in.dt/t.authority_filter):1.0f;
+        s.pull_f+=(s.pull_unit-s.pull_f)*kf; s.push_f+=(s.push_unit-s.push_f)*kf;
+        s.pitch_yf+=(in.pitch_rate-s.pitch_free-s.pitch_yf)*kf;
+        s.roll_f+=(s.roll_unit-s.roll_f)*kf; s.roll_yf+=(in.roll_rate-s.roll_yf)*kf;
+        auto decay=[&](float& sum,float add) { sum=sum*forget+add*in.dt; };
+        decay(s.s_uu,s.pull_f*s.pull_f); decay(s.s_dd,s.push_f*s.push_f); decay(s.s_ud,s.pull_f*s.push_f);
+        decay(s.s_uy,s.pull_f*s.pitch_yf); decay(s.s_dy,s.push_f*s.pitch_yf);
+        decay(s.roll_zz,s.roll_f*s.roll_f); decay(s.roll_zy,s.roll_f*s.roll_yf);
+        constexpr float prior=20.0f*20.0f*0.3f;
+        auto applied=[&](float estimate) {
+            return std::clamp(1+t.authority_trust*(estimate-1),t.authority_min,t.authority_max);
+        };
+        // Two-parameter least squares (pull, push), each with the prior toward 1.
+        const float a00=s.s_uu+prior, a11=s.s_dd+prior, a01=s.s_ud, b0=s.s_uy+prior, b1=s.s_dy+prior;
+        const float det=a00*a11-a01*a01;
+        s.pitch_scale=applied((b0*a11-a01*b1)/det);
+        s.push_scale=applied((a00*b1-a01*b0)/det);
+        s.roll_scale=applied((s.roll_zy+prior)/(s.roll_zz+prior));
+        p.pitch_pull*=s.pitch_scale; p.pitch_push*=s.push_scale;
+        p.roll_accel*=s.roll_scale; p.roll_max_rate*=s.roll_scale;
+    }
+
+    // Pitch: first-order plant with gravity. Predict through the delay, pick the
+    // fastest rate that can still be stopped on the target with the opposite
+    // authority (push is weaker than pull), then invert the plant for the input.
+    auto pitch_step=[&](float r,float f,float dt) { return r+dt*(pitch_steady(p,f,upright)-r)/p.pitch_tau; };
+    auto roll_step=[&](float r,float f,float dt) {
+        return std::clamp(r+dt*(roll_accel_for(p,f)-r/p.roll_tau),-p.roll_max_rate,p.roll_max_rate);
+    };
+    // Observer: carry the estimated rates with the model (smoothing already advanced
+    // above), then pull them toward the measurement.
+    {
+        if(!s.observer_primed || t.rate_observer<=0) {
+            s.pitch_rate_est=in.pitch_rate; s.roll_rate_est=in.roll_rate; s.observer_primed=true;
+        } else {
+            const float k=1-std::exp(-t.rate_observer*in.dt);
+            s.pitch_rate_est=pitch_step(s.pitch_rate_est,s.pitch_smoothed,in.dt);
+            s.roll_rate_est=roll_step(s.roll_rate_est,s.roll_smoothed,in.dt);
+            s.pitch_rate_est+=(in.pitch_rate-s.pitch_rate_est)*k;
+            s.roll_rate_est+=(in.roll_rate-s.roll_rate_est)*k;
+        }
+    }
+    float pitch_pred=0, pitch_filtered=0, pitch_travel=0;
+    predict(s.pitch_history,p.pitch_delay,p.pitch_input,p.pitch_release,s.pitch_rate_est,s.pitch_smoothed,pitch_step,
+            pitch_pred,pitch_filtered,pitch_travel,false);
+    // Pitch still certain to come: in flight, then the shortest stop at full authority.
+    const float stop_authority=pitch_pred>=0?p.push_rate(upright):p.pull_rate(upright);
+    const float pitch_coming=pitch_travel+std::copysign((p.pitch_tau+p.pitch_release)*
+        (std::abs(pitch_pred)-stop_authority*std::log1p(std::abs(pitch_pred)/stop_authority)),pitch_pred);
+
+    // Target motion across the nose's pitch and yaw axes, low-passed; a jump (view snap,
+    // re-anchor) is far faster than any real motion and is ignored.
+    {
+        const V aim{in.aim_x,in.aim_y,in.aim_z};
+        if(s.aim_primed && in.dt>0 && t.lead_gain>0) {
+            const V d{(aim.x-s.aim_prev[0])/in.dt,(aim.y-s.aim_prev[1])/in.dt,(aim.z-s.aim_prev[2])/in.dt};
+            if(std::sqrt(dot(d,d))/rad<3*t.lead_max) {
+                const float k=1-std::exp(-in.dt/std::max(t.lead_filter,0.01f));
+                s.lead_pitch+=(dot(d,b.u)/rad-s.lead_pitch)*k;
+                s.lead_yaw+=(dot(d,b.r)/rad-s.lead_yaw)*k;
+            }
+        }
+        s.aim_prev[0]=aim.x; s.aim_prev[1]=aim.y; s.aim_prev[2]=aim.z; s.aim_primed=true;
+    }
+    const float lead_pitch=t.lead_gain*std::clamp(s.lead_pitch,-t.lead_max,t.lead_max);
+    const float lead_yaw=t.lead_gain*std::clamp(s.lead_yaw,-t.lead_max,t.lead_max);
+    const Guidance g=s.maneuver.step(b,{in.aim_x,in.aim_y,in.aim_z},p,pitch_coming,in.roll_rate,
+                                     s.lead_pitch,s.lead_yaw,in.dt);
     calibration_settle(s.cal,in,g);
     if(g.tail!=s.tail_logged && !out.event[0]) {
         s.tail_logged=g.tail;
         snprintf(out.event,sizeof(out.event),"maneuver: %s angle=%.1f",
                  g.tail?"rear reversal committed":"rear reversal complete",g.angle);
     }
-    const float w=g.turn_weight, upright=b.u.z;
-
-    // Pitch: first-order plant with gravity. Predict through the delay, pick the
-    // fastest rate that can still be stopped on the target with the opposite
-    // authority (push is weaker than pull), then invert the plant for the input.
-    float pitch_pred=0, pitch_filtered=0, pitch_travel=0;
-    predict(s.pitch_history,p.pitch_delay,p.pitch_input,in.pitch_rate,s.pitch_smoothed,[&](float r,float f,float dt) {
-        return r+dt*(pitch_steady(p,f,upright)-r)/p.pitch_tau;
-    },pitch_pred,pitch_filtered,pitch_travel);
+    const float w=g.turn_weight;
     const float pitch_left=g.pitch_error-pitch_travel;
+    // The trim learns a steady model offset near the target and keeps it through
+    // maneuvers (it is a few deg/s against rates of tens). Decaying it in every turn
+    // relearned it from zero at each arrival, and the nose sat ~0.7 deg high (logged).
     if(std::abs(g.pitch_error)<3 && w<0.5f)
         s.pitch_trim=std::clamp(s.pitch_trim+t.pitch_trim*g.pitch_error*in.dt,-t.pitch_trim_limit,t.pitch_trim_limit);
-    else s.pitch_trim*=std::max(0.0f,1-2*in.dt);
+    else if(t.pitch_trim_keep<=0) s.pitch_trim*=std::max(0.0f,1-2*in.dt);
     const bool nose_up=pitch_left>=0;
     const float pitch_cap=0.9f*(nose_up?p.pull_rate(upright):p.push_rate(upright));
     const float pitch_opposing=t.pitch_brake*(nose_up?p.push_rate(upright):p.pull_rate(upright));
     // The game's input smoothing lengthens the stop on top of the aircraft's own lag.
     const float pitch_want=desired_rate(pitch_left,pitch_cap,
-        stoppable_first_order(std::abs(pitch_left),pitch_opposing,p.pitch_tau+p.pitch_input,pitch_cap),
-        t.pitch_gain)+s.pitch_trim;
-    const float pitch_hold=pitch_input_for(p,pitch_want+p.pitch_gravity*upright);
-    out.pitch=s.pitch_out.step(std::clamp(pitch_hold+t.pitch_kd*(pitch_want-pitch_pred),-1.0f,1.0f),
-                               in.dt,t.pitch_slew);
+        stoppable_first_order(std::abs(pitch_left),pitch_opposing,p.pitch_tau+p.pitch_release,pitch_cap),
+        t.pitch_gain*(1+t.pitch_gain_near*smoothstep(4.0f,1.0f,std::abs(pitch_left))))+s.pitch_trim+lead_pitch;
+    const float pitch_hold=pitch_input_for(p,pitch_want+p.pitch_gravity*upright,upright);
+    // Slowing a rotation that is still wanted in its direction uses the planned braking
+    // authority, not the full opposite stick: full push to shed a pull mid-turn read as
+    // a dive and a stutter in game. Reversing (want of the other sign) may use it all.
+    float pitch_low=-1, pitch_high=1;
+    if(t.pitch_unload>0) {
+        if(pitch_want>=0 && pitch_pred>pitch_want)
+            pitch_low=pitch_input_for(p,-t.pitch_unload*p.push_rate(upright)+p.pitch_gravity*upright,upright);
+        else if(pitch_want<=0 && pitch_pred<pitch_want)
+            pitch_high=pitch_input_for(p,t.pitch_unload*p.pull_rate(upright)+p.pitch_gravity*upright,upright);
+    }
+    // Far from the target, when the plan would still take more than the modelled full
+    // rate, the stick goes all the way: tracking 0.9 of the model held ~0.9 stick in
+    // big turns (logged), giving away the aircraft's real, often higher, top rate.
+    const float pitch_full=nose_up?p.pull_rate(upright):p.push_rate(upright);
+    const bool pitch_all_out=std::min(t.pitch_gain*std::abs(pitch_left),
+        stoppable_first_order(std::abs(pitch_left),pitch_opposing,p.pitch_tau+p.pitch_release,3*pitch_full))>=pitch_full;
+    const float pitch_cmd=pitch_all_out ? (nose_up?1.0f:-1.0f)
+        : std::clamp(pitch_hold+t.pitch_kd*(pitch_want-pitch_pred),pitch_low,pitch_high);
+    out.pitch=s.pitch_out.step(pitch_cmd,in.dt,t.pitch_slew);
 
     // Roll: acceleration-limited plant. Same prediction; braking distance r^2/(2a).
     float roll_pred=0, roll_filtered=0, roll_travel=0;
-    predict(s.roll_history,p.roll_delay,p.roll_input,in.roll_rate,s.roll_smoothed,[&](float r,float f,float dt) {
-        return std::clamp(r+dt*(roll_accel_for(p,f)-r/p.roll_tau),-p.roll_max_rate,p.roll_max_rate);
-    },roll_pred,roll_filtered,roll_travel);
+    predict(s.roll_history,p.roll_delay,p.roll_input,p.roll_input,s.roll_rate_est,s.roll_smoothed,roll_step,
+            roll_pred,roll_filtered,roll_travel,false);
     const float roll_left=g.roll_error-roll_travel;
     const float roll_brake=t.roll_brake*p.roll_accel;
     const float roll_want=desired_rate(roll_left,0.95f*p.roll_max_rate,
         std::sqrt(2*roll_brake*std::abs(roll_left)),t.roll_gain);
-    out.roll=s.roll_out.step(roll_input_for(p,t.roll_kv*(roll_want-roll_pred)+roll_want/p.roll_tau),
-                             in.dt,t.roll_slew);
+    const bool roll_all_out=std::min(t.roll_gain*std::abs(roll_left),
+        std::sqrt(2*roll_brake*std::abs(roll_left)))>=p.roll_max_rate;
+    const float roll_cmd=roll_all_out ? (roll_left>=0?1.0f:-1.0f)
+        : roll_input_for(p,t.roll_kv*(roll_want-roll_pred)+roll_want/p.roll_tau);
+    out.roll=s.roll_out.step(roll_cmd,in.dt,t.roll_slew);
 
     // Rudder only trims small lateral errors and fades out entirely in turns.
-    const float yaw_rate=std::clamp(dead(g.yaw_error,t.yaw_dead)*t.yaw_gain,-t.yaw_max_rate,t.yaw_max_rate);
-    const float ycmd=(1-w)*std::clamp((yaw_rate-in.yaw_rate*t.yaw_damping)/10.0f,-t.yaw_limit,t.yaw_limit);
+    const float yaw_rate=std::clamp(dead(g.yaw_error,t.yaw_dead)*t.yaw_gain+lead_yaw,-t.yaw_max_rate,t.yaw_max_rate);
+    const float ycmd=g.yaw_weight*std::clamp((yaw_rate-in.yaw_rate*t.yaw_damping)/10.0f,-t.yaw_limit,t.yaw_limit);
     out.yaw=s.yaw.step(ycmd,in.dt,t.yaw_slew);
     s.pitch_history.push(out.pitch,in.dt);
     s.roll_history.push(out.roll,in.dt);
+    s.ident.observe(t.plant,s.pitch_history,s.roll_history,in.pitch_rate,in.roll_rate,upright,in.dt,
+                    in.keyboard==0,t.ident_memory,out);
     // want: desired rates; pred: rates predicted after the delay; abi marks controller-convention signs.
     snprintf(out.trace,sizeof(out.trace),
         "dt=%.4f angle=%.2f w=%.2f tail=%d push=%d err=(p%.2f,y%.2f,r%.1f) roll=%.1f "
         "rate=(%.1f,%.1f,%.1f) cmd=(%.3f,%.3f,%.3f) out=(%.3f,%.3f) kb=%d abi=%d "
-        "want=(%.1f,%.1f) pred=(%.1f,%.1f) trim=%.2f",
+        "want=(%.1f,%.1f) pred=(%.1f,%.1f) trim=%.2f est=(%.0f,%.0f,%.2f,%.0f,%.2f)",
         in.dt,g.angle,w,g.tail?1:0,g.pushing?1:0,g.pitch_error,g.yaw_error,g.roll_error,in.roll,
         in.pitch_rate,in.yaw_rate,in.roll_rate,out.pitch,out.yaw,out.roll,out.pitch,out.roll,
-        in.keyboard,logic_abi,pitch_want,roll_want,pitch_pred,roll_pred,s.pitch_trim);
+        in.keyboard,logic_abi,pitch_want,roll_want,pitch_pred,roll_pred,s.pitch_trim,
+        p.pitch_pull,p.pitch_push,p.pitch_tau,p.roll_accel,p.roll_tau);
     // Automatic maneuver trace: starts when the nose is more than 4 deg off target and
     // stops after 2 s within 1 deg, so every maneuver is recorded without pressing F4.
     // Compact enough for the event line; fields documented in docs/maneuver-spec.md.
     if(t.auto_trace>0) {
-        if(g.angle>4) { s.recording=true; s.settled_for=0; }
+        // auto_trace=2 records every frame (a whole mission), 1 only maneuvers.
+        if(g.angle>4 || t.auto_trace>=2) { s.recording=true; s.settled_for=0; }
         else if(s.recording) {
             s.settled_for=g.angle<1 ? s.settled_for+in.dt : 0;
             if(s.settled_for>2) s.recording=false;
         }
         if(s.recording && !out.event[0])
-            snprintf(out.event,sizeof(out.event),"AT %.4f %.2f %.2f %d %d %.2f %.1f %.1f %.1f %.1f %.3f %.3f %.1f %.1f %.1f %.1f %d",
+            snprintf(out.event,sizeof(out.event),"AT %.3f %.1f %.2f %d %d %.1f %.1f %.1f %.1f %.1f %.3f %.3f %.0f %.0f %.0f %.0f %d %.0f %.2f %.2f %.2f %d",
                      in.dt,g.angle,w,g.tail?1:0,g.pushing?1:0,g.pitch_error,g.roll_error,in.roll,
-                     in.pitch_rate,in.roll_rate,out.pitch,out.roll,pitch_want,roll_want,pitch_pred,roll_pred,in.keyboard);
+                     in.pitch_rate,in.roll_rate,out.pitch,out.roll,pitch_want,roll_want,pitch_pred,roll_pred,in.keyboard,
+                     pitch_coming,s.pitch_scale,s.roll_scale,s.push_scale,high_g?1:0);
     }
 }
 
@@ -337,7 +658,14 @@ inline void configure(const wchar_t* config_path) {
         calibrate_request=tuning.calibrate>0;
     }
 }
-inline void reset(void* state) { new(state) LogicState(); }
+// Pauses, recenters and hitches reset control state but keep what was learned about
+// the aircraft; a stale or foreign buffer (tag mismatch) starts fresh.
+inline void reset_keeping_aircraft(LogicState& s) {
+    const Identification keep=s.ident;
+    new(&s) LogicState();
+    if(keep.tag==Identification::valid_tag) { s.ident=keep; s.ident.primed=false; }
+}
+inline void reset(void* state) { reset_keeping_aircraft(*static_cast<LogicState*>(state)); }
 inline void step(void* state,const LogicInput* in,LogicOutput* out) {
     LogicState& s=*static_cast<LogicState*>(state);
     if(calibrate_request) {

@@ -171,6 +171,8 @@ else
             local manager=controller.PlayerCameraManager
             assert(manager and manager:IsValid(),'Camera manager unavailable')
             local gazing=gaze.update(pawn,pause_gameplay:GetRealTimeSeconds(pawn))
+            -- Scripted scenes (mission-end replay) hand the camera and controls back too.
+            if gaze.scene(pawn,controller) then gazing=true end
             local camera = camera_rotation(manager, rotation)
             local camera_pitch = rotation_component(camera, "Pitch") or pitch
             local camera_yaw = rotation_component(camera, "Yaw") or yaw
@@ -185,15 +187,21 @@ else
             local oy=assert(rotation_component(view_position,"Y"))-assert(rotation_component(position,"Y"))
             local oz=assert(rotation_component(view_position,"Z"))-assert(rotation_component(position,"Z"))
             local paused=pause_gameplay:IsGamePaused(pawn)
-            local on,target_pitch,target_yaw=frame_native(address,pitch,yaw,roll,
-                camera_pitch,camera_yaw,camera_roll,fov,ox,oy,oz,paused and 1 or 0,gazing and 1 or 0)
+            -- The game's own throttle/brake input (both held, or the single high-G button,
+            -- is a high-G turn), whatever the binding.
+            local throttle,brake=0,0
+            pcall(function() throttle=tonumber(pawn.InputThrottle) or 0 end)
+            pcall(function() brake=tonumber(pawn.InputBrake) or 0 end)
+            local on,target_pitch,target_yaw,follow=frame_native(address,pitch,yaw,roll,
+                camera_pitch,camera_yaw,camera_roll,fov,ox,oy,oz,paused and 1 or 0,gazing and 1 or 0,
+                throttle,brake)
             assert(on~=nil,'Native frame rejected')
             local desired_camera
             if gazing then
                 aim_camera.seed(camera,rotation_component)
             else
                 desired_camera=aim_camera.update(pawn,controller,rotation,rotation_component,
-                    on,target_pitch,target_yaw,dt)
+                    on,target_pitch,target_yaw,dt,follow)
             end
             if desired_camera then
                 assert(camera_native(manager:GetAddress(),address,

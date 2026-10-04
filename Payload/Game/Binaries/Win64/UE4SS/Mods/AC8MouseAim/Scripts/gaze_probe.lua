@@ -6,6 +6,14 @@ local watched={}
 local last_heartbeat=-1
 local last_view_target
 local watch_limit_reported=false
+-- High-G turn discovery (throttle and brake held together): the game's own state for it.
+local function highg_related(name)
+    local s=name:lower()
+    return s:find('throttle') or s:find('brake') or s:find('boost') or s:find('thrust')
+        or s:find('accel') or s:find('high') or s:find('gforce') or s:find('overg')
+        or s:find('turn') or s:find('afterburn') or s:find('decel') or s:find('power')
+        or s:find('trigger') or s:find('engine') or s:find('speed') or s:find('maneuver')
+end
 local function expanded(label)
     return label=='ImpactCamera' or label=='CameraViewComponent' or label=='ImpactCameraParameter'
 end
@@ -16,11 +24,13 @@ local function relevant(name)
         or s:find('playing') or s:find('playback') or s:find('state') or s:find('current')
         or s:find('blend') or s:find('sequence') or s:find('override')
         or s:find('auto') or s:find('pilot') or s:find('assist')
+        or highg_related(name)
 end
 -- AutoPilot discovery: also open sub-objects whose names suggest it.
 local function autopilot_related(name)
     local s=name:lower()
     return s:find('auto') or s:find('pilot') or s:find('assist')
+        or s:find('movement') or s:find('flight') or s:find('engine') or s:find('input')
 end
 local function write(s) capture:write(s,'\n') end
 local function stop(reason)

@@ -43,4 +43,34 @@ function M.update(pawn,frame_time)
     end
     return result==true
 end
+-- Scripted scenes (the mission-end replay kept the aim circle on screen). AC8's replay
+-- does not use Unreal's cinematic mode or ignored input (all stayed false in a logged
+-- replay); it drives the player plane with replay cameras, and the plane's
+-- OldReplayCameraComponent is set during the replay and empty in flight (F6 probe
+-- captures 2026-10-04: replay vs live flight). The standard flags are kept as a backstop.
+local scene_owner,scene_last,scene_failed
+function M.scene(pawn,controller)
+    if scene_failed then return false end
+    if scene_owner~=pawn:GetAddress() then scene_owner=pawn:GetAddress(); scene_last=nil end
+    local s={}
+    pcall(function() s.cinematic=controller.bCinematicMode==true end)
+    pcall(function() s.look=controller:IsLookInputIgnored()==true end)
+    pcall(function() s.move=controller:IsMoveInputIgnored()==true end)
+    pcall(function()
+        local camera=pawn.OldReplayCameraComponent
+        s.replay=camera~=nil and camera:IsValid()
+    end)
+    pcall(function()
+        local target=controller:GetViewTarget()
+        s.view=target~=nil and target:IsValid() and target:GetAddress()==pawn:GetAddress()
+    end)
+    local off=s.replay==true or s.cinematic==true or s.look==true or s.move==true
+    local key=string.format('replay=%s cinematic=%s lookIgnored=%s moveIgnored=%s viewTargetIsPlane=%s',
+        tostring(s.replay),tostring(s.cinematic),tostring(s.look),tostring(s.move),tostring(s.view))
+    if key~=scene_last then
+        print('[AC8MouseAim] Scene '..(off and 'scripted (yield)' or 'player')..': '..key..string.char(10))
+        scene_last=key
+    end
+    return off
+end
 return M

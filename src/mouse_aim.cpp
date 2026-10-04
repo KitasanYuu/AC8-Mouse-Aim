@@ -52,6 +52,11 @@ struct Config {
     float vertical_fov = 62.0f;
     int pitch_slot = 0;
     int roll_slot = 2;
+    int input_probe = 0;  // 1: log stepping values in the pawn's input block (discovery)
+    // How fast the chase camera turns to the mouse direction (1/s). MouseFlight used 5:
+    // the aim ring then darted across the screen with each mouse move and drifted back
+    // over ~0.6 s; War Thunder's camera follows the mouse closely and the ring stays put.
+    float camera_follow = 12.0f;
 };
 
 struct Pose {
@@ -70,6 +75,8 @@ std::atomic<bool> hud_enabled{true};
 std::atomic<bool> trace_enabled{false};
 // Axes the player is flying by keyboard (1 pitch, 2 roll, 4 yaw), for trace analysis.
 std::atomic<int> keyboard_axes{0};
+std::atomic<float> input_throttle{0}, input_brake{0};  // the game's InputThrottle / InputBrake
+int aircraft_serial=0;  // game thread only
 std::atomic<bool> game_paused{false};
 std::atomic<bool> gaze_active{false};
 // AC8 AutoPilot is engaged by pressing both yaw keys together. While it flies, the
@@ -84,6 +91,11 @@ std::atomic<bool> active{false};
 std::atomic<uintptr_t> aircraft{0};
 std::atomic<float> pose_pitch{0}, pose_yaw{0}, pose_roll{0};
 std::atomic<float> camera_pitch{0}, camera_yaw{0}, camera_roll{0};
+// Camera the native hook applied for the frame being rendered: the overlay projects
+// with it so the rings sit on the same frame as the scene, and redraws once per frame.
+std::atomic<float> applied_camera_pitch{0}, applied_camera_yaw{0}, applied_camera_roll{0};
+std::atomic<unsigned long long> applied_camera_tick{0};
+HANDLE overlay_frame_event{};
 std::atomic<float> view_fov{100};
 std::atomic<float> view_offset_x{0}, view_offset_y{0}, view_offset_z{0};
 std::atomic<float> roll_reference{0};
@@ -105,7 +117,7 @@ struct LogicApi {
     void (*step)(void*,const flight::LogicInput*,flight::LogicOutput*);
 };
 LogicApi logic{flight::logic_api::abi,flight::logic_api::configure,flight::logic_api::reset,flight::logic_api::step};
-alignas(64) unsigned char logic_state[4096];
+alignas(64) unsigned char logic_state[16384];  // model bank needs ~3 KB; headroom for hot-swapped logic
 static_assert(sizeof(flight::LogicState)<=sizeof(logic_state),"logic state buffer too small");
 HMODULE logic_module{};
 wchar_t logic_live_path[MAX_PATH]{};
@@ -182,6 +194,8 @@ void load_config() {
     config.vertical_fov = std::clamp(read_config_float(L"vertical_fov", config.vertical_fov), 30.0f, 120.0f);
     config.pitch_slot = std::clamp(read_config_int(L"pitch_slot", config.pitch_slot), 0, 2);
     config.roll_slot = std::clamp(read_config_int(L"roll_slot", config.roll_slot), 0, 2);
+    config.input_probe = read_config_int(L"input_probe", 0);
+    config.camera_follow = std::clamp(read_config_float(L"camera_follow", config.camera_follow), 1.0f, 60.0f);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
         config.pitch_slot = 0;
         config.roll_slot = 2;
@@ -423,7 +437,8 @@ void update_commands() {
     target_pitch.store(flight::pitch(aim)); target_yaw.store(flight::yaw(aim));
     // Lift-vector maneuver paradigm (docs/maneuver-spec.md), see flight_logic.h.
     flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),aim.x,aim.y,aim.z,
-        filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load()};
+        filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load(),aircraft_serial,
+        input_throttle.load(),input_brake.load()};
     flight::LogicOutput output{};
     logic.step(logic_state,&input,&output);
     if(output.event[0]) log_line("%s",output.event);
@@ -448,12 +463,14 @@ void release_controls() {
 
 // Called synchronously on the game thread. Fixed numeric arguments replace
 // the pipe queue, sscanf and the camera-target disk snapshot entirely.
-void receive_pose(const double (&v)[13]) {
+void receive_pose(const double (&v)[15]) {
     const uintptr_t address=static_cast<uintptr_t>(v[0]);
     const float pitch=float(v[1]),yaw=float(v[2]),roll=float(v[3]);
     const float view_pitch=float(v[4]),view_yaw=float(v[5]),view_roll=float(v[6]);
     const float fov=float(v[7]),ox=float(v[8]),oy=float(v[9]),oz=float(v[10]);
     const bool paused=v[11]!=0,gazing=v[12]!=0;
+    input_throttle.store(float(std::clamp(v[13],-2.0,2.0)));
+    input_brake.store(float(std::clamp(v[14],-2.0,2.0)));
     if(gaze_active.exchange(gazing)!=gazing) {
         mouse_dx.store(0); mouse_dy.store(0);
         command_pitch.store(0); command_yaw.store(0); command_roll.store(0);
@@ -470,6 +487,7 @@ void receive_pose(const double (&v)[13]) {
     view_fov.store(std::clamp(fov,30.0f,150.0f));
     if (aircraft.load() != static_cast<uintptr_t>(address)) {
         aircraft.store(static_cast<uintptr_t>(address));
+        ++aircraft_serial;  // tells the flight logic to identify the new aircraft afresh
         autopilot_active.store(false);
         roll_reference.store(roll);
         previous_pose_clock = 0;
@@ -492,9 +510,41 @@ void receive_pose(const double (&v)[13]) {
     update_commands();
 }
 
-void draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels) {
-        RECT alpha_rects[4]={{20,35,1100,85}};
-        unsigned alpha_count=1;
+// Antialiased ring into the premultiplied BGRA surface, composited over what is there:
+// a white line on a soft dark halo, both partly transparent, at sub-pixel position.
+// GDI rings had no antialiasing (jagged edges, reported) and were fully opaque.
+RECT draw_ring(uint32_t* pixels,int width,int height,float cx,float cy,float radius,
+               float line,float halo,float line_alpha,float halo_alpha) {
+    const float half=line*0.5f, extent=radius+half+halo+1.5f;
+    RECT box{std::max(0,static_cast<int>(std::floor(cx-extent))),std::max(0,static_cast<int>(std::floor(cy-extent))),
+             std::min(width,static_cast<int>(std::ceil(cx+extent))+1),std::min(height,static_cast<int>(std::ceil(cy+extent))+1)};
+    for(int y=box.top;y<box.bottom;++y)
+        for(int x=box.left;x<box.right;++x) {
+            const float dx=x+0.5f-cx, dy=y+0.5f-cy;
+            const float d=std::abs(std::sqrt(dx*dx+dy*dy)-radius);
+            const float line_cover=std::clamp(half+0.5f-d,0.0f,1.0f)*line_alpha;
+            float h=std::clamp(1.0f-(d-half)/std::max(halo,0.5f),0.0f,1.0f);
+            h=h*h*(3-2*h)*halo_alpha;
+            const float a=line_cover+h*(1-line_cover);
+            if(a<=0.002f) continue;
+            const float c=255.0f*line_cover+12.0f*h*(1-line_cover);  // premultiplied grey level
+            uint32_t& pixel=pixels[static_cast<size_t>(y)*width+x];
+            const float keep=1-a;
+            const float da=(pixel>>24)/255.0f;
+            const float dc=(pixel&0xFF);
+            const float oa=a+da*keep, oc=c+dc*keep;
+            const uint32_t A=static_cast<uint32_t>(std::lround(std::min(oa,1.0f)*255));
+            const uint32_t C=static_cast<uint32_t>(std::lround(std::min(oc,255.0f)));
+            pixel=(A<<24)|(C<<16)|(C<<8)|C;
+        }
+    return box;
+}
+
+// Draws the HUD and returns the regions drawn (for clearing and dirty-rect presents).
+unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, RECT (&drawn)[4]) {
+        drawn[0]={20,35,1100,85};
+        unsigned count=1;
+        unsigned text_count=1;  // the first regions hold GDI text, which needs its alpha set
         // The DIB was cleared before drawing; a full-screen GDI fill is redundant.
         SetBkMode(dc,TRANSPARENT);
         SetTextColor(dc,RGB(245,245,245));
@@ -503,76 +553,61 @@ void draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels) {
             active.load() && enabled.load()?"ON":"STANDBY",
             target_pitch.load(),target_yaw.load(),camera_pitch.load(),camera_yaw.load());
         TextOutA(dc,28,40,label,static_cast<int>(strlen(label)));
+        const int width=rect.right-rect.left, height=rect.bottom-rect.top;
+        float x{},y{},bx{},by{};
+        bool aim_visible=false, nose_visible=false;
         if (active.load() && enabled.load()) {
-            const int width=rect.right-rect.left, height=rect.bottom-rect.top;
-            const auto view=flight::basis(camera_pitch.load(),camera_yaw.load(),camera_roll.load());
+            // The camera applied for the frame on screen (native camera: 30 m behind and 6 m
+            // above along its own axes); else the last camera read from the game.
+            const bool applied=GetTickCount64()-applied_camera_tick.load()<100;
+            const auto view=applied ? flight::basis(applied_camera_pitch.load(),applied_camera_yaw.load(),applied_camera_roll.load())
+                                    : flight::basis(camera_pitch.load(),camera_yaw.load(),camera_roll.load());
+            const flight::V offset=applied ? view.f*-3000.0f+view.u*600.0f
+                                           : flight::V{view_offset_x.load(),view_offset_y.load(),view_offset_z.load()};
             const auto aim=flight::basis(target_pitch.load(),target_yaw.load(),0).f;
-            auto project=[&](flight::V v,int& sx,int& sy) {
+            auto project=[&](flight::V v,float& sx,float& sy) {
                 // MouseFlight HUD projects points 500m ahead of the aircraft.
-                v=v*50000.0f-flight::V{view_offset_x.load(),view_offset_y.load(),view_offset_z.load()};
+                v=v*50000.0f-offset;
                 float depth=flight::dot(v,view.f);
                 if(depth<=0.01f) return false;
                 float focal=width*0.5f/std::tan(view_fov.load()*0.5f*flight::rad);
-                sx=static_cast<int>(width*0.5f+focal*flight::dot(v,view.r)/depth);
-                sy=static_cast<int>(height*0.5f-focal*flight::dot(v,view.u)/depth);
+                sx=width*0.5f+focal*flight::dot(v,view.r)/depth;
+                sy=height*0.5f-focal*flight::dot(v,view.u)/depth;
                 return sx>=0 && sy>=0 && sx<width && sy<height;
             };
-            int x{},y{};
-            const bool aim_visible=project(aim,x,y);
+            aim_visible=project(aim,x,y);
+            // Nose direction: a small ring (War Thunder style: the big ring is where to fly,
+            // the small one where the nose points). A cross read as a gun sight and was
+            // confused with the game's own gun reticle, which it is not.
+            nose_visible=project(flight::basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load()).f,bx,by);
             static ULONGLONG draw_report=0;
             if(GetTickCount64()-draw_report>5000) {
                 draw_report=GetTickCount64();
-                log_line("overlay paint %dx%d target=%s at=(%d,%d) visible=%d",
+                log_line("overlay paint %dx%d target=%s at=(%.0f,%.0f) visible=%d",
                     width,height,aim_visible?"inside":"outside",x,y,IsWindowVisible(window));
             }
-            // MouseFlight Demo sprites: white ring/bars with dark outlines.
-            // Near-black must differ from the overlay's pure-black transparency key.
-            const float scale=std::max(0.75f,height/1080.0f);
-            auto px=[&](float n) { return std::max(1,static_cast<int>(std::lround(n*scale))); };
-            HPEN outline=CreatePen(PS_SOLID,px(4),RGB(12,12,12));
-            HPEN white=CreatePen(PS_SOLID,px(2),RGB(255,255,255));
-            HGDIOBJ old_pen = SelectObject(dc, outline);
-            HGDIOBJ old_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-            if(aim_visible) {
-                const int radius=px(25); // 50px diameter at 1080p, 100px at 4K.
-                const int bound=radius+px(4);
-                alpha_rects[alpha_count++]={x-bound,y-bound,x+bound+1,y+bound+1};
-                Ellipse(dc,x-radius,y-radius,x+radius,y+radius);
-                SelectObject(dc,white);
-                Ellipse(dc,x-radius,y-radius,x+radius,y+radius);
-            } else {
+            if(!aim_visible) {
                 const char* offscreen="TARGET OUTSIDE VIEW";
                 TextOutA(dc,28,62,offscreen,static_cast<int>(strlen(offscreen)));
+                drawn[count++]={20,58,400,85};
+                text_count=count;
             }
-            int bx{},by{};
-            if(project(flight::basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load()).f,bx,by)) {
-                const int bound=px(16);
-                alpha_rects[alpha_count++]={bx-bound,by-bound,bx+bound+1,by+bound+1};
-                auto bars=[&]() {
-                    MoveToEx(dc,bx-px(12),by,nullptr); LineTo(dc,bx-px(5),by);
-                    MoveToEx(dc,bx+px(5),by,nullptr); LineTo(dc,bx+px(12),by);
-                    MoveToEx(dc,bx,by-px(12),nullptr); LineTo(dc,bx,by-px(5));
-                    MoveToEx(dc,bx,by+px(5),nullptr); LineTo(dc,bx,by+px(12));
-                };
-                SelectObject(dc,outline); bars();
-                SelectObject(dc,white); bars();
-            }
-            SelectObject(dc, old_brush);
-            SelectObject(dc, old_pen);
-            DeleteObject(outline);
-            DeleteObject(white);
         }
         GdiFlush();
-        // GDI produces RGB with zero alpha. Set alpha only in the small HUD
-        // regions, not by scanning the entire 4K surface every frame.
-        for(unsigned n=0;n<alpha_count;++n) {
-            const RECT& a=alpha_rects[n];
-            for(int y=std::max(0L,a.top);y<std::min(rect.bottom,a.bottom);++y)
-                for(int x=std::max(0L,a.left);x<std::min(rect.right,a.right);++x) {
-                    auto& pixel=pixels[static_cast<size_t>(y)*rect.right+x];
+        // GDI produces RGB with zero alpha. Set alpha only in the text regions.
+        for(unsigned n=0;n<text_count;++n) {
+            const RECT& a=drawn[n];
+            for(int py=std::max(0L,a.top);py<std::min(rect.bottom,a.bottom);++py)
+                for(int px=std::max(0L,a.left);px<std::min(rect.right,a.right);++px) {
+                    auto& pixel=pixels[static_cast<size_t>(py)*rect.right+px];
                     if(pixel&0x00FFFFFF) pixel|=0xFF000000;
                 }
         }
+        // Sizes at 1080p (scaled with height): ring 50 px across, nose ring 14 px.
+        const float scale=std::max(0.75f,height/1080.0f);
+        if(aim_visible) drawn[count++]=draw_ring(pixels,width,height,x,y,25*scale,2.0f*scale,2.5f*scale,0.8f,0.35f);
+        if(nose_visible) drawn[count++]=draw_ring(pixels,width,height,bx,by,7*scale,2.0f*scale,2.5f*scale,0.8f,0.35f);
+        return count;
 }
 
 LRESULT CALLBACK overlay_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -610,8 +645,10 @@ void overlay_loop() {
     bool window_reported = false;
     ULONGLONG window_check=0;
     MSG message{};
+    RECT drawn[4]{}; unsigned drawn_count=0;   // regions drawn last time (to clear)
+    POINT last_origin{-1,-1}; SIZE last_size{};
+    bool full_clear=true;
     while (running.load()) {
-        const auto frame_started=GetTickCount64();
         if (!game_window || !IsWindow(game_window) || GetTickCount64()-window_check>1000) {
             HWND found=locate_game_window();
             if(found) game_window=found;
@@ -644,19 +681,53 @@ void overlay_loop() {
                 info.bmiHeader.biCompression=BI_RGB;
                 bitmap=CreateDIBSection(screen,&info,DIB_RGB_COLORS,reinterpret_cast<void**>(&pixels),nullptr,0);
                 if (bitmap) { original_bitmap=SelectObject(surface,bitmap); surface_size=size; }
+                full_clear=true;
             }
             if (bitmap && size.cx>0 && size.cy>0) {
                 GdiFlush();
-                memset(pixels,0,static_cast<size_t>(size.cx)*size.cy*4);
-                draw_overlay(overlay_window,surface,client,pixels);
+                // Clear and present only what changed: a full 3440x1440 clear and submit
+                // every time was most of the overlay's cost.
+                const bool moved=origin.x!=last_origin.x || origin.y!=last_origin.y ||
+                                 size.cx!=last_size.cx || size.cy!=last_size.cy;
+                RECT dirty{0,0,0,0};
+                auto clip=[&](RECT r) {
+                    r.left=std::max(0L,r.left); r.top=std::max(0L,r.top);
+                    r.right=std::min(size.cx,r.right); r.bottom=std::min(size.cy,r.bottom);
+                    return r;
+                };
+                auto add=[&](const RECT& r) {
+                    if(r.right<=r.left || r.bottom<=r.top) return;
+                    if(dirty.right<=dirty.left) dirty=r; else UnionRect(&dirty,&dirty,&r);
+                };
+                if(full_clear || moved) {
+                    memset(pixels,0,static_cast<size_t>(size.cx)*size.cy*4);
+                    dirty={0,0,size.cx,size.cy};
+                    full_clear=false;
+                } else {
+                    for(unsigned n=0;n<drawn_count;++n) {
+                        const RECT r=clip(drawn[n]);
+                        for(LONG y=r.top;y<r.bottom;++y)
+                            memset(pixels+static_cast<size_t>(y)*size.cx+r.left,0,static_cast<size_t>(r.right-r.left)*4);
+                        add(r);
+                    }
+                }
+                drawn_count=draw_overlay(overlay_window,surface,client,pixels,drawn);
+                for(unsigned n=0;n<drawn_count;++n) add(clip(drawn[n]));
+                last_origin=origin; last_size=size;
                 POINT source{};
-                BLENDFUNCTION blend{AC_SRC_OVER,0,115,AC_SRC_ALPHA};
-                BOOL presented=UpdateLayeredWindow(overlay_window,screen,&origin,&size,surface,
-                    &source,0,&blend,ULW_ALPHA);
+                BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+                UPDATELAYEREDWINDOWINFO update{sizeof(update),screen,&origin,&size,surface,&source,0,&blend,ULW_ALPHA,
+                    dirty.right>dirty.left ? &dirty : nullptr};
+                BOOL presented=UpdateLayeredWindowIndirect(overlay_window,&update);
                 DWORD error=presented?0:GetLastError();
+                static unsigned presents=0;
+                ++presents;
                 if (GetTickCount64()-present_report>5000) {
+                    const double seconds=present_report?(GetTickCount64()-present_report)/1000.0:0;
                     present_report=GetTickCount64();
-                    log_line("overlay surface submit=%d error=%lu size=%ldx%ld",presented,error,size.cx,size.cy);
+                    log_line("overlay surface submit=%d error=%lu size=%ldx%ld rate=%.0f/s",presented,error,size.cx,size.cy,
+                             seconds>0?presents/seconds:0.0);
+                    presents=0;
                 }
             }
             SetWindowPos(overlay_window, HWND_TOPMOST, origin.x, origin.y,
@@ -664,14 +735,17 @@ void overlay_loop() {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else {
             ShowWindow(overlay_window,SW_HIDE);
+            full_clear=true;
         }
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        const auto frame_ms=GetTickCount64()-frame_started;
-        if(frame_ms<16) Sleep(static_cast<DWORD>(16-frame_ms));
-        else Sleep(0); // Yield when a full-surface present took longer than a frame.
+        // Redraw once per game frame, right after the camera for it is applied; with the
+        // native camera off, about 60 times a second. A 16 ms Sleep paced by the 15.6 ms
+        // tick clock redrew only ~32 times a second, out of step with the game (the ring
+        // seemed to jump).
+        WaitForSingleObject(overlay_frame_event,16);
     }
     if (bitmap) { SelectObject(surface,original_bitmap); DeleteObject(bitmap); }
     if (surface) DeleteDC(surface);
@@ -750,6 +824,53 @@ bool create_absolute_hook(void* target, void* detour, void** trampoline_out) {
     return true;
 }
 
+// Discovery aid (input_probe=1): logs values around the pawn's input block that step
+// between input calls the way buttons and triggers do (throttle, brake, high-G), so the
+// game's own state is found whatever the binding. Our pitch/yaw/roll slots and the yaw
+// double written after the call are skipped. At most 40 lines per second.
+void probe_input_block(uintptr_t pawn) {
+    constexpr size_t first = 0x2100, last = 0x2500, count = (last - first) / 4;
+    static float previous[count];
+    static unsigned char previous_bytes[last - first];
+    static uintptr_t previous_pawn = 0;
+    static ULONGLONG window_start = 0;
+    static int lines = 0;
+    float now[count];
+    unsigned char bytes[last - first];
+    __try {
+        memcpy(now, reinterpret_cast<const void*>(pawn + first), sizeof(now));
+        memcpy(bytes, reinterpret_cast<const void*>(pawn + first), sizeof(bytes));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    if (pawn != previous_pawn) {
+        memcpy(previous, now, sizeof(now));
+        memcpy(previous_bytes, bytes, sizeof(bytes));
+        previous_pawn = pawn;
+        log_line("input probe armed pawn=%p range=+0x%zx..+0x%zx", reinterpret_cast<void*>(pawn), first, last);
+        return;
+    }
+    const ULONGLONG tick = GetTickCount64();
+    if (tick - window_start >= 1000) { window_start = tick; lines = 0; }
+    auto skipped = [](size_t offset) {
+        return (offset >= 0x2268 && offset < 0x2274) || (offset >= 0x22a8 && offset < 0x22b0);
+    };
+    for (size_t i = 0; i < count; ++i) {
+        const size_t offset = first + i * 4;
+        const float a = previous[i], b = now[i];
+        previous[i] = b;
+        if (skipped(offset) || !std::isfinite(a) || !std::isfinite(b)) continue;
+        if (std::abs(a) > 1.5f || std::abs(b) > 1.5f || std::abs(b - a) < 0.3f) continue;
+        if (lines++ < 40) log_line("input probe float +0x%zx %.3f -> %.3f", offset, a, b);
+    }
+    for (size_t i = 0; i < sizeof(bytes); ++i) {
+        const unsigned char a = previous_bytes[i], b = bytes[i];
+        previous_bytes[i] = b;
+        if (a == b || a > 1 || b > 1 || skipped(first + i)) continue;
+        if (lines++ < 40) log_line("input probe byte +0x%zx %u -> %u", first + i, a, b);
+    }
+}
+
 uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context) {
     // Enemy/non-player invocations do not query the keyboard or foreground.
     const uintptr_t pawn = aircraft.load();
@@ -758,6 +879,7 @@ uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context)
         return original(state,context);
     }
     if(perf_enabled.load()) ++perf_player_inputs;
+    if(config.input_probe) probe_input_block(pawn);
     if(!active.load() || GetTickCount64()-pose_tick.load()>1000 || !enabled.load() ||
        game_paused.load() || yielding() || !foreground_is_game()) return original(state,context);
     // Manual pitch also suspends automatic roll, matching MouseFlight maneuvers.
@@ -952,6 +1074,7 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_start(lua_State* state) {
     }
     running.store(true);
     std::thread(mouse_loop).detach();
+    if(!overlay_frame_event) overlay_frame_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     std::thread(overlay_loop).detach();
     log_line("ready: F8 toggle, F9 recenter; RMB reserved for game actions");
     log_line("0.2.30 direct numeric bridge; realtime file/pipe transport removed; F5 performance counters");
@@ -988,14 +1111,15 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_begin(void*) {
 extern "C" __declspec(dllexport) int ac8_mouseaim_frame(lua_State* state) {
     if(!running.load() || !on_bridge_thread()) return 0;
     PerfSpan timing(perf_bridge);
-    LuaView lua(state); double v[13]{};
+    LuaView lua(state); double v[15]{};
     if(!read_numbers(lua,v) || !live_pointer_number(v[0])) { release_controls(); return 0; }
     for(size_t i=1;i<11;++i) if(std::abs(v[i])>1e12) { release_controls(); return 0; }
     if((v[11]!=0 && v[11]!=1) || (v[12]!=0 && v[12]!=1)) { release_controls(); return 0; }
     receive_pose(v);
     const bool on=enabled.load() && !game_paused.load() && !yielding() && foreground_is_game();
     lua.set_number(on?1:0); lua.set_number(look_pitch.load()); lua.set_number(look_yaw.load());
-    return 3;
+    lua.set_number(config.camera_follow);
+    return 4;
 }
 
 extern "C" __declspec(dllexport) int ac8_mouseaim_camera(lua_State* state) {

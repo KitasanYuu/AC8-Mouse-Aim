@@ -63,6 +63,11 @@ void __fastcall update_native_camera(void* manager,float dt) {
         log_line("native camera disabled: invalid live camera/aircraft data");
         return;
     }
+    applied_camera_pitch.store(static_cast<float>(cmd.p));
+    applied_camera_yaw.store(static_cast<float>(cmd.y));
+    applied_camera_roll.store(static_cast<float>(cmd.r));
+    applied_camera_tick.store(GetTickCount64());
+    if(overlay_frame_event) SetEvent(overlay_frame_event);
     static bool reported=false;
     if(!reported) { reported=true; log_line("native camera POST-UPDATE ACTIVE: live aircraft position, final POV cache"); }
 }
