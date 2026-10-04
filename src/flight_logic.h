@@ -72,7 +72,7 @@ struct Tuning {
     float yaw_dead=0.2f, yaw_gain=1.5f, yaw_max_rate=6.0f, yaw_damping=0.45f, yaw_limit=0.6f;
     float yaw_slew=5.0f;
     float calibrate=0;                 // change to a new positive value to run input calibration
-    float auto_trace=1;                // record each maneuver automatically (compact AT lines)
+    float auto_trace=0;                // record each maneuver automatically (compact AT lines); 0 = off
     // Online identification of the current aircraft: memory of the estimate (s) and
     // seconds of informative data before it is fully trusted. 0 memory disables it.
     float ident_memory=15.0f, ident_trust=3.0f;
