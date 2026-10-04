@@ -78,7 +78,8 @@ td.best { color: var(--good); font-weight: 600; }
 td.na { color: var(--muted); }
 .charts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(100px, 1fr); gap: 8px; min-height: 0; }
 .chart { padding: 4px 8px 6px; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 100px; }
-.chart canvas { cursor: crosshair; }
+.chart .plot { position: relative; min-height: 0; cursor: crosshair; }
+.chart .plot canvas { position: absolute; inset: 0; }
 
 .overview { overflow: auto; padding: 10px 12px; }
 .overview table td { cursor: default; }
@@ -236,11 +237,26 @@ const sizeWatch = new ResizeObserver(entries => {
   for (const e of entries) sizes.set(e.target, [e.contentRect.width, e.contentRect.height]);
   requestAnimationFrame(() => drawAll());
 });
-function setup(canvas) {
-  // pixel ratio capped at 1.5: seven views and eight charts redrawn while playing
+// Filling the canvases is most of a frame's cost and grows with their area (a 3440x1440
+// screen has four times the pixels of a laptop's): the pixel ratio is capped at 1.5 and a
+// canvas's backing store at 0.7 megapixels, which the browser scales up to the view.
+const MAX_CANVAS_PIXELS = 250000;
+// Size a canvas to its view (pixel ratio and area capped as above) without clearing it.
+function fit(canvas) {
   let size = sizes.get(canvas);
   if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, size[0] * size[1])));
+  const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
+  let resized = false;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); resized = true; }
+  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h, resized };
+}
+function setup(canvas) {
+  let size = sizes.get(canvas);
+  if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
+  const area = Math.max(1, size[0] * size[1]);
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(MAX_CANVAS_PIXELS / area));
   const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
@@ -484,57 +500,81 @@ function buildCharts() {
   const box = document.getElementById('charts'); box.innerHTML = '';
   for (const c of CHARTS) {
     const el = document.createElement('div'); el.className = 'panel chart';
-    el.innerHTML = `<span class="title">${c.title}</span><canvas aria-label="${c.title}"></canvas>`;
-    box.appendChild(el); c.canvas = el.querySelector('canvas');
-    const seek = e => { const r = c.canvas.getBoundingClientRect(); const L = 34, T = scenario().seconds;
-      st.t = Math.max(0, Math.min(T, (e.clientX - r.left - L) / (r.width - L - 4) * T)); drawAll(); };
-    c.canvas.addEventListener('pointerdown', e => { seek(e); c.canvas.setPointerCapture(e.pointerId); });
-    c.canvas.addEventListener('pointermove', e => { if (e.buttons) seek(e); });
+    // curves below (drawn when the scene changes), the time cursor on a layer above
+    el.innerHTML = `<span class="title">${c.title}</span><div class="plot"><canvas aria-label="${c.title}"></canvas><canvas aria-hidden="true"></canvas></div>`;
+    box.appendChild(el);
+    [c.canvas, c.cursor] = el.querySelectorAll('canvas');
+    c.key = null; c.cursorX = null;
+    const plot = el.querySelector('.plot');
+    const seek = e => { const r = plot.getBoundingClientRect(), L = 34, sc = scenario(), span = chartSpan(sc);
+      st.t = Math.max(0, Math.min(sc.seconds, span[0] + (e.clientX - r.left - L) / (r.width - L - 4) * (span[1] - span[0]))); drawAll(); };
+    plot.addEventListener('pointerdown', e => { seek(e); plot.setPointerCapture(e.pointerId); });
+    plot.addEventListener('pointermove', e => { if (e.buttons) seek(e); });
   }
 }
-// The curves only change with the scenario, condition, shown controllers or size: they are
-// drawn once into an offscreen canvas and each frame copies it and adds the time cursor.
+// The time the charts show: the whole scene, or for scenes over 90 s (battles) the 60 s page
+// the cursor is in (490 s of stick traces from seven controllers in one strip was unreadable).
+function chartSpan(sc) {
+  if (sc.seconds <= 90) return [0, sc.seconds];
+  const t0 = Math.min(Math.floor(st.t / 60) * 60, Math.max(0, sc.seconds - 60));
+  return [t0, Math.min(t0 + 60, sc.seconds)];
+}
+// The curves only change with the scenario, condition, shown controllers, page or size: they
+// are drawn once on the lower canvas; each frame only moves the cursor on the layer above.
 function drawCharts() {
   const data = runs(), sc = scenario();
   for (const c of CHARTS) {
-    const { ctx, w, h } = setup(c.canvas); if (!data) continue;
-    const key = `${st.cond}|${st.scen}|${visible().map(v => v.id).join(',')}|${c.canvas.width}x${c.canvas.height}`;
-    if (c.key !== key) {
+    const base = fit(c.canvas);
+    const span = chartSpan(sc);
+    const key = `${st.cond}|${st.scen}|${visible().map(v => v.id).join(',')}|${span[0]}|${c.canvas.width}x${c.canvas.height}`;
+    if (c.key !== key || base.resized) {
       c.key = key;
-      c.cache = c.cache || document.createElement('canvas');
-      c.cache.width = c.canvas.width; c.cache.height = c.canvas.height;
-      const cc = c.cache.getContext('2d'); cc.setTransform(c.canvas.width / w, 0, 0, c.canvas.height / h, 0, 0);
-      drawChartCurves(c, cc, w, h, data, sc);
+      base.ctx.clearRect(0, 0, base.w, base.h);
+      if (data) drawChartCurves(c, base.ctx, base.w, base.h, data, sc, span);
     }
-    ctx.drawImage(c.cache, 0, 0, w, h);
-    const X = t => c.L + (w - c.L - 4) * t / sc.seconds;
-    ctx.strokeStyle = '#dbe4e9'; ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(X(st.t), 2); ctx.lineTo(X(st.t), h - 10); ctx.stroke(); ctx.globalAlpha = 1;
+    const top = fit(c.cursor);
+    if (top.resized) c.cursorX = null;
+    if (c.cursorX !== null) top.ctx.clearRect(c.cursorX - 3, 0, 6, top.h);
+    if (!data) { c.cursorX = null; continue; }
+    const x = (c.L || 34) + (top.w - (c.L || 34) - 4) * (st.t - span[0]) / Math.max(span[1] - span[0], 1e-3);
+    top.ctx.strokeStyle = '#dbe4e9'; top.ctx.globalAlpha = .6; top.ctx.beginPath(); top.ctx.moveTo(x, 2); top.ctx.lineTo(x, top.h - 10); top.ctx.stroke(); top.ctx.globalAlpha = 1;
+    c.cursorX = x;
   }
 }
-function drawChartCurves(c, ctx, w, h, data, sc) {
+function drawChartCurves(c, ctx, w, h, data, sc, span) {
   const mono = MONO;
   {
     const tr = c.sqrt ? v => Math.sqrt(Math.max(0, v)) : v => v;
     let lo = c.lo, hi = c.hi;
     if (lo === undefined) {
       lo = Infinity; hi = -Infinity;
-      for (const ctl of visible()) for (const fr of data[ctl.id] || []) { const v = c.get(fr); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+      for (const ctl of visible()) for (const fr of data[ctl.id] || []) {
+        if (fr[F.t] < span[0] || fr[F.t] > span[1]) continue;
+        const v = c.get(fr); lo = Math.min(lo, v); hi = Math.max(hi, v);
+      }
+      if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
       if (c.sqrt) lo = 0;
       if (c.zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
       const pad = Math.max((hi - lo) * .08, .5); if (!c.sqrt) lo -= pad; hi += pad;
     }
-    const L = 34, T = sc.seconds, X = t => L + (w - L - 4) * t / T, Y = v => 4 + (h - 14) * (1 - (tr(v) - tr(lo)) / (tr(hi) - tr(lo)));
+    const L = 34, T0 = span[0], T = span[1] - span[0], X = t => L + (w - L - 4) * (t - T0) / T, Y = v => 4 + (h - 14) * (1 - (tr(v) - tr(lo)) / (tr(hi) - tr(lo)));
     c.L = L;
     ctx.font = `10px ${mono}`; ctx.fillStyle = '#84959f'; ctx.strokeStyle = '#1d2830';
     const ticks = c.sqrt ? [0, 1, 5, 20, 60, 150].filter(v => v <= hi) : [lo, (lo + hi) / 2, hi];
     for (const v of ticks) { ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - 4, Y(v)); ctx.stroke(); ctx.fillText(Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1), 2, Y(v) + 3); }
     if (c.zero && lo < 0 && hi > 0) { ctx.strokeStyle = '#26323a'; ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(w - 4, Y(0)); ctx.stroke(); }
-    for (let s = 0; s <= T; s += T > 60 ? 20 : T > 12 ? 2 : 1) if (X(s) + 14 < w) ctx.fillText(`${s}`, X(s) - 3, h - 1);
+    // time ticks: a round step giving about seven labels
+    const step = [1, 2, 5, 10, 20, 30, 60, 120].find(v => T / v <= 8) || 120;
+    for (let s = Math.ceil(T0 / step) * step; s <= T0 + T + 1e-6; s += step) if (X(s) + 18 < w) ctx.fillText(`${s}`, X(s) - 3, h - 1);
     if (sc.switch_at > 0) { ctx.strokeStyle = '#84959f'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(sc.switch_at), 4); ctx.lineTo(X(sc.switch_at), h - 10); ctx.stroke(); ctx.setLineDash([]); }
     for (const ctl of visible()) {
       const arr = data[ctl.id]; if (!arr) continue;
       ctx.strokeStyle = colorOf(ctl.id); ctx.lineWidth = 1.4; ctx.beginPath();
-      arr.forEach((fr, k) => { const x = X(fr[F.t]), y = Y(Math.max(lo, Math.min(hi, c.get(fr)))); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      let pen = false;
+      for (const fr of arr) {
+        if (fr[F.t] < T0 - 0.5 || fr[F.t] > T0 + T + 0.5) { pen = false; continue; }
+        const x = X(fr[F.t]), y = Y(Math.max(lo, Math.min(hi, c.get(fr)))); pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true;
+      }
       ctx.stroke(); ctx.lineWidth = 1;
     }
   }
@@ -704,7 +744,12 @@ function drawAll() {
   const T = scenario().seconds;
   document.getElementById('clock').textContent = `${st.t.toFixed(2)} s`;
   document.getElementById('scrub').value = String(Math.round(st.t / T * 1000));
-  drawCams(); drawOverlay(); drawCard(); drawCharts();
+  // per-part drawing time, smoothed (window.ac8compare.timing, for finding stutter)
+  const timing = st.timing || (st.timing = {});
+  for (const [name, draw] of [['cams', drawCams], ['overlay', drawOverlay], ['card', drawCard], ['charts', drawCharts]]) {
+    const t0 = performance.now(); draw();
+    timing[name] = (timing[name] || 0) * 0.9 + (performance.now() - t0) * 0.1;
+  }
 }
 
 document.getElementById('cond').addEventListener('change', e => {
@@ -727,11 +772,14 @@ document.addEventListener('keydown', e => {
   }
 });
 let lastTick = null;
+// Playback redraws at most 30 times a second (a 144 Hz display would otherwise redraw every
+// view 144 times a second).
+let lastDraw = 0;
 function tick(now) {
   if (st.playing && lastTick !== null) {
     st.t += (now - lastTick) / 1000 * st.speed;
-    if (st.t >= scenario().seconds) { st.t = scenario().seconds; setPlaying(false); }
-    drawAll();
+    if (st.t >= scenario().seconds) { st.t = scenario().seconds; setPlaying(false); lastDraw = 0; }
+    if (now - lastDraw >= 1000 / 30 - 2) { lastDraw = now; drawAll(); }
   }
   lastTick = now; requestAnimationFrame(tick);
 }

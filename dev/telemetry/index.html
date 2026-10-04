@@ -191,9 +191,20 @@ const col = (() => { const s = getComputedStyle(document.documentElement); const
   return { ink: g('--ink'), muted: g('--muted'), grid: g('--grid'), rule: g('--rule'), nose: g('--nose'), path: g('--path'),
            enemy: g('--enemy'), elite: g('--elite'), friend: g('--friend'), selected: g('--selected'),
            aim: g('--aim'), trail: g('--trail'), warn: g('--warn'), craft: g('--craft'), panel: g('--panel'), mono: g('--mono') }; })();
+// Filling the canvases is most of a frame's cost and grows with their area (a 3440x1440
+// screen): pixel ratio capped at 1.5, a backing store at 0.7 megapixels (the browser scales
+// it up), and sizes from a ResizeObserver instead of a layout read while drawing.
+const MAX_CANVAS_PIXELS = 700000;
+const sizes = new WeakMap();
+const sizeWatch = new ResizeObserver(entries => {
+  for (const e of entries) sizes.set(e.target, [e.contentRect.width, e.contentRect.height]);
+  dirty = true;
+});
 function setup(canvas) {
-  const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  let size = sizes.get(canvas);
+  if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, size[0] * size[1])));
+  const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
   return { ctx, w, h };
@@ -515,7 +526,9 @@ function frameLoop(now) {
     dirty = true;
   }
   frameLoop.last = now;
-  if (dirty) { dirty = false; drawAll(); }
+  // at most 30 redraws a second, live or replaying (packets arrive ~80 times a second, and a
+  // fast display asks for frames at 144 Hz)
+  if (dirty && now - (frameLoop.drawn || 0) >= 1000 / 30 - 2) { dirty = false; frameLoop.drawn = now; drawAll(); }
   requestAnimationFrame(frameLoop);
 }
 
