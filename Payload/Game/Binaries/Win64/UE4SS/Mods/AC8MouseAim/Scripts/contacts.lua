@@ -6,7 +6,9 @@
 local M={}
 local send
 local next_scan,next_sample,backoff_until=0,0,0
-local class_of={}        -- address -> short class name (classes never change)
+-- address -> short class name, re-read at every scan: the game reuses an address for a new
+-- object (logged: LADON parts recorded under the names of destroyed allied ship parts)
+local class_of={}
 local tracked={}         -- objects sampled between scans
 local classes_seen={}    -- class name -> count, last scan
 local SCAN_SECONDS,SAMPLE_SECONDS,MAX_TRACKED=3,0.1,32
@@ -83,6 +85,7 @@ local function scan(pawn,game_time)
     local px,py,pz=location(pawn)
     local found={}
     classes_seen={}
+    class_of={}
     local all=FindAllOf('LiveGameObject')
     if not all then tracked={}; return end
     for _,obj in ipairs(all) do
@@ -143,9 +146,9 @@ function M.update(pawn,game_time)
         local target=pawn.TargetSelectionComponent:GetSelectedTarget()
         if target and target:IsValid() then
             selected=target:GetAddress()
-            if not class_of[selected] then class_of[selected]=short_class(target) end
+            class_of[selected]=short_class(target)   -- the selection changes often: always current
             local listed=false
-            for _,c in ipairs(tracked) do if c.id==selected then listed=true end end
+            for _,c in ipairs(tracked) do if c.id==selected then listed=true; c.cls=class_of[selected] end end
             if not listed then tracked[#tracked+1]={obj=target,id=selected,cls=class_of[selected],enemy=is_enemy(target,class_of[selected]),d=0} end
         end
     end)

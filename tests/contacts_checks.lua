@@ -58,10 +58,19 @@ part.x = part.x + 1200
 contacts.update(pawn, 4.1)
 assert(packets[2]:find('BP_Boss_Part_Engine_C'), 'moving part not tracked')
 packets = {packets[1]}
+-- an address reused for a new object: the class is read again (no stale name)
+local reused = object(10, 'BP_VE002_aegs_mk41_CP_Ally_C', 7000, 0, 0, {speed = 0})
+contacts.update(pawn, 7.2)
+reused.class = 'BP_OP0045_ladn_Engine_L_Base_C'; reused.z = 6000; reused.target = true
+pawn.TargetSelectionComponent = {GetSelectedTarget = function() return reused end}
+contacts.update(pawn, 7.4)
+assert(packets[#packets]:find('ladn_Engine_L'), 'stale class for a reused address')
+pawn.TargetSelectionComponent = {GetSelectedTarget = function() return nil end}
+packets = {packets[1]}
 -- shot down: hidden, then reported once as gone
 enemy.hidden = true
-contacts.update(pawn, 4.3)
+contacts.update(pawn, 7.6)
 assert(packets[2]:find('"gone":%[2%]'), 'gone not reported')
-contacts.update(pawn, 4.5)
+contacts.update(pawn, 7.8)
 assert(not packets[3]:find('"gone"'), 'gone reported twice')
 print('Lua contacts checks passed')

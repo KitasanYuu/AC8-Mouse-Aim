@@ -91,6 +91,8 @@ struct Plant {
     // and on the roll acceleration and limit. From full-stick p90 rates in each speed band.
     std::array<float, 9> pull_by_speed{1, 1, 1, 1, 1, 1, 1, 1, 1};
     std::array<float, 9> roll_by_speed{1, 1, 1, 1, 1, 1, 1, 1, 1};
+    // Full throttle: dV/dt + g sin(climb) by speed (m/s^2, per 100 m/s, nz < 3, logged).
+    std::array<float, 9> thrust_by_speed{43, 43, 35, 29, 22, 8.7f, 3.6f, -3, -10};
 };
 float by_speed(const std::array<float, 9>& table, float speed) {
     const float x = std::clamp(speed / 100.0f, 0.0f, 8.0f);
@@ -105,25 +107,28 @@ constexpr std::array<float, 9> weak_roll{0.85f, 0.85f, 1.0f, 0.97f, 0.7f, 0.55f,
 // pull at 600-800 m/s and rolls 80-100 deg/s up to 700 m/s.
 constexpr std::array<float, 9> su35_pull{0.95f, 0.95f, 1.0f, 0.8f, 0.82f, 0.65f, 0.66f, 0.68f, 0.42f};
 constexpr std::array<float, 9> su35_roll{0.72f, 0.72f, 0.92f, 0.92f, 1.0f, 0.94f, 0.85f, 0.68f, 0.73f};
+// Full throttle: the weak aircraft tops out near 640 m/s, the Su-35 near 795 m/s.
+constexpr std::array<float, 9> weak_thrust{43, 43, 35, 29, 22, 8.7f, 3.6f, -3, -10};
+constexpr std::array<float, 9> su35_thrust{62, 62, 65, 45, 42, 33, 15, 5.2f, -0.5f};
 // Fitted on the game clock (see tests/flight_sim.cpp `measured`, fit_airframe.py): full pull
 // ~50 deg/s at 200-500 m/s, x1.4-1.6 in a high-G turn; rolls top out near 105 deg/s.
 constexpr Plant measured{"measured", "实测机体",
     0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 1.5f,
-    0.20f, 187, 0.0825f, 0.4f, weak_pull, weak_roll};
+    0.20f, 187, 0.0825f, 0.4f, weak_pull, weak_roll, weak_thrust};
 constexpr Plant su35{"su35", "Su-35",
     0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 1.5f,
-    0.20f, 187, 0.0825f, 0.4f, su35_pull, su35_roll};
+    0.20f, 187, 0.0825f, 0.4f, su35_pull, su35_roll, su35_thrust};
 // Robustness: 30% more delay and smoothing, less authority (a heavier aircraft, or the
 // fit being optimistic). A controller tuned to the edge of the measured model shows it here.
 constexpr Plant sluggish{"sluggish", "迟钝机体（延迟 ×1.3，权限 ×0.75）",
     0.16f, 0.26f, 0.13f, 0.8f, 38, 19, 0.3f, 1.5f,
     0.18f, 0.33f, 165, 1.3f, 80, 0.7f,
     0.2f, 4.0f, 0.45f, 1.5f,
-    0.25f, 187, 0.0825f, 0.4f, weak_pull, weak_roll};
+    0.25f, 187, 0.0825f, 0.4f, weak_pull, weak_roll, weak_thrust};
 
 float input_smooth(float f, float u, float dt, float build, float release) {
     const float tc = (u * f < 0 || std::abs(u) < std::abs(f)) ? release : build;
@@ -169,7 +174,7 @@ struct Aircraft {
         float dv;
         if (high_g) dv = -28 - 0.08f * speed;                       // fitted: high-G bleeds speed
         else if (brake > 0.5f) dv = -12 - 0.135f * speed;
-        else dv = (1 - throttle) * m.cruise_rate * (m.cruise - speed) + throttle * 0.125f * (750 - speed);
+        else dv = (1 - throttle) * m.cruise_rate * (m.cruise - speed) + throttle * by_speed(m.thrust_by_speed, speed);
         dv -= m.turn_drag * std::max(0.0f, nz - 1);
         const V3 a = lift + gravity + vh * dv;
         acc = a;

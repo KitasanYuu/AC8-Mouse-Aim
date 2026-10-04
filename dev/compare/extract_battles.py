@@ -96,26 +96,26 @@ for path in args.files:
             return speeds and speeds[len(speeds) // 2] > 60
         enemies = {k: v for k, v in enemies.items() if len(v["samples"]) >= 5 and moving(v)}
         if not enemies: continue
-        # A boss's lockable parts are separate actors at its position: selecting one of them
-        # counts as selecting the boss.
+        # A boss's lockable parts are separate actors at its position: a selected object at a
+        # boss's position (within 300 m) counts as selecting the boss. Judged by position at
+        # each moment, not by class or address: the game reuses addresses, and parts were
+        # recorded under the names of destroyed allied ship parts (logged).
         boss_ids = [k for k, v in enemies.items() if boss(v["cls"])]
-        part_of = {}
-        if boss_ids:
-            prefix = re.split(r"_CP_", enemies[boss_ids[0]]["cls"])[0]
-            at = {b: {round(x[0], 1): x[1:4] for x in enemies[b]["samples"]} for b in boss_ids}
-            for s in snaps:
-                if not t0 <= s["gt"] <= t1: continue
-                key = round(s["gt"] - t0, 1)
-                for c in s["c"]:
-                    if c[0] in part_of or c[0] in enemies or not c[1].startswith(prefix): continue
-                    near = [(math.dist(c[2:5], at[b][key]), b) for b in boss_ids if key in at[b]]
-                    if near and min(near)[0] < 300: part_of[c[0]] = min(near)[1]
+        at = {b: {round(x[0], 1): x[1:4] for x in enemies[b]["samples"]} for b in boss_ids}
+        def selection(s):
+            sid = s.get("selected")
+            if not boss_ids or sid in enemies: return sid
+            key = round(s["gt"] - t0, 1)
+            c = next((c for c in s["c"] if c[0] == sid), None)
+            if c is None: return sid
+            near = [(math.dist(c[2:5], at[b][key]), b) for b in boss_ids if key in at[b]]
+            return min(near)[1] if near and min(near)[0] < 300 else sid
         ids = list(enemies)
         span = t1 - t0
         # When the player had each enemy selected (relative to the window).
         sel_times_of = {}
         for s in snaps:
-            sid = part_of.get(s.get("selected"), s.get("selected"))
+            sid = selection(s)
             if t0 <= s["gt"] <= t1 and sid in enemies:
                 sel_times_of.setdefault(sid, []).append(s["gt"] - t0)
         for eid, e in enemies.items():
@@ -140,7 +140,7 @@ for path in args.files:
             own.append(f)
         sel_at = {}
         for s in snaps:
-            if t0 <= s["gt"] <= t1: sel_at[round(s["gt"], 1)] = part_of.get(s.get("selected"), s.get("selected"))
+            if t0 <= s["gt"] <= t1: sel_at[round(s["gt"], 1)] = selection(s)
         sel_times = sorted(sel_at)
         def selected(t):
             i = bisect.bisect_right(sel_times, round(t, 1)) - 1
