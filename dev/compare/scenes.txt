@@ -1,0 +1,23 @@
+# Recorded scenes for the comparison bench (harness.cpp reads this list; scripted scenes are
+# defined in harness.cpp). Cut new ones with extract_tracks.py / extract_battles.py, then add
+# a line here.
+#
+#   kind    track (a gun attack, tracks/) or battle (minutes of combat, battles/)
+#   file    the cut file
+#   id      <category>_<nn>: rec_ for recorded attacks, war_ for battles
+#   plane   the aircraft it was flown with: weak (the weaker jet of 2026-10-04/05) or su35;
+#           the scene runs only on the conditions of that aircraft
+#   mouse   1: the aim is the player's recorded mouse (the input the mod had in game; the
+#           "recorded" column is then directly comparable), 0: the gun lead point
+#   title   <category> · <what>
+#
+# kind   file                      id      plane  mouse  title
+track    20261005-005521_212.txt   rec_01  weak   0      实录追击 · mr2k 侧向缠斗
+track    20261005-005521_226.txt   rec_02  weak   0      实录追击 · mr2k 急转
+track    20261005-010417_542.txt   rec_03  weak   0      实录追击 · Shadow 急转
+track    20261005-010417_610.txt   rec_04  weak   0      实录追击 · Shadow 近距缠斗
+battle   20261004-231557_216.txt   war_01  weak   0      实战 · 16 机混战
+battle   20261005-010417_521.txt   war_02  weak   0      实战 · Shadow 四机
+battle   20261005-023438_240.txt   war_03  su35   0      实战 · LADON 一阶段
+battle   20261005-023438_346.txt   war_04  su35   0      实战 · LADON 二阶段
+battle   20261005-023438_346.txt   war_05  su35   1      实战 · LADON 二阶段（鼠标回放）

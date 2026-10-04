@@ -155,10 +155,13 @@ const F = { t: 0, x: 1, y: 2, z: 3, pitch: 4, yaw: 5, roll: 6, ax: 7, ay: 8, az:
 const PALETTE = { ours: '#4fb3d9', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a', recorded: '#e8e8e8' };
 const EXTRA = ['#f5d04c', '#ff7aa8', '#8fd0c4', '#b0b8ff'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
-const KIND = { capture: '捕获（鼠标移到一个方向后不动）', chain: '连续机动（中途换目标）', hold: '精确保持（小幅鼠标操作）', pursuit: '追击脚本敌机（鼠标压在敌机上）',
+const KIND = { capture: '捕获（鼠标移到一个方向后不动）', switch: '换目标（滚转中出现新目标）', chain: '连续（中途换目标）',
+               hold: '保持（对准后的小幅鼠标操作）', pursuit: '脚本追击（鼠标压在脚本敌机上）',
                track: '实录追击（录像里的真实敌机，鼠标压在机炮提前量上；白色为游戏里当时实际飞出的结果）',
-               battle: '连续战斗（录像里整段空战的全部敌机，虚拟飞行员选目标、导弹 + 机炮；粉色为精英机）' };
-const KINDS = ['capture', 'chain', 'hold', 'pursuit', 'track', 'battle'];
+               battle: '实战（录像里整段空战的全部敌机，虚拟飞行员选目标、导弹 + 机炮；粉色为精英机）' };
+const KINDS = ['capture', 'switch', 'chain', 'hold', 'pursuit', 'track', 'battle'];
+// Recorded scenes run only on the aircraft they were flown with.
+const available = sc => !!(IDX.metrics[st.cond] || {})[sc.id];
 const withEnemy = kind => kind === 'pursuit' || kind === 'track' || kind === 'battle';
 const ELITE = '#ff6bd6';
 // Battles: every enemy's path (2 Hz) and, per controller, when it brought each one down.
@@ -541,11 +544,11 @@ function drawChartCurves(c, ctx, w, h, data, sc) {
 // [key, label, unit, better: -1 lower / +1 higher, kinds]
 const METRICS = [
   ['cost', '综合代价', '', -1, 'all'],
-  ['to5', '到 5° 内', 's', -1, 'capture chain'],
-  ['to2', '到 2° 内', 's', -1, 'capture chain'],
-  ['settle', '稳定在 1° 内', 's', -1, 'capture chain'],
-  ['level', '对准且机翼水平', 's', -1, 'capture chain'],
-  ['overshoot', '过冲', '°', -1, 'capture chain'],
+  ['to5', '到 5° 内', 's', -1, 'capture switch chain'],
+  ['to2', '到 2° 内', 's', -1, 'capture switch chain'],
+  ['settle', '稳定在 1° 内', 's', -1, 'capture switch chain'],
+  ['level', '对准且机翼水平', 's', -1, 'capture switch chain'],
+  ['overshoot', '过冲', '°', -1, 'capture switch chain'],
   ['crashed', '坠地时刻（+20 代价）', 's', 0, 'track battle'],
   ['lock_frac', '目标在导弹锁定范围内（头目 1 km）', '%', 1, 'battle'],
   ['kills', '击落', '架', 1, 'battle'],
@@ -583,6 +586,7 @@ function fmt(key, v) {
 let cardKey = null;
 function drawCard() {
   const sc = scenario(), m = IDX.metrics[st.cond][st.scen], list = visible();
+  if (!m) return;
   const key = `${st.cond}|${st.scen}|${list.map(c => c.id).join(',')}`;
   if (key === cardKey) return;
   cardKey = key;
@@ -624,14 +628,16 @@ function drawOverview() {
   const ab = Math.min(...list.filter(c => c.id !== 'recorded').map(c => all[c.id]));
   html += `<tr class="total"><td>合计（模拟）</td>${list.map(c => c.id === 'recorded' ? '<td class="na">—</td>' : `<td class="${all[c.id] === ab ? 'best' : ''}">${all[c.id].toFixed(1)}</td>`).join('')}</tr></tbody></table>`;
   html += `<div class="explain"><p><b>综合代价</b>越低越好，每个场景一个数，权重是粗略的，具体差在哪里要看单场景页的指标。
-    捕获和连续机动：到 2° 的时间 + 0.5 × 稳定在 1° 内的时间 + 超过 1.5° 的过冲 ×2 + 多余的滚转反向 ×0.5 + 杆量来回打 ×0.2 + 倒飞时间 ×0.5（倒飞起始的场景不计倒飞）；没达到按场景时长计。
-    精确保持：偏差均方根 + 坡度均方根 ×0.05 + 滚转反向 ×0.3 + 杆量来回打 ×0.1。追击：开始 3 s 后的平均偏差 ×0.5 + 不在 5° 内的时间占比 ×3 + 滚转反向 ×0.2 + 杆量来回打 ×0.05。
-    连续战斗：未击落的比例 ×20 + 选定目标到首次开火的平均秒数（没开过火按 15）+ 1 km 内不在提前量 2° 内的比例 ×5；“游戏实录”缺开火数据，只列击落等指标，不给综合分。
+    捕获、换目标和连续：到 2° 的时间 + 0.5 × 稳定在 1° 内的时间 + 超过 1.5° 的过冲 ×2 + 多余的滚转反向 ×0.5 + 杆量来回打 ×0.2 + 倒飞时间 ×0.5（倒飞起始的场景不计倒飞）；没达到按场景时长计。
+    保持：偏差均方根 + 坡度均方根 ×0.05 + 滚转反向 ×0.3 + 杆量来回打 ×0.1。脚本追击：开始 3 s 后的平均偏差 ×0.5 + 不在 5° 内的时间占比 ×3 + 滚转反向 ×0.2 + 杆量来回打 ×0.05。
+    实战：未击落的比例 ×20 + 选定目标到首次开火的平均秒数（没开过火按 15）+ 1 km 内不在提前量 2° 内的比例 ×5；“游戏实录”缺开火数据，只列击落等指标，不给综合分。
+    头目战（LADON，不计击落）：不在导弹锁定范围内的比例 ×10（ECM：1 km 内才能锁定）+ 1 km 内不在提前量 2° 内的比例 ×10 + 平均偏差 ×0.2，滚转反向和杆量来回打按每分钟计。鼠标回放的实战按实录追击的方法计分。坠地后剩余的时间按完全偏离计。
     虚拟飞行员按“离机头近、距离近”选目标，鼠标压在机炮提前量上，目标偏离机头 40° 以上时按住加速+减速做高G转弯；机头 15° 内、300–2500 m 保持 0.8 s 发射导弹（每 1.5 s 一枚，普通敌机必中；精英机要在 1500 m 内、8° 内发射才命中，且要两发）；1 km 内机炮命中累计 0.5 s 击落（精英 1.5 s）。敌机按录像轨迹飞、不会对模拟里的飞机做反应，并在你当时把它打下来的时刻退场。
     实录追击：1 s 后对机炮提前量的平均偏差 ×0.5 + 不在 5° 内的占比 ×2 + 不在 2° 内的占比 ×2 + 滚转反向 ×0.2 + 杆量来回打 ×0.05；
     “游戏实录”一列是当时游戏里实际飞出的结果，按同样方法打分，可用来核对模拟是否可信（模拟从同一状态出发但不带当时的角速度）。</p>
-    <p><b>模型</b>：姿态响应（延迟、游戏的输入平滑、响应曲线、拉杆/推杆权限、滚转加速度和上限、高G拉杆、方向舵约 5.4°/s）和航迹（速度方向滞后机头 0.2 s、重力、中立油门下速度回到约 190 m/s）都来自 2026-10-04 用游戏时钟录下的两段同关卡飞行。
-    “墙钟计时”工况模拟宿主用墙上时钟测帧时间（主仓库和 xsd467 的宿主现在仍是这样），角速度带约 20% 的乘性噪声；“迟钝机体”检验对模型误差的鲁棒性。</p>
+    <p><b>模型</b>：姿态响应（延迟、游戏的输入平滑、响应曲线、拉杆/推杆权限、滚转加速度和上限、高G拉杆、方向舵约 5.4°/s）和航迹（速度方向滞后机头 0.2 s、重力、油门与速度）来自游戏时钟录下的飞行。
+    权限和满油门加速度按速度分段实测：差机体到 500 m/s 满杆约 43°/s、600–700 m/s 只剩 6–10°/s，极速约 640 m/s；Su-35 在 600–800 m/s 仍有 26–28°/s，极速约 795 m/s。
+    “迟钝机体”是差机体的延迟 ×1.3、权限 ×0.75，检验对模型误差的鲁棒性。录像场景只在当时所飞的机型上运行。场景清单见 dev/compare/scenes.txt。</p>
     <p><b>控制器</b>：${IDX.controllers.map(c => `<span style="color:${colorOf(c.id)}">${c.label}</span>（${c.source}）`).join('；')}。点击任一行打开该场景。</p></div>`;
   const box = document.getElementById('overview'); box.innerHTML = html;
   box.querySelectorAll('tr[data-scen]').forEach(tr => tr.addEventListener('click', () => { st.scen = tr.dataset.scen; document.getElementById('scenario').value = st.scen; setTab('scene'); selectScenario(); }));
@@ -672,7 +678,9 @@ function fillSelects() {
   const cond = document.getElementById('cond');
   cond.innerHTML = IDX.plants.map(p => `<option value="${p.id}">${p.title}</option>`).join(''); cond.value = st.cond;
   const sel = document.getElementById('scenario');
-  sel.innerHTML = KINDS.filter(k => IDX.scenarios.some(s => s.kind === k)).map(k => `<optgroup label="${KIND[k]}">${IDX.scenarios.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.title}</option>`).join('')}</optgroup>`).join('');
+  const here = IDX.scenarios.filter(available);
+  if (!here.some(s => s.id === st.scen) && here.length) st.scen = here[0].id;
+  sel.innerHTML = KINDS.filter(k => here.some(s => s.kind === k)).map(k => `<optgroup label="${KIND[k]}">${here.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.title}</option>`).join('')}</optgroup>`).join('');
   sel.value = st.scen;
 }
 function selectScenario() {
@@ -699,7 +707,10 @@ function drawAll() {
   drawCams(); drawOverlay(); drawCard(); drawCharts();
 }
 
-document.getElementById('cond').addEventListener('change', e => { st.cond = e.target.value; save(); loadCond(st.cond, () => { computeExtent(); drawAll(); if (st.tab === 'overview') drawOverview(); }); });
+document.getElementById('cond').addEventListener('change', e => {
+  st.cond = e.target.value; fillSelects(); save();
+  loadCond(st.cond, () => { st.t = 0; computeExtent(); buildCams(); drawAll(); if (st.tab === 'overview') drawOverview(); });
+});
 document.getElementById('scenario').addEventListener('change', e => { st.scen = e.target.value; selectScenario(); });
 document.getElementById('scrub').addEventListener('input', e => { st.t = e.target.value / 1000 * scenario().seconds; drawAll(); });
 document.getElementById('speed').addEventListener('change', e => { st.speed = parseFloat(e.target.value); });

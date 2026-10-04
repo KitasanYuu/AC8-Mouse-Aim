@@ -95,8 +95,7 @@ for path in args.files:
 # Requested attacks, then the hardest: enemies that turn the most.
 candidates.sort(key=lambda c: (not c["forced"], -c["turn"]))
 chosen = candidates[:max(args.max, sum(c["forced"] for c in candidates))]
-for old in os.listdir(args.out):
-    if old.endswith(".txt"): os.remove(os.path.join(args.out, old))
+# Files already there are kept (dev/compare/scenes.txt picks the ones the bench uses).
 for c in chosen:
     with open(os.path.join(args.out, c["name"] + ".txt"), "w", encoding="utf-8", newline="\n") as out:
         out.write(f"# recorded gun attack: flight-{c['file']} at {c['gt']:.1f} s into the recording, enemy {c['cls']}, "

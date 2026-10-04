@@ -29,7 +29,6 @@ ap.add_argument("--window", action="append", default=[])
 ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "battles"))
 ap.add_argument("--boss", default="")
 ap.add_argument("--only-boss", action="store_true")
-ap.add_argument("--keep", action="store_true", help="keep the battles already in --out")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 # Named aces, Shadow squadrons and bosses (as contacts.lua ranks them)
@@ -159,8 +158,7 @@ for path in args.files:
 
 battles.sort(key=lambda b: (not b["forced"], -b["elite"], -b["busy"]))
 chosen = battles[:max(args.max, sum(b["forced"] for b in battles))]
-for old in os.listdir(args.out) if not args.keep else []:
-    if old.endswith(".txt"): os.remove(os.path.join(args.out, old))
+# Files already there are kept (dev/compare/scenes.txt picks the ones the bench uses).
 for b in chosen:
     with open(os.path.join(args.out, b["name"] + ".txt"), "w", encoding="utf-8", newline="\n") as out:
         classes = {}

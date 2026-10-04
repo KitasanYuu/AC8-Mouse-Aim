@@ -308,14 +308,16 @@ std::shared_ptr<Battle> load_battle(const std::string& path) {
 }
 
 // ---------------------------------------------------------------- scenarios
-enum Kind { Capture, Chain, Hold, Pursuit, Recorded, Combat };
-const Kind kinds[] = {Capture, Chain, Hold, Pursuit, Recorded, Combat};
+enum Kind { Capture, Switch, Chain, Hold, Pursuit, Recorded, Combat };
+const Kind kinds[] = {Capture, Switch, Chain, Hold, Pursuit, Recorded, Combat};
 const char* kind_name(Kind k) {
-    return k == Capture ? "capture" : k == Chain ? "chain" : k == Hold ? "hold" : k == Pursuit ? "pursuit" : k == Recorded ? "track" : "battle";
+    return k == Capture ? "capture" : k == Switch ? "switch" : k == Chain ? "chain" : k == Hold ? "hold" :
+           k == Pursuit ? "pursuit" : k == Recorded ? "track" : "battle";
 }
 struct Scenario {
     std::string id, title, note;
     Kind kind;
+    std::string aircraft;                                // recorded scenes: the aircraft flown ("weak", "su35"); "" = any
     float seconds = 8;
     float start_roll = 0;
     float start_pitch = 0, start_p = 0;                 // nose pitch and roll rate (deg/s) at the start
@@ -328,55 +330,53 @@ struct Scenario {
     bool mouse_aim = false;                              // aim as the player's mouse did, not the lead point
     std::shared_ptr<Battle> battle;                      // continuous combat
 };
-std::vector<Scenario> scenarios(const std::string& track_dir, const std::string& battle_dir) {
+// The scenes, named "<category> · <what>" with ids "<category>_<nn>". Scripted ones are defined
+// here; recorded ones (cut by extract_tracks.py / extract_battles.py) are listed with their
+// names in dev/compare/scenes.txt.
+std::vector<Scenario> scenarios(const std::string& dir) {
     std::vector<Scenario> s;
+    auto add = [&](Scenario c) { s.push_back(c); };
+    // Captures: the mouse moved to a direction and held.
     auto cap = [&](std::string id, std::string title, V3 dir, float roll = 0, std::string note = "") {
-        Scenario c; c.id = id; c.title = title; c.kind = Capture; c.first = unit(dir); c.start_roll = roll; c.note = note; s.push_back(c);
+        Scenario c; c.id = id; c.title = "捕获 · " + title; c.kind = Capture; c.first = unit(dir); c.start_roll = roll; c.note = note; add(c);
     };
-    cap("cap_r3", "右 3°", direction(0, 3), 0, "小角度修正");
-    cap("cap_r10", "右 10°", direction(0, 10));
-    cap("cap_r30", "右 30°", direction(0, 30));
-    cap("cap_r90", "右 90°", direction(0, 90));
-    cap("cap_r150", "右后 150°", direction(0, 150), 0, "大角度：方向选择");
-    cap("cap_u20", "上 20°", direction(20, 0));
-    cap("cap_d15", "下 15°", direction(-15, 0), 0, "小幅下压：不应翻成倒飞");
-    cap("cap_d90", "正下 90°", V3{0.0001f, 0, -1});
-    cap("cap_dl", "左下 30°/40°", direction(-30, -40));
-    cap("cap_r60_lo12", "右 60° 低 12°", direction(-12, 60));
-    cap("cap_l100_lo25", "左 100° 低 25°", direction(-25, -100));
-    cap("cap_r40_lo50", "右 40° 低 50°", direction(-50, 40));
-    cap("inv_u10", "倒飞 · 上 10°", direction(10, 0), 180, "倒飞起始");
-    cap("inv_u60", "倒飞 · 上 60°", direction(60, 0), 180);
-    cap("inv_r15", "倒飞 · 右 15°", direction(0, 15), 180, "推杆与拉杆距离相近");
-    cap("inv_dr12", "倒飞 · 右下 12°/12°", direction(-12, 12), 180);
-    cap("bank100_ul", "坡度 100° · 左上 10°/15°", direction(10, -15), 100);
+    cap("cap_01", "右 3°", direction(0, 3), 0, "小角度修正");
+    cap("cap_02", "右 10°", direction(0, 10));
+    cap("cap_03", "右 90°", direction(0, 90));
+    cap("cap_04", "右后 150°", direction(0, 150), 0, "大角度：方向选择");
+    cap("cap_05", "上 20°", direction(20, 0));
+    cap("cap_06", "下 15°", direction(-15, 0), 0, "小幅下压：不应翻成倒飞");
+    cap("cap_07", "右 60° 低 12°", direction(-12, 60), 0, "目标在地平线下方的转弯");
+    cap("cap_08", "倒飞起始右 15°", direction(0, 15), 180, "推杆与拉杆距离相近");
     // A new target picked while the aircraft is still rolling from the last one (logged in
-    // the recorded battles: target switches at 40-45 deg/s of roll the other way cost
-    // ~1.5 s). Nose 30 deg up, 60 deg left bank, rolling right at 45 deg/s; the target 35
-    // deg off at a clock position around the nose (0 above the canopy, 180 below the floor).
-    for (int clock : {-150, -90, -60, 0, 60, 90, 150, 175}) {
+    // the recorded battles: switches against the roll cost ~1.5 s). Nose 30 deg up, 60 deg
+    // left bank, rolling right at 45 deg/s; the target 35 deg off at a clock position around
+    // the nose (0 above the canopy, 180 below the floor).
+    auto sw = [&](std::string id, std::string title, int clock) {
         const Frame3 b0 = basis(30, 0, -60);
         const float a = 35 * rad, c = clock * rad;
-        Scenario sw; sw.kind = Capture; sw.start_pitch = 30; sw.start_roll = -60; sw.start_p = 45;
-        sw.first = unit(b0.f * std::cos(a) + (b0.u * std::cos(c) + b0.r * std::sin(c)) * std::sin(a));
-        sw.id = "switch_c" + std::to_string(clock < 0 ? 360 + clock : clock);
-        sw.title = "滚转中换目标 · 35° " + std::string(clock == 0 ? "座舱方向" : clock == 175 ? "机腹方向" : clock > 0 ? "右侧 " : "左侧 ") +
-                   (clock == 0 || clock == 175 ? "" : std::to_string(std::abs(clock)) + "°");
-        sw.note = "坡度左 60°、机头上仰 30°、正以 45°/s 向右滚时，新目标出现在偏 35° 处（钟点方位见标题）";
-        s.push_back(sw);
-    }
+        Scenario x; x.kind = Switch; x.start_pitch = 30; x.start_roll = -60; x.start_p = 45;
+        x.first = unit(b0.f * std::cos(a) + (b0.u * std::cos(c) + b0.r * std::sin(c)) * std::sin(a));
+        x.id = id; x.title = "换目标 · " + title;
+        x.note = "坡度左 60°、机头上仰 30°、正以 45°/s 向右滚时，新目标出现在偏 35° 处";
+        add(x);
+    };
+    sw("sw_01", "座舱方向 35°", 0);
+    sw("sw_02", "顺滚转方向 90°", 90);
+    sw("sw_03", "逆滚转方向 90°", -90);
+    sw("sw_04", "机腹方向 35°", 175);
+    // Chained: the target changes mid-maneuver (metrics from the switch).
     auto chain = [&](std::string id, std::string title, V3 a, float at, V3 b, std::string note) {
-        Scenario c; c.id = id; c.title = title; c.kind = Chain; c.first = unit(a); c.next = unit(b); c.switch_at = at; c.seconds = 10; c.note = note; s.push_back(c);
+        Scenario c; c.id = id; c.title = "连续 · " + title; c.kind = Chain; c.first = unit(a); c.next = unit(b); c.switch_at = at; c.seconds = 10; c.note = note; add(c);
     };
-    chain("chain_up_right", "上 60° → 0.8 s → 右 40°", direction(60, 0), 0.8f, direction(30, 40), "机动中途换目标；指标从切换时刻起算");
-    chain("chain_right_dl", "右 90° → 2.2 s → 左下", direction(0, 90), 2.2f, direction(-30, 50), "到达附近时换目标");
-    chain("chain_down_up", "下 50° → 1.2 s → 上 20°", direction(-50, 0), 1.2f, direction(20, 10), "反向");
-    chain("chain_r_l", "右 30° → 1.0 s → 左 20°", direction(0, 30), 1.0f, direction(0, -20), "左右反向");
-    auto hold = [&](std::string id, std::string title, float seconds, std::function<V3(float)> aim, std::string note) {
-        Scenario c; c.id = id; c.title = title; c.kind = Hold; c.seconds = seconds; c.aim = aim; c.note = note; s.push_back(c);
+    chain("seq_01", "右 90° 途中转左下", direction(0, 90), 2.2f, direction(-30, 50), "到达附近时换目标，指标从切换时刻起算");
+    chain("seq_02", "右 30° 途中转左 20°", direction(0, 30), 1.0f, direction(0, -20), "左右反向，指标从切换时刻起算");
+    // Holds: small mouse work on a target already reached.
+    auto hold = [&](std::string id, std::string title, std::function<V3(float)> aim, std::string note) {
+        Scenario c; c.id = id; c.title = "保持 · " + title; c.kind = Hold; c.seconds = 10; c.aim = aim; c.note = note; add(c);
     };
-    hold("hold_level", "平飞保持", 10, [](float) { return direction(0, 0); }, "鼠标不动，只有角速度测量噪声：晃不晃");
-    hold("hold_nudge", "鼠标微调 1°/0.7 s", 10, [](float t) {
+    hold("hold_01", "平飞", [](float) { return direction(0, 0); }, "鼠标不动，只有角速度测量噪声：晃不晃");
+    hold("hold_02", "鼠标微调", [](float t) {
         float p = 0, y = 2;
         for (int k = 1; k <= int(t / 0.7f); ++k) {
             const unsigned h = static_cast<unsigned>(k) * 2654435761u;
@@ -384,75 +384,42 @@ std::vector<Scenario> scenarios(const std::string& track_dir, const std::string&
             p += std::sin(a); y += std::cos(a);
         }
         return direction(p, y);
-    }, "已对准后每 0.7 s 小幅移动鼠标（实测会引起 ±20° 摇翼）");
-    hold("hold_pan", "匀速拖动 4°/s", 10, [](float t) { return direction(0, 2 + 4 * t); }, "缓慢平移鼠标");
-    hold("hold_weave", "正弦拖动 ±5°", 10, [](float t) {
-        const float w = 2 * 3.14159265f * t / 2.5f; return direction(2 * std::sin(w + 1), 5 * std::sin(w));
-    }, "左右来回 2.5 s 一周");
-    auto pursuit = [&](std::string id, std::string title, V3 offset, float yaw, std::vector<Segment> program, std::string note, float seconds = 14, bool high_g = false) {
-        Scenario c; c.id = id; c.title = title; c.kind = Pursuit; c.enemy_offset = offset; c.enemy_yaw = yaw; c.program = program;
-        c.note = note; c.seconds = seconds; c.high_g = high_g; s.push_back(c);
+    }, "已对准后每 0.7 s 移动鼠标约 1°（实测会引起 ±20° 摇翼）");
+    hold("hold_03", "慢拖鼠标", [](float t) { return direction(0, 2 + 4 * t); }, "鼠标匀速平移 4°/s");
+    // Scripted enemies; the mouse on the enemy.
+    auto pursuit = [&](std::string id, std::string title, V3 offset, float yaw, std::vector<Segment> program, std::string note, float seconds = 14) {
+        Scenario c; c.id = id; c.title = "脚本追击 · " + title; c.kind = Pursuit; c.enemy_offset = offset; c.enemy_yaw = yaw; c.program = program;
+        c.note = note; c.seconds = seconds; add(c);
     };
-    pursuit("pur_turn", "追击 · 敌机持续右转", {700, 120, 0}, 0, {{1, 65, 0}, {99, 65, 16}}, "敌机 65° 坡度稳定盘旋（约 16°/s）");
-    pursuit("pur_break", "追击 · 敌机急转脱离", {600, -80, 20}, 0, {{1.5f, 0, 0}, {2.2f, -80, 0}, {99, -80, 30}}, "1.5 s 后左压 80° 急拉 30°/s");
-    pursuit("pur_break_hg", "追击 · 急转 + 玩家高G", {600, -80, 20}, 0, {{1.5f, 0, 0}, {2.2f, -80, 0}, {99, -80, 30}}, "同上，玩家同时按住油门和减速（高G转弯）", 14, true);
-    pursuit("pur_scissors", "追击 · 剪刀机动", {500, 0, 0}, 0,
+    pursuit("pur_01", "持续转弯", {700, 120, 0}, 0, {{1, 65, 0}, {99, 65, 16}}, "敌机 65° 坡度稳定盘旋（约 16°/s）");
+    pursuit("pur_02", "急转脱离", {600, -80, 20}, 0, {{1.5f, 0, 0}, {2.2f, -80, 0}, {99, -80, 30}}, "1.5 s 后左压 80° 急拉 30°/s");
+    pursuit("pur_03", "剪刀", {500, 0, 0}, 0,
             {{0.5f, 70, 0}, {3, 70, 20}, {3.5f, -70, 0}, {6, -70, 20}, {6.5f, 70, 0}, {9, 70, 20}, {9.5f, -70, 0}, {99, -70, 20}}, "每 3 s 反向一次");
-    pursuit("pur_weave", "追击 · 爬升蛇行", {600, 50, -30}, 10,
-            {{2, 35, 8}, {4, -35, 8}, {6, 35, 8}, {8, -35, 8}, {10, 35, 8}, {12, -35, 8}, {99, 35, 8}}, "±35° 坡度小幅拉起交替");
-    pursuit("pur_jink", "尾追 · 小幅抖动", {450, 0, 0}, 0,
+    pursuit("pur_04", "小幅抖动", {450, 0, 0}, 0,
             {{1.0f, 25, 4}, {2.2f, -25, 4}, {3.0f, 20, 3}, {4.5f, -30, 5}, {5.5f, 25, 4}, {7, -20, 3}, {8, 30, 5}, {9.5f, -25, 4}, {11, 20, 3}, {99, -25, 4}},
             "敌机在机头前方左右小幅抖动（实测会满杆左右滚）");
-    pursuit("pur_split_s", "追击 · 敌机半滚倒转", {600, 40, 0}, 0, {{1.0f, 0, 0}, {2.2f, 180, 0}, {8.5f, NAN, 28}, {99, 0, 0}}, "滚到倒飞后拉杆向下脱离");
-    pursuit("pur_headon", "对头 · 交错后反转", {1800, 150, 60}, 180, {{99, 0, 0}}, "对头交错，之后需要掉头 180°（方向选择）", 16);
-    // Recorded gun attacks: every controller starts where the player was and chases the
-    // enemy's recorded path, the mouse on the lead point.
-    WIN32_FIND_DATAA found;
-    const HANDLE h = FindFirstFileA((track_dir + "/*.txt").c_str(), &found);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            const std::string name = found.cFileName, path = track_dir + "/" + name;
-            auto tr = load_track(path);
-            if (!tr) continue;
-            std::ifstream in(path); std::string first; std::getline(in, first);
-            Scenario c; c.kind = Recorded; c.track = tr;
-            c.id = "rec_" + name.substr(0, name.size() - 4);
-            c.title = "实录 " + name.substr(0, name.size() - 4);
-            c.note = first.size() > 2 ? first.substr(2) : "";
-            c.seconds = std::floor(std::min(tr->enemy.back().t, tr->own.back()[0]) * 4) / 4;
-            s.push_back(c);
-            // The same attack with the player's recorded mouse as the aim: every controller
-            // gets the exact input the mod had in game, so the recorded column is directly
-            // comparable (a check of the model as much as of the controllers).
-            c.mouse_aim = true; c.id += "_mouse"; c.title += "（鼠标原样）";
-            c.note = "鼠标按录像原样移动（与游戏里飞控当时收到的输入相同）。" + c.note;
-            s.push_back(c);
-        } while (FindNextFileA(h, &found));
-        FindClose(h);
-    }
-    // Continuous battles: minutes of combat against every enemy that was there.
-    const HANDLE hb = FindFirstFileA((battle_dir + "/*.txt").c_str(), &found);
-    if (hb != INVALID_HANDLE_VALUE) {
-        do {
-            const std::string name = found.cFileName, path = battle_dir + "/" + name;
-            auto battle = load_battle(path);
-            if (!battle) continue;
-            std::ifstream in(path); std::string first; std::getline(in, first);
-            Scenario c; c.kind = Combat; c.battle = battle;
-            int elites = 0, bosses = 0; for (const Foe& f : battle->foes) { elites += f.elite; bosses += f.boss; }
-            c.id = "battle_" + name.substr(0, name.size() - 4);
-            c.title = std::string(bosses ? "头目战 " : elites ? "精英战 " : "连续战斗 ") + name.substr(0, name.size() - 4);
-            c.note = first.size() > 2 ? first.substr(2) : "";
-            c.seconds = std::floor(battle->own.back()[0] * 4) / 4;
-            s.push_back(c);
-            if (bosses) {
-                // and with the player's recorded mouse: the input the mod had in game
-                c.mouse_aim = true; c.id += "_mouse"; c.title += "（鼠标原样）";
-                c.note = "鼠标按录像原样移动（与游戏里飞控当时收到的输入相同）。" + c.note;
-                s.push_back(c);
-            }
-        } while (FindNextFileA(hb, &found));
-        FindClose(hb);
+    pursuit("pur_05", "对头后反转", {1800, 150, 60}, 180, {{99, 0, 0}}, "对头交错后掉头 180°（方向选择）", 16);
+    // Recorded scenes, from the list: "<kind> <file> <id> <aircraft> <mouse> <title>".
+    std::ifstream list(dir + "/scenes.txt");
+    for (std::string line; std::getline(list, line);) {
+        std::istringstream ss(line);
+        std::string kind, file, id, aircraft; int mouse = 0;
+        if (!(ss >> kind >> file >> id >> aircraft >> mouse) || kind[0] == '#') continue;
+        std::string title; std::getline(ss >> std::ws, title);
+        Scenario c; c.id = id; c.title = title; c.aircraft = aircraft; c.mouse_aim = mouse != 0;
+        if (kind == "track") {
+            c.kind = Recorded; c.track = load_track(dir + "/tracks/" + file);
+            if (!c.track) { std::fprintf(stderr, "scenes.txt: cannot read tracks/%s\n", file.c_str()); continue; }
+            c.seconds = std::floor(std::min(c.track->enemy.back().t, c.track->own.back()[0]) * 4) / 4;
+        } else if (kind == "battle") {
+            c.kind = Combat; c.battle = load_battle(dir + "/battles/" + file);
+            if (!c.battle) { std::fprintf(stderr, "scenes.txt: cannot read battles/%s\n", file.c_str()); continue; }
+            c.seconds = std::floor(c.battle->own.back()[0] * 4) / 4;
+        } else continue;
+        std::ifstream in(dir + (kind == "track" ? "/tracks/" : "/battles/") + file);
+        std::string head; std::getline(in, head);
+        c.note = (c.mouse_aim ? "鼠标按录像原样移动（与游戏里飞控当时收到的输入相同）。" : "") + (head.size() > 2 ? head.substr(2) : "");
+        add(c);
     }
     return s;
 }
@@ -537,7 +504,7 @@ struct Scorer {
         const float rev_rate = m.reversals / minutes, chatter_rate = m.chatter / minutes;
         // One number per scenario, lower is better. Rough weights: responsiveness first, then
         // clear overshoot, roll reversals and stick chatter; tracking error for the rest.
-        if (sc.kind == Capture || sc.kind == Chain)
+        if (sc.kind == Capture || sc.kind == Switch || sc.kind == Chain)
             m.cost = (m.to2 < 0 ? span : m.to2) + 0.5f * (m.settle < 0 ? span : m.settle) + 2 * std::max(0.0f, m.overshoot - 1.5f) +
                      0.5f * std::max(0, m.reversals - 1) + 0.2f * m.chatter + (started_inverted ? 0 : 0.5f * m.inverted);
         else if (sc.kind == Hold)
@@ -565,12 +532,11 @@ struct Scorer {
 // 0.1-0.2 deg/s rms in level flight (logged). Hosts timing frames with the wall clock
 // (upstream and pw5 builds, and ours before) divide by a time that jitters 9-18 ms around
 // the ~12.5 ms frame, a multiplicative error of roughly 20%.
-struct Condition { const char* id; const char* title; const Plant* plant; float white; float jitter; };
+struct Condition { const char* id; const char* title; const Plant* plant; float white; float jitter; const char* aircraft; };
 const Condition conditions[] = {
-    {"measured", "差机体（实测）· 游戏时钟", &measured, 0.15f, 0.0f},
-    {"su35", "Su-35 高机动（实测）· 游戏时钟", &su35, 0.15f, 0.0f},
-    {"wallclock", "差机体 · 墙钟计时（角速度噪声大）", &measured, 0.15f, 0.2f},
-    {"sluggish", "迟钝机体（延迟 ×1.3，权限 ×0.75）· 游戏时钟", &sluggish, 0.15f, 0.0f},
+    {"measured", "差机体（实测）", &measured, 0.15f, 0.0f, "weak"},
+    {"su35", "Su-35 高机动（实测）", &su35, 0.15f, 0.0f, "su35"},
+    {"sluggish", "迟钝机体（差机体延迟 ×1.3、权限 ×0.75）", &sluggish, 0.15f, 0.0f, "weak"},
 };
 constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
 
@@ -940,7 +906,7 @@ int main() {
     entries.push_back({"upstream_coord", "主仓库 0.2.35 协调制导", "FletcherMiya 052cd6a controller_mode=1", [] { return std::make_unique<UpstreamCoordinated>(); }});
     entries.push_back({"pw5", "xsd467 pw5", "xsd467 821f442 pw5-flight-control", [] { return std::make_unique<Pw5>(); }});
 
-    const auto list = scenarios(out_dir + "/tracks", out_dir + "/battles");
+    const auto list = scenarios(out_dir);
     if (std::any_of(list.begin(), list.end(), [](const Scenario& s) { return s.track || s.battle; }))
         entries.push_back({"recorded", "游戏实录（当时的飞控）", "recordings: what the mod in game actually flew", nullptr});
     std::string index = "window.COMPARE_INDEX={\"controllers\":[";
@@ -970,6 +936,7 @@ int main() {
         for (size_t si = 0; si < list.size(); ++si) {
             const Scenario& sc = list[si];
             if (!only.empty() && sc.id.find(only) == std::string::npos) continue;
+            if (!sc.aircraft.empty() && sc.aircraft != plant.aircraft) continue;   // recorded on another aircraft
             data += std::string(first_scenario ? "" : ",") + "\"" + sc.id + "\":{";
             index += std::string(first_scenario ? "" : ",") + "\"" + sc.id + "\":{";
             first_scenario = false;
@@ -1011,7 +978,7 @@ int main() {
                 }
                 data += "]";
             }
-            card += "\n";
+            card += "  " + sc.title + "\n";
             if (sc.battle) {
                 // every enemy's path at 2 Hz and the kill times, for drawing the battle
                 data += ",\"_kills\":" + kills_json + "},\"_foes\":[";
