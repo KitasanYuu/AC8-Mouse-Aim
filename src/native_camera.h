@@ -36,7 +36,7 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd) {
 void __fastcall update_native_camera(void* manager,float dt) {
     original_camera_update(manager,dt);
     PerfSpan timing(perf_camera);
-    if(native_camera_fault || !running.load() || !active.load() || !enabled.load() || gaze_active.load()) return;
+    if(native_camera_fault || !running.load() || !active.load() || !enabled.load() || yielding()) return;
     CameraCommand cmd;
     {
         std::unique_lock<std::mutex> lock(camera_command_mutex,std::try_to_lock);
@@ -63,6 +63,11 @@ void __fastcall update_native_camera(void* manager,float dt) {
         log_line("native camera disabled: invalid live camera/aircraft data");
         return;
     }
+    applied_camera_pitch.store(static_cast<float>(cmd.p));
+    applied_camera_yaw.store(static_cast<float>(cmd.y));
+    applied_camera_roll.store(static_cast<float>(cmd.r));
+    applied_camera_tick.store(GetTickCount64());
+    if(overlay_frame_event) SetEvent(overlay_frame_event);
     static bool reported=false;
     if(!reported) { reported=true; log_line("native camera POST-UPDATE ACTIVE: live aircraft position, final POV cache"); }
 }

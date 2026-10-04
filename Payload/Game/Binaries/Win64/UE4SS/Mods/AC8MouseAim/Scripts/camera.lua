@@ -20,7 +20,7 @@ function M.seed(rotation,component)
     up={X=neutral_up.X*math.cos(r)+right.X*math.sin(r),
         Y=neutral_up.Y*math.cos(r)+right.Y*math.sin(r),Z=neutral_up.Z*math.cos(r)+right.Z*math.sin(r)}
 end
-function M.update(pawn,controller,rotation,component,on,p,y,dt)
+function M.update(pawn,controller,rotation,component,on,p,y,dt,follow)
     local address=pawn:GetAddress()
     if owner~=address then M.restore(); owner=address end
     -- Same-frame values returned by native bridge; no disk snapshots, polling
@@ -32,7 +32,7 @@ function M.update(pawn,controller,rotation,component,on,p,y,dt)
         forward=direction(assert(component(rotation,'Pitch')),assert(component(rotation,'Yaw')))
         up={X=0,Y=0,Z=1}
     end
-    forward,up=mathrig.step(forward,up,direction(assert(tonumber(p)),assert(tonumber(y))),math.max(0,math.min(0.1,dt)))
+    forward,up=mathrig.step(forward,up,direction(assert(tonumber(p)),assert(tonumber(y))),math.max(0,math.min(0.1,dt)),tonumber(follow))
     local pitch=math.deg(math.asin(math.max(-1,math.min(1,forward.Z))))
     local yaw=math.deg(math.atan(forward.Y,forward.X))
     local right=cross(up,forward)
