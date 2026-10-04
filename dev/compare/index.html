@@ -225,7 +225,8 @@ function loadCond(cond, then) {
 
 // ---------- canvas ----------
 function setup(canvas) {
-  const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  // pixel ratio capped at 1.5: seven views and eight charts redrawn while playing
+  const r = canvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
@@ -336,8 +337,8 @@ function drawCams() {
     // grid 500 m below, for a sense of motion
     const G = 400, z0 = A[2] - 500, gx = Math.round(A[0] / G) * G, gy = Math.round(A[1] / G) * G, span = 6;
     for (let k = -span; k <= span; k++) {
-      lineIn(ctx, P, [gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0], '#26323a', 1, null, .7);
-      lineIn(ctx, P, [gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0], '#26323a', 1, null, .7);
+      lineIn(ctx, P, [gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0], '#26323a', 1, null, .7, 6);
+      lineIn(ctx, P, [gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0], '#26323a', 1, null, .7, 6);
     }
     const color = colorOf(c.id);
     // battle: every enemy still in the air (for this controller), the one attacked marked
@@ -443,7 +444,9 @@ function drawOverlay() {
     ctx.strokeStyle = color; ctx.globalAlpha = .25; ctx.beginPath(); let pen = false;
     for (const fr of arr) { const q = P(posOf(fr)); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
     ctx.stroke(); ctx.globalAlpha = 1;
-    ribbon(ctx, P, arr, 0, i, half, color, .18, 2);
+    // the band for the last 20 s (the whole path is the faint line above)
+    let i0 = i; while (i0 > 0 && arr[i0 - 1][F.t] >= arr[i][F.t] - 20) i0--;
+    ribbon(ctx, P, arr, i0, i, half, color, .18, 2);
     const fr = arr[i];
     drawJet(ctx, P, posOf(fr), basis(fr[F.pitch], fr[F.yaw], fr[F.roll]), color, jet);
     if (!withEnemy(sc.kind)) lineIn(ctx, P, posOf(fr), add(posOf(fr), mul(enu([fr[F.ax], fr[F.ay], fr[F.az]]), extent.size * .35)), color, 1, [5, 5], .7);
@@ -473,10 +476,28 @@ function buildCharts() {
     c.canvas.addEventListener('pointermove', e => { if (e.buttons) seek(e); });
   }
 }
+// The curves only change with the scenario, condition, shown controllers or size: they are
+// drawn once into an offscreen canvas and each frame copies it and adds the time cursor.
 function drawCharts() {
-  const data = runs(), sc = scenario(), mono = getComputedStyle(document.body).getPropertyValue('--mono');
+  const data = runs(), sc = scenario();
   for (const c of CHARTS) {
     const { ctx, w, h } = setup(c.canvas); if (!data) continue;
+    const key = `${st.cond}|${st.scen}|${visible().map(v => v.id).join(',')}|${c.canvas.width}x${c.canvas.height}`;
+    if (c.key !== key) {
+      c.key = key;
+      c.cache = c.cache || document.createElement('canvas');
+      c.cache.width = c.canvas.width; c.cache.height = c.canvas.height;
+      const cc = c.cache.getContext('2d'); cc.setTransform(c.canvas.width / w, 0, 0, c.canvas.height / h, 0, 0);
+      drawChartCurves(c, cc, w, h, data, sc);
+    }
+    ctx.drawImage(c.cache, 0, 0, w, h);
+    const X = t => c.L + (w - c.L - 4) * t / sc.seconds;
+    ctx.strokeStyle = '#dbe4e9'; ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(X(st.t), 2); ctx.lineTo(X(st.t), h - 10); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+}
+function drawChartCurves(c, ctx, w, h, data, sc) {
+  const mono = getComputedStyle(document.body).getPropertyValue('--mono');
+  {
     const tr = c.sqrt ? v => Math.sqrt(Math.max(0, v)) : v => v;
     let lo = c.lo, hi = c.hi;
     if (lo === undefined) {
@@ -487,6 +508,7 @@ function drawCharts() {
       const pad = Math.max((hi - lo) * .08, .5); if (!c.sqrt) lo -= pad; hi += pad;
     }
     const L = 34, T = sc.seconds, X = t => L + (w - L - 4) * t / T, Y = v => 4 + (h - 14) * (1 - (tr(v) - tr(lo)) / (tr(hi) - tr(lo)));
+    c.L = L;
     ctx.font = `10px ${mono}`; ctx.fillStyle = '#84959f'; ctx.strokeStyle = '#1d2830';
     const ticks = c.sqrt ? [0, 1, 5, 20, 60, 150].filter(v => v <= hi) : [lo, (lo + hi) / 2, hi];
     for (const v of ticks) { ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - 4, Y(v)); ctx.stroke(); ctx.fillText(Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1), 2, Y(v) + 3); }
@@ -499,7 +521,6 @@ function drawCharts() {
       arr.forEach((fr, k) => { const x = X(fr[F.t]), y = Y(Math.max(lo, Math.min(hi, c.get(fr)))); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
       ctx.stroke(); ctx.lineWidth = 1;
     }
-    ctx.strokeStyle = '#dbe4e9'; ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(X(st.t), 2); ctx.lineTo(X(st.t), h - 10); ctx.stroke(); ctx.globalAlpha = 1;
   }
 }
 
@@ -544,8 +565,12 @@ function fmt(key, v) {
   if (['reversals', 'chatter', 'alt_change', 'speed_loss', 'kills', 'elite_kills', 'missiles', 'gun_kills'].includes(key)) return v.toFixed(0);
   return v.toFixed(2);
 }
+let cardKey = null;
 function drawCard() {
   const sc = scenario(), m = IDX.metrics[st.cond][st.scen], list = visible();
+  const key = `${st.cond}|${st.scen}|${list.map(c => c.id).join(',')}`;
+  if (key === cardKey) return;
+  cardKey = key;
   const rows = METRICS.filter(r => r[4] === 'all' || r[4].includes(sc.kind));
   let html = `<table><thead><tr><th>指标</th>${list.map(c => `<th style="color:${colorOf(c.id)}">${c.label}</th>`).join('')}</tr></thead><tbody>`;
   for (const [key, label, unit, better] of rows) {
