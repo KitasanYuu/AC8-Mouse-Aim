@@ -13,7 +13,7 @@ Controls
 
 The native controller refuses to activate unless the game was started with the
 offline Steam launch option, which sets EOS_USE_ANTICHEATCLIENTNULL=1. Never use
-this installation for multiplayer: run MouseFlight-Mode.cmd in the game folder to
+this installation for multiplayer: run AC8MouseFlight.cmd from the repository to
 switch to original mode, and clear the launch option in Steam first.
 
 First flight

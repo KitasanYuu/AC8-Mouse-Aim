@@ -2,9 +2,10 @@ $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $commit = 'e3ba1016562d6c0868c410d0a71e88bfcdbf691b'
 $repository = 'https://github.com/UE4SS-RE/RE-UE4SS.git'
-$source = Join-Path $PSScriptRoot 'deps\ue4ss-source'
+$repo = Split-Path -Parent $PSScriptRoot
+$source = Join-Path $repo 'deps\ue4ss-source'
 $gitArgs = @('-c', "safe.directory=$($source.Replace('\','/'))", '-C', $source)
-$runtime = Join-Path $PSScriptRoot 'Payload\Game\Binaries\Win64\UE4SS\UE4SS.dll'
+$runtime = Join-Path $repo 'Payload\Game\Binaries\Win64\UE4SS\UE4SS.dll'
 $runtimeHash = '680A026890ABB4D0DF2211251F8DEFC1681A584275F1521DCC0FE30AF480006F'
 if (-not (Test-Path -LiteralPath $runtime -PathType Leaf) -or
     (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash -ne $runtimeHash) {

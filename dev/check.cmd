@@ -1,6 +1,7 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+rem Development script: works from the repository root, one level up.
+cd /d "%~dp0.."
 call "%~dp0msvc-env.cmd"
 if errorlevel 1 exit /b 1
 if not exist build mkdir build

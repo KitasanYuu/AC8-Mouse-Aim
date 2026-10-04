@@ -9,8 +9,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
-$cache = Join-Path $PSScriptRoot '.dev-game-path'
-$backupRoot = Join-Path $PSScriptRoot 'build\dev-backups'
+$repo = Split-Path -Parent $PSScriptRoot
+$cache = Join-Path $repo '.dev-game-path'
+$backupRoot = Join-Path $repo 'build\dev-backups'
 $modRelative = 'Game\Binaries\Win64\UE4SS\Mods\AC8MouseAim'
 $runtimeHash = '680A026890ABB4D0DF2211251F8DEFC1681A584275F1521DCC0FE30AF480006F'
 
@@ -65,7 +66,7 @@ if ($Live) {
         & (Join-Path $PSScriptRoot 'build.cmd')
         if ($LASTEXITCODE -ne 0) { throw 'Build failed. No game files were changed.' }
     }
-    $source = Join-Path $PSScriptRoot 'build\ac8_flight_logic.dll'
+    $source = Join-Path $repo 'build\ac8_flight_logic.dll'
     $destination = Join-Path $mod 'Scripts\ac8_flight_logic.dll'
     Assert-GamePath $destination
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing build file: $source" }
@@ -91,7 +92,7 @@ if (-not (Test-Path -LiteralPath $mod -PathType Container)) {
         & (Join-Path $PSScriptRoot 'build.cmd')
         if ($LASTEXITCODE -ne 0) { throw 'Build failed. No game files were changed.' }
     }
-    & (Join-Path $PSScriptRoot 'Install.ps1') -GamePath $game -NoPause
+    & (Join-Path $repo 'tools\AC8MouseFlight.ps1') -Action Install -GamePath $game -NoPause
     Set-Content -LiteralPath $cache -Value $game -Encoding UTF8
     Write-Host 'Initial installation complete. Future Dev-Deploy runs will sync only changed files.'
     return
@@ -158,7 +159,7 @@ if ($IncludeConfig) { $files += 'config.ini' }
 $changes = @()
 foreach ($file in $files) {
     $relative = Join-Path $modRelative $file
-    $source = Join-Path (Join-Path $PSScriptRoot 'Payload') $relative
+    $source = Join-Path (Join-Path $repo 'Payload') $relative
     $destination = Join-Path $game $relative
     Assert-GamePath $destination
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing build file: $source" }

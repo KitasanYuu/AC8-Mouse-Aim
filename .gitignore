@@ -1,3 +1,4 @@
 build/
 deps/ue4ss-source/
 .dev-game-path
+backups/

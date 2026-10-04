@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
-cd /d "%~dp0"
+rem Development script: works from the repository root, one level up.
+cd /d "%~dp0.."
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-Dependencies.ps1"
 if errorlevel 1 exit /b 1
 call "%~dp0msvc-env.cmd"

@@ -10,7 +10,7 @@
 
 - 当前版本：**0.2.30**，性能专项第一、二阶段；最新安装包为 **共存安装器 r1**，游戏内代码未变。
 - 目标环境：Windows x64，ACE COMBAT 8 Steam Build **25201480**。
-- 依赖发布包内配套的 RE-UE4SS；原生模块会校验加载器版本及游戏关键签名。
+- 依赖仓库内随附的 RE-UE4SS；原生模块会校验加载器版本及游戏关键签名。
 - 已完成构建与有限的协议、数学和状态模拟检查；新版性能收益及不同硬件兼容性仍需实机反馈。
 
 本项目为非官方模组，与游戏开发商、发行商及 War Thunder 无关联。
@@ -31,21 +31,38 @@
 
 ## 安装
 
-1. 完全退出游戏。从本仓库 Releases 下载完整发布包并解压（不要只复制 DLL 或单个脚本）。
-2. 双击解压目录中的 `Install.cmd`。安装器会通过 Steam 的安装记录自动找到游戏，找不到时才会让你手动选择游戏根目录（包含 `Game` 和 `EasyAntiCheat` 的目录）。
+所有操作都通过仓库根目录的 **`AC8MouseFlight.cmd`** 完成。它会通过 Steam 的安装记录自动找到游戏（找不到时才让你手动选择），打开后是一个菜单：
+
+```text
+==== AC8 MouseFlight ====
+游戏目录：...\steamapps\common\ACE COMBAT 8
+状态：已安装，离线 MOD 模式
+Steam 启动参数：已设置
+
+  1  更新 / 修复
+  2  切换到联机原版模式
+  3  复制 Steam 启动参数
+  4  卸载
+  0  退出
+```
+
+1. 完全退出游戏，下载（或 `git clone`）本仓库。
+2. 双击 `AC8MouseFlight.cmd`，选择 **1 安装**。
 3. 设置 Steam 启动参数（只需第一次）。安装结束时如果检测到还没设置，会自动把参数复制到剪贴板：Steam 库 → 右键 ACE COMBAT 8 → 属性 → 通用 → 启动选项，粘贴：
 
    ```text
    cmd /d /c "set EOS_USE_ANTICHEATCLIENTNULL=1&& %command% -anticheat_settings=AC8MouseAim_Offline.json"
    ```
 
-   若原来有其他启动选项，请先备份。安装器只读取 Steam 设置来判断是否已填写，不会修改它。
+   若原来有其他启动选项，请先备份。工具只读取 Steam 设置来判断是否已填写，不会修改它。
 
 4. 从 Steam 启动游戏，选择“专家”飞行操作，进入单人任务。建议使用无边框窗口模式：方向指示使用桌面透明覆盖层，独占全屏下可能不可见。
 
-**升级**：直接用新版本的发布包再运行一次 `Install.cmd`。你在 `config.ini` 的 `[control]` 中改过的设置（如灵敏度、镜头跟随速度）会自动保留；输入槽位和轴符号等版本适配项按新版本重置。安装前的旧文件备份在游戏根目录的 `AC8MouseAim-Backups`。
+**更新**：拉取最新代码后再运行 `AC8MouseFlight.cmd`，选择 **1 更新**。你在 `config.ini` 的 `[control]` 中改过的设置（如灵敏度、镜头跟随速度）会自动保留；输入槽位和轴符号等版本适配项按新版本重置。
 
-安装器会校验复制后的关键文件；校验失败时应检查安装，而不是关闭保护。已有其他 MOD 或 UE4SS 时的处理见下节。
+**游戏目录里不放多余的东西**：游戏目录中只有 MOD 本身（`Game/Binaries/Win64` 下的加载器、UE4SS 框架和 `UE4SS/Mods/AC8MouseAim`）以及 `EasyAntiCheat/AC8MouseAim_Offline.json`。工具、脚本和备份都留在仓库目录，备份在仓库的 `backups/`。旧版本放在游戏根目录的脚本和备份文件夹，会在安装或更新时自动移到这里。
+
+工具会校验复制后的关键文件；校验失败时应检查安装，而不是关闭保护。已有其他 MOD 或 UE4SS 时的处理见下节。
 
 ### 与其他模组共存
 
@@ -59,7 +76,7 @@
 
 兼容性按运行库校验值判断，而非仅比较版本名称；目前只自动支持 `Game/Binaries/Win64/UE4SS` 布局下已验证的运行库。复用模式不会修复、替换或重新启用已有加载器，原有框架必须能够正常工作。
 
-安装前备份保存在游戏根目录的 `AC8MouseAim-Backups`。其他模组的启用状态及顺序保留，本模组条目合并到列表末尾；`mods.json` 的格式化可能变化，但其他字段和值保留。
+安装前备份保存在仓库的 `backups/`。其他模组的启用状态及顺序保留，本模组条目合并到列表末尾；`mods.json` 的格式化可能变化，但其他字段和值保留。
 
 这解决的是安装层面的共存，**不保证功能层面无冲突**。同时修改玩家输入、相机或相关钩子的模组仍可能互相干扰。
 
@@ -155,7 +172,7 @@ Game/Binaries/Win64/UE4SS/UE4SS.log
 
 - **游戏更新后失效**：本项目包含版本相关的输入与相机适配。请先禁用模组，等待对应版本支持。
 - **看不到方向指示**：检查 F7 状态，并尝试无边框窗口模式。剧情注视或暂停时隐藏标记是预期行为。
-- **启动失败、黑屏或崩溃**：退出游戏，先禁用加载器恢复原版；反馈游戏版本和日志，不要混用不同发布包的文件。
+- **启动失败、黑屏或崩溃**：退出游戏，先用 `AC8MouseFlight.cmd` 切换到联机原版模式；反馈游戏版本和日志，不要混用不同版本的文件。
 - **部分演出未正确让出**：当前状态检测并非覆盖所有演出。请说明任务和触发位置，再按需采集 F6 记录。
 - **其他模组冲突**：尤其是输入、相机、覆盖层和共用 UE4SS 的模组，不保证兼容。
 - **新版性能待验证**：自动检查不等于实机兼容性或性能验收，欢迎提供可复现反馈。
@@ -164,7 +181,7 @@ Game/Binaries/Win64/UE4SS/UE4SS.log
 
 ### 切换到联机（原版）模式
 
-退出游戏，双击游戏根目录中的 `MouseFlight-Mode.cmd`，它会显示当前模式并在「离线 MOD」和「联机原版」之间切换：
+退出游戏，运行 `AC8MouseFlight.cmd`，选择 **2**，在「离线 MOD」和「联机原版」之间切换：
 
 - 切到联机原版：停用 `dwmapi.dll` 加载器，并提醒你在 Steam 启动选项中清空本 MOD 的离线参数。这会停用共用该加载器的所有 MOD；其他类型的加载器不在处理范围内。
 - 切回离线 MOD：重新启用加载器；如果 Steam 启动参数还没填，会自动复制到剪贴板。
@@ -173,61 +190,59 @@ Game/Binaries/Win64/UE4SS/UE4SS.log
 
 ### 回退版本
 
-退出游戏后重新安装上一版本的完整发布包。建议保留 0.2.29 安装包，作为性能专项版的回退选择。
+退出游戏，把仓库切回需要的版本（例如 `git checkout <提交或标签>`），再运行 `AC8MouseFlight.cmd` 选择 **1**。
 
 ### 卸载
 
-退出游戏，双击游戏根目录中的 `Uninstall-AC8-Mouse-Aim.cmd`，然后在 Steam 启动选项中清空本项目的离线参数（卸载程序检测到仍有该参数时会提醒）。
+退出游戏，运行 `AC8MouseFlight.cmd`，选择 **4 卸载**，然后在 Steam 启动选项中清空本项目的离线参数（检测到仍有该参数时会提醒）。
 
-共存安装器附带的卸载脚本只移走本模组及其辅助文件、移除本模组启用项，保留共用加载器、UE4SS、设置和其他模组。移走的文件可从 `AC8MouseAim-Backups` 恢复。
+卸载只移走本 MOD 并移除它的启用项，保留其他 MOD。如果没有发现其他 MOD，会询问是否同时移除 UE4SS 框架和加载器，让游戏目录恢复原样。移走的文件都在仓库的 `backups/` 中，可以恢复。
 
-**卸载本模组不等于禁用所有模组。** 其他模组仍可能加载，进入多人模式前需要单独确认。旧版安装包中的卸载脚本没有这一共存保护，请使用新版脚本。
+**卸载本模组不等于禁用所有模组。** 其他模组仍可能加载，进入多人模式前需要单独确认。
 
 ## 开发说明
 
-主要组成：
+目录结构：
 
 ```text
+AC8MouseFlight.cmd    用户入口：安装/更新、模式切换、启动参数、卸载
+tools/                AC8MouseFlight.cmd 的实现
+Payload/              装进游戏目录的文件（Lua 脚本、配置、DLL、UE4SS）
 src/                  原生输入处理、飞控、相机修正、指示层及诊断
+tests/                飞控数学检查、闭环仿真、Lua 相机数学检查
 docs/maneuver-spec.md 机动范式规范（飞控行为以此为准）
-Payload/              Lua 脚本、配置和安装包内容
-Setup-Dependencies.ps1 获取匹配发布包的 UE4SS 源码
-build.cmd             构建 Windows x64 原生 DLL
-check.cmd             飞控与自由观察数学检查
-check_lua.cmd         Lua 语法及相机数学检查
+dev/                  开发脚本：构建、检查、调试同步
 ```
 
-构建需要 Visual Studio 2022 的 MSVC x64 C++ 工具链、Windows SDK、Git 和网络连接。`build.cmd` 会先运行 `Setup-Dependencies.ps1`，将 RE-UE4SS 固定在发布包使用的 `e3ba1016562d6c0868c410d0a71e88bfcdbf691b` 提交。源码保存在忽略提交的 `deps/ue4ss-source/`，后续构建可离线复用。构建不需要编译或替换发布包内的 UE4SS.dll。
-
-在项目目录运行：
+构建需要 Visual Studio 2022 的 MSVC x64 C++ 工具链、Windows SDK、Git 和网络连接。`dev\build.cmd` 会先运行 `dev\Setup-Dependencies.ps1`，将 RE-UE4SS 固定在 `e3ba1016562d6c0868c410d0a71e88bfcdbf691b` 提交。源码保存在忽略提交的 `deps/ue4ss-source/`，后续构建可离线复用。构建不需要编译或替换随附的 UE4SS.dll。
 
 ```bat
-build.cmd
-check.cmd
-check_lua.cmd
+dev\build.cmd
+dev\check.cmd
+dev\check_lua.cmd
 ```
 
-构建产物为 `build/ac8_mouse_aim_010.dll`，并复制到 `Payload/Game/Binaries/Win64/UE4SS/Mods/AC8MouseAim/Scripts/`。DLL 文件名保留历史命名，不代表发布版本。`check.cmd` 运行 C++ 飞控数学检查；`check_lua.cmd` 用固定的 LuaRaw 源码编译 Lua 工具，检查全部 Lua 脚本的语法与相机数学。上述检查不能替代游戏内验证。
+构建产物为 `build/ac8_mouse_aim_010.dll`，并复制到 `Payload/Game/Binaries/Win64/UE4SS/Mods/AC8MouseAim/Scripts/`。DLL 文件名保留历史命名，不代表版本。`check.cmd` 运行 C++ 飞控数学检查和闭环仿真；`check_lua.cmd` 用固定的 LuaRaw 源码编译 Lua 工具，检查全部 Lua 脚本的语法与相机数学。上述检查不能替代游戏内验证。
 
 ### 开发调试同步
 
 退出游戏后，在项目目录运行一次：
 
 ```bat
-Dev-Deploy.cmd -GamePath "D:\SteamLibrary\steamapps\common\ACE COMBAT 8"
+dev\Dev-Deploy.cmd -GamePath "D:\SteamLibrary\steamapps\common\ACE COMBAT 8"
 ```
 
-若目标目录尚未安装本模组，脚本会在构建后完成首次安装；如果已有其他来源的 UE4SS 或加载器，安装保护仍会拒绝覆盖。首次安装后，仍需手动设置上文的 Steam 离线启动参数。后续直接运行 `Dev-Deploy.cmd`：它会记住本机游戏目录，先构建 DLL，再只同步内容发生变化的 DLL 和 Lua 脚本。安装后的 `config.ini` 默认保留；需要同步仓库配置时显式加 `-IncludeConfig`。只修改 Lua 时可用 `-NoBuild` 跳过 C++ 构建；`-Preview` 根据当前 Payload 列出将更新的文件，不进行构建。
+若目标目录尚未安装本模组，脚本会在构建后完成首次安装；如果已有其他来源的 UE4SS 或加载器，安装保护仍会拒绝覆盖。首次安装后，仍需手动设置上文的 Steam 离线启动参数。后续直接运行 `dev\Dev-Deploy.cmd`：它会记住本机游戏目录，先构建 DLL，再只同步内容发生变化的 DLL 和 Lua 脚本。安装后的 `config.ini` 默认保留；需要同步仓库配置时显式加 `-IncludeConfig`。只修改 Lua 时可用 `-NoBuild` 跳过 C++ 构建；`-Preview` 根据当前 Payload 列出将更新的文件，不进行构建。
 
 调飞控时不必重启游戏：
 
 - **调参数**：修改已安装 `config.ini` 的 `[tuning]` 段并保存，运行中的游戏约 0.5 秒内自动重新读取。
-- **改飞控逻辑**（`src/maneuver.h`、`src/flight_logic.h`）：游戏运行中执行 `Dev-Deploy.cmd -Live`。它构建并替换开发用的 `ac8_flight_logic.dll`，游戏约 1 秒内热加载，日志记录 `flight logic: hot-loaded generation N`。接口不兼容时拒绝加载并保留当前逻辑。修改钩子、桥接、Lua 或 `LogicInput`/`LogicOutput` 结构仍需退出游戏后正常同步。
+- **改飞控逻辑**（`src/maneuver.h`、`src/flight_logic.h`）：游戏运行中执行 `dev\Dev-Deploy.cmd -Live`。它构建并替换开发用的 `ac8_flight_logic.dll`，游戏约 1 秒内热加载，日志记录 `flight logic: hot-loaded generation N`。接口不兼容时拒绝加载并保留当前逻辑。修改钩子、桥接、Lua 或 `LogicInput`/`LogicOutput` 结构仍需退出游戏后正常同步。
 - **逐帧记录**：按 F4 开关，日志中的 `TRACE` 行包含误差、角速度、线性杆量、实际写入值和键盘接管状态。
 
-`ac8_flight_logic.dll` 仅用于开发，不进入发布包；发布版使用主 DLL 内置的同一份逻辑代码。
+`ac8_flight_logic.dll` 仅用于开发，不在 Payload 中；正式安装使用主 DLL 内置的同一份逻辑代码。
 
-每次同步前的文件保存在忽略提交的 `build/dev-backups/`，可运行 `Dev-Deploy.cmd -Rollback` 恢复最近一次同步前的版本。调试同步要求游戏已退出，并校验已安装的 UE4SS 和加载器；它不重装框架，也不修改 Steam 启动选项。切换多人前仍按上面的停用步骤操作。
+每次同步前的文件保存在忽略提交的 `build/dev-backups/`，可运行 `dev\Dev-Deploy.cmd -Rollback` 恢复最近一次同步前的版本。调试同步要求游戏已退出，并校验已安装的 UE4SS 和加载器；它不重装框架，也不修改 Steam 启动选项。切换多人前仍按上面的模式切换步骤操作。
 
 0.2.30 通过配套 UE4SS 导出的 LuaMadeSimple 接口交换数值，不直接操作 Lua 虚拟机内部结构。原生相机仍在游戏相机更新后进行修正，保留版本、对象和数据时效检查。
 
@@ -238,6 +253,6 @@ Dev-Deploy.cmd -GamePath "D:\SteamLibrary\steamapps\common\ACE COMBAT 8"
 - [RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS)：模组加载、Lua 运行环境和接口，MIT 许可。
 - [MinHook](https://github.com/TsudaKageyu/minhook)：原生函数钩子，BSD 2-Clause 许可。
 
-项目原创代码的许可声明见 `LICENSE.txt`。参考代码和第三方组件保留各自许可证，请同时保留发布包中的许可文件及 `THIRD_PARTY_NOTICES.txt`。
+项目原创代码的许可声明见 `LICENSE.txt`。参考代码和第三方组件保留各自许可证，请同时保留仓库中的许可文件及 `THIRD_PARTY_NOTICES.txt`。
 
 本项目不包含游戏资产或游戏可执行文件。
