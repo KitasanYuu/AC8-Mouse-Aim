@@ -457,7 +457,9 @@ function drawView() {
       killedBy.get(i).add(c.id);
     });
   }
-  const downForAll = i => killedBy.has(i) && killedBy.get(i).size === list.length;
+  // (multi-aircraft fights only: elsewhere nothing is brought down, or there is one enemy)
+  const marks = sc.kind === 'multi';
+  const downForAll = i => marks && killedBy.has(i) && killedBy.get(i).size === list.length;
   const foesNow = foes.map((f, i) => ({ f, i, at: foeAt(f, st.t) })).filter(o => o.at && !downForAll(o.i));
   // the scripted pursuit enemy travels in every run alike
   const scripted = sc.kind === 'pursuit' && now[0] ? enu([now[0].fr[F.ex], now[0].fr[F.ey], now[0].fr[F.ez]]) : null;
@@ -488,7 +490,8 @@ function drawView() {
     const anchor = mul(anchorPts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / anchorPts.length);
     const wantOffset = sub(wantCentre, anchor);
     const key = `${st.scen}|${st.cond}|${st.cam}`, wall = performance.now();
-    if (!camEase || camEase.key !== key || Math.abs(st.t - camEase.t) > 2) camEase = { key, offset: wantOffset, size: wantSize };
+    // eased only in multi-aircraft fights, where enemies come and go in numbers
+    if (sc.kind !== 'multi' || !camEase || camEase.key !== key || Math.abs(st.t - camEase.t) > 2) camEase = { key, offset: wantOffset, size: wantSize };
     else {
       const k = 1 - Math.exp(-Math.min(0.2, (wall - camEase.wall) / 1000) / 0.5);
       camEase.offset = add(camEase.offset, mul(sub(wantOffset, camEase.offset), k));
@@ -503,7 +506,7 @@ function drawView() {
       look = [0, Math.atan2(f[0], f[1]) / rad];
       // how much they agree (1 all one way, 0 scattered): scattered, the mean heading swings
       // about at random, and the camera follows it only that much
-      lookWeight = Math.hypot(f[0], f[1]) / flying.length;
+      if (sc.kind === 'multi') lookWeight = Math.hypot(f[0], f[1]) / flying.length;
     }
   }
   const dist = size * 1.4 * orbit.zoom;
@@ -572,7 +575,7 @@ function drawView() {
   // (the controller's 1st, 2nd... kill). Several controllers' marks on one spot fan out.
   const slot = id => Math.max(0, list.findIndex(c => c.id === id));
   ctx.font = `bold 11px ${MONO}`; ctx.lineWidth = 2;
-  for (const k of killsNow) {
+  for (const k of marks ? killsNow : []) {
     const at = foeAt(foes[k.i], Math.min(k.t, foes[k.i][3]));
     const q = at && P(at.pos); if (!q) continue;
     const color = colorOf(k.c.id), r = 5, j = slot(k.c.id), dx = (j - (list.length - 1) / 2) * 5;
@@ -584,7 +587,7 @@ function drawView() {
   ctx.globalAlpha = 1;
   // Targets: each controller's present target in a square of its colour (nested when several
   // share one), numbered with the kill it would be (its kills so far + 1)
-  {
+  if (marks) {
     const shared = new Map();
     for (const o of now) {
       if (o.gone || !(o.fr.length > F.tgt) || o.fr[F.tgt] < 0) continue;
