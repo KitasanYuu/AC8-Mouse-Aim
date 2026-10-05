@@ -10,11 +10,17 @@
 #   file    the cut file
 #   id      <category>_<nn>: multi_, boss_
 #   title   <category> · <what>; may begin with start=<m>: start that far behind the enemy
-#           instead of the standard distance (single 1 km, multi 1.5 km, boss 800 m)
+#           instead of the standard distance (single 1 km, multi 1.5 km, boss 800 m), and with
+#           order=game|near|nose|mixed: every controller attacks in the same fixed order (the
+#           player's own, or a reference flight's; see reference_order in harness.cpp). One
+#           crowded battle is run under four orders so no single order's luck decides it.
 #
 # kind    file                      id        title
 multi     20261005-010417_521.txt   multi_01  多机 · Shadow 四机
-multi     20261005-131536_100.txt   multi_02  多机 · 最终关大混战（Tu-95 群）
+multi     20261005-131536_100.txt   multi_02  order=game 多机 · 最终关大混战 · 实战顺序
+multi     20261005-131536_100.txt   multi_03  order=near 多机 · 最终关大混战 · 距离优先顺序
+multi     20261005-131536_100.txt   multi_04  order=nose 多机 · 最终关大混战 · 偏角优先顺序
+multi     20261005-131536_100.txt   multi_05  order=mixed 多机 · 最终关大混战 · 综合顺序
 boss      20261005-102156_93.txt    boss_01   头目 · LADON 一阶段（两架编队）
 boss      20261005-102156_343.txt   boss_02   头目 · LADON 二阶段（含库尔比特）
 boss      20261005-113403_10.txt    boss_03   头目 · Moon 11 全程（护盾阶段与缠斗，含 4 架无人机）

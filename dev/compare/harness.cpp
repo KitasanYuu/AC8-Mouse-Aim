@@ -307,6 +307,13 @@ struct Encounter {
     bool guns_only = false;   // a single enemy: gun tracking for the whole path (never brought down)
     // the standard start, the same for every controller and condition (see standard_start)
     V3 start; float pitch = 0, yaw = 0, speed = 250;
+    // A fixed order of attack (enemy indices), the same for every controller: the simulated
+    // player takes the first one in it still flying instead of choosing by its own position.
+    // In a crowd (78 Tu-95s) choosing by position split the controllers onto different targets
+    // within ~10 s, and the kill counts measured the luck of the draw as much as the flying.
+    std::vector<int> order;
+    std::vector<int> game_order;   // the player's own selections in the recording, in order
+    bool has_player = false; V3 player_pos; float player_pitch = 0, player_yaw = 0, player_speed = 0;   // the recorded start
 };
 bool elite_class(const std::string& cls) {
     std::string c = cls; for (char& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
@@ -364,11 +371,33 @@ std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, 
             f.escort = f.cls.find("uavn") != std::string::npos;
             if (e->foes.size() <= i) e->foes.resize(i + 1);
             e->foes[i] = f;
+        } else if (tag == "player" && !single) {   // "player x y z pitch yaw roll speed"
+            float roll = 0;
+            if (ss >> e->player_pos.x >> e->player_pos.y >> e->player_pos.z >> e->player_pitch >> e->player_yaw >> roll >> e->player_speed)
+                e->has_player = true;
+        } else if (tag == "own" && !single) {   // "own t x y z p y r aim_p aim_y speed q r p sp sr sy selected ctl"
+            // the player's attacks: an enemy counts once it was selected within 3 km (selections
+            // passing over far ones while cycling targets are not attacks: they sent every
+            // controller on 15 km chases), in the order they were first attacked
+            float v[18]; int k = 0;
+            while (k < 18 && ss >> v[k]) ++k;
+            const int sel = k == 18 ? int(v[16]) : -1;
+            if (sel >= 0 && sel < int(e->foes.size()) && !e->foes[sel].path.empty() &&
+                std::find(e->game_order.begin(), e->game_order.end(), sel) == e->game_order.end() &&
+                len(pose_at(e->foes[sel].path, v[0]).pos - V3{v[1], v[2], v[3]}) < 3000)
+                e->game_order.push_back(sel);
         } else if (tag == "e") {
             size_t i; Pose p; ss >> i >> p.t >> p.pos.x >> p.pos.y >> p.pos.z >> p.pitch >> p.yaw >> p.roll;
             if (!(ss >> p.sweep >> p.fold)) p.sweep = p.fold = -1;   // a boss's wings, when recorded
             if (i < e->foes.size()) e->foes[i].path.push_back(p);
         }
+    }
+    {   // drop enemies with too few samples, keeping the player's order on the new indices
+        std::vector<int> index(e->foes.size(), -1); int kept = 0;
+        for (size_t i = 0; i < e->foes.size(); ++i) if (e->foes[i].path.size() >= 5) index[i] = kept++;
+        std::vector<int> order;
+        for (int i : e->game_order) if (index[i] >= 0) order.push_back(index[i]);
+        e->game_order = order;
     }
     e->foes.erase(std::remove_if(e->foes.begin(), e->foes.end(), [](const Foe& f) { return f.path.size() < 5; }), e->foes.end());
     if (e->foes.empty()) return nullptr;
@@ -404,6 +433,7 @@ struct Scenario {
     V3 enemy_offset{}; float enemy_yaw = 0, enemy_speed = 220;   // enemy start, relative to us (m, deg)
     std::shared_ptr<Encounter> encounter;                // recorded enemies
 };
+std::vector<int> reference_order(const Encounter& e, float seconds, int prefer, const std::vector<int>& first = {});
 // The scenes, named "<category> · <what>" with ids "<category>_<nn>". Scripted ones are defined
 // here; those with recorded enemies are listed in dev/compare/scenes.txt.
 std::vector<Scenario> scenarios(const std::string& dir) {
@@ -465,11 +495,17 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         std::string kind, file, id;
         if (!(ss >> kind >> file >> id) || kind[0] == '#') continue;
         std::string title; std::getline(ss >> std::ws, title);
-        // optional "start=<m>": begin that far behind the enemy instead of the standard distance
-        float behind = -1;
-        if (title.rfind("start=", 0) == 0) {
+        // options before the title: "start=<m>" begins that far behind the enemy instead of the
+        // standard distance; "order=game|near|nose|mixed" fixes the order of attack (the player's
+        // own selections, then as the mixed reference; or a reference flight's choosing nearest
+        // first, nearest the nose first, or mixed: see reference_order)
+        float behind = -1; std::string order;
+        for (;;) {
             const size_t sp = title.find(' ');
-            behind = std::stof(title.substr(6, sp - 6));
+            const std::string opt = title.substr(0, sp);
+            if (opt.rfind("start=", 0) == 0) behind = std::stof(opt.substr(6));
+            else if (opt.rfind("order=", 0) == 0) order = opt.substr(6);
+            else break;
             title = sp == std::string::npos ? "" : title.substr(sp + 1);
         }
         Scenario c; c.id = id; c.title = title;
@@ -480,15 +516,38 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         if (!c.encounter) { std::fprintf(stderr, "scenes.txt: cannot read %s\n", path.c_str()); continue; }
         float end = 0; for (const Foe& f : c.encounter->foes) end = std::max(end, f.last);
         c.seconds = std::floor(end * 4) / 4;
+        if (!order.empty()) {
+            Encounter& e = *c.encounter;
+            // the player's order belongs to the player's own path: that run starts where the
+            // player was (from the standard start the first targets were kilometres off and each
+            // kill took ~13 s of transit)
+            if (order == "game" && e.has_player) {
+                e.start = e.player_pos; e.start.z = std::max(e.start.z, 600.0f);
+                e.pitch = std::clamp(e.player_pitch, -20.0f, 20.0f); e.yaw = e.player_yaw;
+                e.speed = std::clamp(e.player_speed, 200.0f, 900.0f);
+            }
+            e.order = order == "game" ? reference_order(e, c.seconds, 0, e.game_order)
+                    : reference_order(e, c.seconds, order == "near" ? 1 : order == "nose" ? 2 : 0);
+        }
         int bosses = 0, elites = 0; for (const Foe& f : c.encounter->foes) { bosses += f.boss; elites += f.elite; }
-        char note[200];
+        char note[400];
         if (c.kind == Single) std::snprintf(note, sizeof(note), "敌机轨迹取自录像（%s）；我方从敌机后方 1 km 出发，全程用机炮跟踪（不计击落）。", elites ? "精英" : "普通");
         else {
             char dist[64];
             if (behind > 0) std::snprintf(dist, sizeof(dist), "%.0f m", behind);
             else std::snprintf(dist, sizeof(dist), "%s", bosses ? "800 m" : "1.5 km");
-            std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；我方从敌机后方 %s 出发%s。",
-                          int(c.encounter->foes.size()), elites, bosses, dist, bosses ? "，速度取头目当时的速度" : "");
+            const char* how = order == "game" ? "按实战锁定顺序（%d 架，之后按综合参考顺序）击杀"
+                            : order == "near" ? "按参考飞行“距离优先”得出的固定顺序击杀"
+                            : order == "nose" ? "按参考飞行“偏角优先”得出的固定顺序击杀"
+                            : order == "mixed" ? "按参考飞行“综合”得出的固定顺序击杀" : "";
+            char fixed[160] = "";
+            if (*how) { std::snprintf(fixed, sizeof(fixed), how, int(c.encounter->game_order.size())); }
+            char from[96];
+            if (order == "game" && c.encounter->has_player) std::snprintf(from, sizeof(from), "我方从实战中玩家的起点出发");
+            else std::snprintf(from, sizeof(from), "我方从敌机后方 %s 出发", dist);
+            std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；%s%s%s%s。",
+                          int(c.encounter->foes.size()), elites, bosses, from, bosses ? "，速度取头目当时的速度" : "",
+                          *fixed ? "；所有飞控" : "", fixed);
         }
         c.note = note;
         add(c);
@@ -637,6 +696,9 @@ struct Pilot {
     double close_time = 0, on_lead = 0, lock_time = 0, target_time = 0;
     int elite_kills = 0;
     float throttle = 0, brake = 0, last_range = -1;
+    // free choice (no fixed order): 0 mixed (angle off the nose and distance), 1 nearest first,
+    // 2 nearest the nose first
+    int prefer = 0;
     std::vector<std::pair<float, float>> target_speed;   // the target's speed lately (time, m/s), for its braking
     explicit Pilot(const Encounter& enc, V3 forward)
         : e(enc), killed(enc.foes.size(), 0), hits(enc.foes.size(), 0), missile_hits(enc.foes.size(), 0),
@@ -674,9 +736,14 @@ struct Pilot {
         // a fighter more than 5 km away is let go; a boss never (a player chases it whatever the
         // distance: dropping LADON at 5 km in its 850 m/s phase left the aircraft circling, 60 km behind)
         if (target >= 0 && (!alive(target, t) || doomed(target) ||
-                            (!e.foes[target].boss && len(pose_at(e.foes[target].path, t).pos - me.pos) > 5000))) target = -1;
+                            (e.order.empty() && !e.foes[target].boss && len(pose_at(e.foes[target].path, t).pos - me.pos) > 5000))) target = -1;
         // Moon 11's drones while they shield her cannot be harmed: no point in chasing them
         if (target >= 0 && e.foes[target].escort && in_field(target, t)) target = -1;
+        if (target < 0 && !e.order.empty()) {   // a fixed order: the first one still flying
+            for (int i : e.order)
+                if (alive(i, t) && !doomed(i) && !(e.foes[i].escort && in_field(i, t))) { target = i; break; }
+            if (target >= 0) { picked_at = t; shot = false; }
+        }
         if (target < 0) {
             float best = 1e9f;
             for (int i = 0; i < int(e.foes.size()); ++i) {
@@ -685,7 +752,8 @@ struct Pilot {
                 const float d = len(to);
                 if (d > 8000 && !e.foes[i].boss) continue;
                 const float off = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
-                const float c = off / 20 + d / 1000 - (e.foes[i].boss && !e.foes[i].ecm ? 3.0f : 0.0f);   // Moon 11 before her drones
+                const float c = (prefer == 1 ? off / 180 + d / 1000 : prefer == 2 ? off / 5 + d / 4000 : off / 20 + d / 1000)
+                                - (e.foes[i].boss && !e.foes[i].ecm ? 3.0f : 0.0f);   // Moon 11 before her drones
                 if (c < best) { best = c; target = i; }
             }
             if (target >= 0) { picked_at = t; shot = false; }
@@ -765,6 +833,44 @@ struct Pilot {
         }
     }
 };
+
+// A fixed order of attack, made without any of the controllers under test: an idealised fighter
+// (no attitude dynamics: the flight path turns straight toward the aim at 12 deg/s, speed by
+// the same throttle and brake, 150-800 m/s) flies the scene with the simulated player choosing
+// freely by `prefer`; the order it brought them down in, then those it did not reach (by
+// first appearance). `first`, when given, goes in front (the player's own order). The slow
+// turn keeps the order's pace one every controller can hold: made at 35 deg/s, a controller a
+// few seconds late on one target found the next ones kilometres further on and fell further
+// behind with each (21 kills against 45 in the same order).
+std::vector<int> reference_order(const Encounter& e, float seconds, int prefer, const std::vector<int>& first) {
+    Encounter free = e; free.order.clear();
+    Aircraft me; me.start(e.pitch, e.yaw, 0, e.speed, e.start);
+    Pilot pilot(free, me.b.f); pilot.prefer = prefer;
+    const float dt = 1.0f / 40;
+    for (float t = 0; t < seconds && !pilot.all_down(); t += dt) {
+        pilot.before(t, dt, me);
+        const V3 v = unit(me.vel), a = pilot.aim;
+        const float ang = std::acos(std::clamp(dot(v, a), -1.0f, 1.0f)), step = std::min(ang, 12 * rad * dt);
+        V3 dir = v;
+        if (ang > 1e-4f) { const V3 side = unit(a - v * dot(v, a)); dir = unit(v * std::cos(step) + side * std::sin(step)); }
+        float speed = len(me.vel);
+        speed += (pilot.throttle > 0.5f && pilot.brake > 0.5f ? -30.0f : pilot.brake > 0.5f ? -60.0f : pilot.throttle > 0.5f ? 40.0f : 0.0f) * dt;
+        speed = std::clamp(speed, 150.0f, 800.0f);
+        me.vel = dir * speed; me.pos = me.pos + me.vel * dt;
+        me.pos.z = std::max(me.pos.z, 300.0f);
+        me.b = basis(std::asin(std::clamp(dir.z, -1.0f, 1.0f)) / rad, std::atan2(dir.y, dir.x) / rad, 0);
+        pilot.after(t, dt, me);
+    }
+    std::vector<int> order;
+    auto put = [&](int i) { if (i >= 0 && i < int(e.foes.size()) && std::find(order.begin(), order.end(), i) == order.end()) order.push_back(i); };
+    for (int i : first) put(i);
+    for (const auto& k : pilot.kill_log) put(k.second);
+    std::vector<int> rest(e.foes.size());
+    for (int i = 0; i < int(rest.size()); ++i) rest[i] = i;
+    std::stable_sort(rest.begin(), rest.end(), [&](int a, int b) { return e.foes[a].first < e.foes[b].first; });
+    for (int i : rest) put(i);
+    return order;
+}
 
 std::string trace_scene;   // BENCH_TRACE=<scene>:<controller>@<condition>: plant internals, first 4 s
 Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_frames, const std::string& ctl_id = "") {

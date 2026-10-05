@@ -117,14 +117,20 @@ for path in args.files:
         # recorded under the names of destroyed allied ship parts (logged).
         boss_ids = [k for k, v in enemies.items() if boss(v["cls"])]
         at = {b: {round(x[0], 1): x[1:4] for x in enemies[b]["samples"]} for b in boss_ids}
+        # Likewise a big aircraft's parts (a Tu-95's wings and turret, recorded only while
+        # selected): the selected part counts as its aircraft, the enemy within 100 m of it in
+        # the same sample.
         def selection(s):
             sid = s.get("selected")
-            if not boss_ids or sid in enemies: return sid
-            key = round(s["gt"] - t0, 1)
+            if sid in enemies: return sid
             c = next((c for c in s["c"] if c[0] == sid), None)
             if c is None: return sid
-            near = [(math.dist(c[2:5], at[b][key]), b) for b in boss_ids if key in at[b]]
-            return min(near)[1] if near and min(near)[0] < 300 else sid
+            if boss_ids:
+                key = round(s["gt"] - t0, 1)
+                near = [(math.dist(c[2:5], at[b][key]), b) for b in boss_ids if key in at[b]]
+                if near and min(near)[0] < 300: return min(near)[1]
+            near = [(math.dist(c[2:5], o[2:5]), o[0]) for o in s["c"] if o[0] in enemies and o[0] != sid]
+            return min(near)[1] if near and min(near)[0] < 100 else sid
         ids = list(enemies)
         span = t1 - t0
         # When the player had each enemy selected (relative to the window).
