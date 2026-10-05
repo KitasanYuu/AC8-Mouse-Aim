@@ -450,9 +450,9 @@ function drawView() {
   const killsNow = [], killedBy = new Map();
   for (const c of list) {
     const log = (data._kills && data._kills[c.id]) || [];
-    log.forEach(([kt, i], k) => {
+    log.forEach(([kt, i, gun], k) => {
       if (kt > st.t) return;
-      killsNow.push({ c, i, n: k + 1, t: kt });
+      killsNow.push({ c, i, n: k + 1, t: kt, gun: gun === 1 });
       if (!killedBy.has(i)) killedBy.set(i, new Set());
       killedBy.get(i).add(c.id);
     });
@@ -583,7 +583,7 @@ function drawView() {
   if (scripted) drawJet(ctx, P, scripted, basis(now[0].fr[F.ep], now[0].fr[F.eyaw], now[0].fr[F.er]), '#e5534b', jetScale,
                         window.AC8_MODELS ? AC8_MODELS.byId.mig29.tris() : MESH, 17.3);
   // Kills: an X in the controller's colour where it brought the enemy down, with its number
-  // (the controller's 1st, 2nd... kill). Several controllers' marks on one spot fan out.
+  // (the controller's 1st, 2nd... kill; '炮' after it when by the gun). Several controllers' marks on one spot fan out.
   const slot = id => Math.max(0, list.findIndex(c => c.id === id));
   ctx.font = `bold 11px ${MONO}`; ctx.lineWidth = 2;
   for (const k of marks ? killsNow : []) {
@@ -593,7 +593,7 @@ function drawView() {
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.globalAlpha = .9;
     ctx.beginPath(); ctx.moveTo(q[0] + dx - r, q[1] - r); ctx.lineTo(q[0] + dx + r, q[1] + r);
     ctx.moveTo(q[0] + dx + r, q[1] - r); ctx.lineTo(q[0] + dx - r, q[1] + r); ctx.stroke();
-    ctx.fillText(String(k.n), q[0] + 8, q[1] + 4 + (j - (list.length - 1) / 2) * 11);
+    ctx.fillText(k.n + (k.gun ? '炮' : ''), q[0] + 8, q[1] + 4 + (j - (list.length - 1) / 2) * 11);
   }
   ctx.globalAlpha = 1;
   // Targets: each controller's present target in a square of its colour (nested when several

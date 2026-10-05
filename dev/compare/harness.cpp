@@ -649,7 +649,7 @@ struct Metrics {
     float clear = -1;       // time the last enemy came down (the run ends there)
 };
 struct Sample { float v[28]; int n; };
-struct Run { Metrics m; std::vector<Sample> frames; std::vector<std::pair<float, int>> kills; };
+struct Run { Metrics m; std::vector<Sample> frames; std::vector<std::pair<float, int>> kills; std::vector<char> kill_gun; };
 
 struct Scorer {
     const Scenario& sc;
@@ -754,17 +754,34 @@ constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
 // it: within ~4 s of 700 m the mouse is held at least level, higher the lower it gets.
 // It fires:
 //   missiles: the enemy within 15 deg of the nose at 300-2500 m (a boss with ECM: within 1 km)
-//     for 0.8 s locks it; one missile every 1.5 s at most, ~700 m/s. It hits an ordinary enemy
-//     always; an elite (or a boss's escort drone) dodges unless launched within 1000 m and 5 deg, and takes two hits;
+//     for 0.8 s locks it; one missile every 1.5 s at most, ~700 m/s. It hits an ordinary enemy,
+//     except that the first missile at every fourth one (by its index: the same enemies for every
+//     controller) misses (the player's missiles: a fighter gone within the flight time after 75%
+//     of the presses, near and far alike, logged); an elite (or a boss's escort drone) dodges unless launched within 1000 m and 5 deg, and takes two hits;
 //     a boss's CIWS stops them (a boss is scored on the lock time, not brought down).
-//   gun: within 1 km, a hit while the nose is within a wingspan (~9 m) of the lead point;
-//     0.5 s of hits bring an enemy down, 1.5 s an elite.
+//   gun: fired within 1 km while the nose is within 2 deg of the lead point. Each frame's rounds
+//     fly at 1000 m/s on top of the aircraft's speed along the nose and are judged where they
+//     arrive, against where the enemy really is then (its recorded path), with a 0.35 deg
+//     spread: the share that falls within the enemy's size (a fighter 6 m, a bomber 20 m, a boss
+//     30 m) counts as hits. 0.5 s of hits bring an enemy down, 1.5 s an elite. (Judged at the
+//     moment of firing, with the nose within a wingspan of a perfect lead point, every
+//     controller shot fighters down from 1 km in half a second; the player, firing a median
+//     920 m out, brought down fighters with the gun about twice in five recordings.)
 struct Pilot {
     const Encounter& e;
     std::vector<char> killed;
     std::vector<float> hits;
     std::vector<int> missile_hits, on_the_way;
     std::vector<std::pair<float, int>> flying;   // missile impact time, enemy
+    struct Round { float arrive, dt; V3 at; int target; float spread; };
+    std::vector<Round> rounds;                   // gun rounds on their way (see the gun above)
+    // the size a round must fall within: a fighter, a bomber (or its wing), a boss
+    float hit_radius(int i) const {
+        const std::string& c = e.foes[i].cls;
+        if (e.foes[i].boss) return 30;
+        if (c.find("tu95") != std::string::npos || c.find("t160") != std::string::npos || c.find("b01b") != std::string::npos) return 20;
+        return 6;
+    }
     float lock = 0, next_launch = 0;
     int missiles = 0, gun_kills = 0;
     float picked_at = 0; bool shot = false;
@@ -773,6 +790,8 @@ struct Pilot {
     V3 aim{1, 0, 0};
     float range = 0;
     std::vector<std::pair<float, int>> kill_log;
+    std::vector<char> kill_gun;                  // per kill: brought down by the gun
+    std::vector<int> launched;                   // missiles launched at each enemy
     double close_time = 0, on_lead = 0, lock_time = 0, target_time = 0;
     int elite_kills = 0;
     float throttle = 0, brake = 0, last_range = -1;
@@ -782,7 +801,7 @@ struct Pilot {
     std::vector<std::pair<float, float>> target_speed;   // the target's speed lately (time, m/s), for its braking
     explicit Pilot(const Encounter& enc, V3 forward)
         : e(enc), killed(enc.foes.size(), 0), hits(enc.foes.size(), 0), missile_hits(enc.foes.size(), 0),
-          on_the_way(enc.foes.size(), 0), aim(forward) {}
+          on_the_way(enc.foes.size(), 0), launched(enc.foes.size(), 0), aim(forward) {}
     bool alive(int i, float t) const { const Foe& f = e.foes[i]; return !killed[i] && t >= f.first && t <= f.last; }
     // tough: an elite, or a boss's escort (Moon 11's drones: the player shot none down at Expert)
     bool tough(int i) const { return e.foes[i].elite || e.foes[i].escort; }
@@ -807,8 +826,8 @@ struct Pilot {
     }
     bool protected_now(int i, float t) const { return shielded(i, t) || (e.foes[i].escort && in_field(i, t)); }
     bool doomed(int i) const { return missile_hits[i] + on_the_way[i] >= needed(i); }
-    void kill(float t, int i) {
-        killed[i] = 1; kill_log.push_back({t, i});
+    void kill(float t, int i, bool gun = false) {
+        killed[i] = 1; kill_log.push_back({t, i}); kill_gun.push_back(gun);
         elite_kills += e.foes[i].elite;
         if (target == i) target = -1;
     }
@@ -887,6 +906,17 @@ struct Pilot {
             if (alive(i, t) && !protected_now(i, t) && ++missile_hits[i] >= needed(i)) kill(t, i);
             flying.erase(flying.begin() + k);
         }
+        for (size_t k = 0; k < rounds.size();) {   // gun rounds arriving: judged against where the enemy is now
+            const Round& r = rounds[k];
+            if (t < r.arrive) { ++k; continue; }
+            const int i = r.target;
+            if (alive(i, t) && !protected_now(i, t)) {
+                const float d = len(pose_at(e.foes[i].path, t).pos - r.at), R = hit_radius(i), w = R * R + 2 * r.spread * r.spread;
+                hits[i] += r.dt * (R * R / w) * std::exp(-d * d / w);   // the share of a spread burst within R
+                if (!e.guns_only && !e.foes[i].boss && hits[i] >= (tough(i) ? 1.5f : 0.5f)) { ++gun_kills; kill(t, i, true); }
+            }
+            rounds.erase(rounds.begin() + k);
+        }
         if (target < 0) { lock = 0; return; }
         const V3 to = pose_at(e.foes[target].path, t).pos - me.pos;
         const float seen = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
@@ -896,7 +926,9 @@ struct Pilot {
         if (!e.guns_only && lock >= 0.8f && t >= next_launch && !doomed(target)) {
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
             const Foe& f = e.foes[target];
-            const bool good = !f.boss && (!tough(target) || (range < 1000 && seen < 5));
+            const bool first_misses = !tough(target) && target % 4 == 3 && launched[target] == 0;
+            ++launched[target];
+            const bool good = !f.boss && !first_misses && (!tough(target) || (range < 1000 && seen < 5));
             if (good) { flying.push_back({t + range / 700.0f, target}); ++on_the_way[target]; }
             ++missiles;
             next_launch = t + 1.5f;
@@ -906,10 +938,11 @@ struct Pilot {
         const float off = std::acos(std::clamp(dot(me.b.f, aim), -1.0f, 1.0f)) / rad;
         close_time += dt;
         if (off < 2) on_lead += dt;
-        if (off < std::max(0.5f, std::atan(9.0f / std::max(range, 1.0f)) / rad)) {
+        if (off < 2) {   // the trigger: rounds along the nose, judged on arrival
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
-            if (!protected_now(target, t)) hits[target] += dt;
-            if (!e.guns_only && !e.foes[target].boss && hits[target] >= (tough(target) ? 1.5f : 0.5f)) { ++gun_kills; kill(t, target); }
+            const V3 v = me.vel + me.b.f * 1000.0f;
+            const float tof = range / std::max(dot(v, unit(to)), 300.0f);
+            rounds.push_back({t + tof, dt, me.pos + v * tof, target, range * std::tan(0.35f * rad)});
         }
     }
 };
@@ -1064,7 +1097,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         m.lock_frac = pilot->target_time > 0 ? float(pilot->lock_time / pilot->target_time) : 0;
         m.first_kill = pilot->kill_log.empty() ? -1 : pilot->kill_log.front().first;
         m.close_time = float(pilot->close_time); m.on_lead = pilot->close_time > 0 ? float(pilot->on_lead / pilot->close_time) : 0;
-        run.kills = pilot->kill_log;
+        run.kills = pilot->kill_log; run.kill_gun = pilot->kill_gun;
     }
     score.finish(speed0 - len(me.vel), me.pos.z - alt0);
     return run;
@@ -1195,7 +1228,8 @@ int main() {
                 if (sc.encounter) {   // kill times per controller, for the viewer
                     kills_json += std::string(sep) + "\"" + entries[ci].id + "\":[";
                     for (size_t k = 0; k < run.kills.size(); ++k) {
-                        char e[48]; std::snprintf(e, sizeof(e), "%s[%.2f,%d]", k ? "," : "", run.kills[k].first, run.kills[k].second);
+                        char e[48]; std::snprintf(e, sizeof(e), "%s[%.2f,%d,%d]", k ? "," : "", run.kills[k].first, run.kills[k].second,
+                                                  k < run.kill_gun.size() && run.kill_gun[k] ? 1 : 0);   // [time, enemy, by the gun]
                         kills_json += e;
                     }
                     kills_json += "]";
