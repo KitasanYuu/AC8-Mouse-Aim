@@ -657,11 +657,11 @@ struct Scorer {
 // every condition.
 struct Condition { const char* id; const char* title; const Plant* plant; float white; float jitter; };
 const Condition conditions[] = {
-    {"measured", "差机体（实测）", &measured, 0.15f, 0.0f},
-    {"su35", "Su-35 高机动（实测）", &su35, 0.15f, 0.0f},
-    {"su57", "Su-57（实测）", &su57, 0.15f, 0.0f},
-    {"adfx02", "ADF-X02（实测）", &adfx02, 0.15f, 0.0f},
-    {"sluggish", "迟钝机体（差机体延迟 ×1.3、权限 ×0.75）", &sluggish, 0.15f, 0.0f},
+    {"measured", "差机体", &measured, 0.15f, 0.0f},
+    {"su35", "Su-35", &su35, 0.15f, 0.0f},
+    {"su57", "Su-57", &su57, 0.15f, 0.0f},
+    {"adfx02", "ADF-X02", &adfx02, 0.15f, 0.0f},
+    {"sluggish", "迟钝机体", &sluggish, 0.15f, 0.0f},
 };
 constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
 

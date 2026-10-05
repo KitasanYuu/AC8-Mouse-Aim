@@ -17,11 +17,11 @@
 #
 # kind    file                      id        title
 multi     20261005-010417_521.txt   multi_01  多机 · Shadow 四机
-multi     20261005-131536_100.txt   multi_02  order=game 多机 · 最终关大混战 · 实战顺序
-multi     20261005-131536_100.txt   multi_03  order=near 多机 · 最终关大混战 · 距离优先顺序
-multi     20261005-131536_100.txt   multi_04  order=nose 多机 · 最终关大混战 · 偏角优先顺序
-multi     20261005-131536_100.txt   multi_05  order=mixed 多机 · 最终关大混战 · 综合顺序
-boss      20261005-102156_93.txt    boss_01   头目 · LADON 一阶段（两架编队）
-boss      20261005-102156_343.txt   boss_02   头目 · LADON 二阶段（含库尔比特）
-boss      20261005-113403_10.txt    boss_03   头目 · Moon 11 全程（护盾阶段与缠斗，含 4 架无人机）
-boss      20261005-131536_2026.txt  boss_04   start=1000 头目 · 最后一架 Shadow 缠斗（后方 1 km 起）
+multi     20261005-131536_100.txt   multi_02  order=game 多机 · M28 千颗亮点 · 实战顺序
+multi     20261005-131536_100.txt   multi_03  order=near 多机 · M28 千颗亮点 · 距离优先
+multi     20261005-131536_100.txt   multi_04  order=nose 多机 · M28 千颗亮点 · 偏角优先
+multi     20261005-131536_100.txt   multi_05  order=mixed 多机 · M28 千颗亮点 · 综合
+boss      20261005-102156_93.txt    boss_01   头目 · LADON 一阶段
+boss      20261005-102156_343.txt   boss_02   头目 · LADON 二阶段
+boss      20261005-113403_10.txt    boss_03   头目 · Selene
+boss      20261005-131536_2026.txt  boss_04   start=1000 头目 · Shadow 22
