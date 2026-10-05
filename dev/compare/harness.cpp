@@ -435,7 +435,20 @@ struct Approach {
     float touch_t = 0, touch_sink = 0, touch_bank = 0, touch_pitch = 0;               // as recorded
     struct Sample { float t, aim_p, aim_y, throttle, brake, speed; V3 pos; };
     std::vector<Sample> r;
+    // After the player's touchdown the path carries on along the runway at the touchdown speed,
+    // on the ground: a controller still in the air is led down onto the runway, flying, instead
+    // of after the player braking to a stop (the scene runs 8 s past the touchdown)
+    V3 touch_pos, touch_dir{1, 0, 0}; float touch_speed = 0;
     Sample at(float t) const {
+        if (t > touch_t && touch_speed > 0) {
+            Sample s = recorded(touch_t);
+            s.t = t; s.throttle = s.brake = 0; s.speed = touch_speed;
+            s.pos = touch_pos + touch_dir * (touch_speed * (t - touch_t)); s.pos.z = ground;
+            return s;
+        }
+        return recorded(t);
+    }
+    Sample recorded(float t) const {
         size_t k = 0;
         while (k + 1 < r.size() && r[k + 1].t <= t) ++k;
         if (k + 1 >= r.size()) return r.back();
@@ -466,7 +479,12 @@ std::shared_ptr<Approach> load_approach(const std::string& path) {
             if (ss >> s.t >> s.aim_p >> s.aim_y >> s.throttle >> s.brake >> s.speed >> s.pos.x >> s.pos.y >> s.pos.z) a->r.push_back(s);
         }
     }
-    return a->r.size() > 10 ? a : nullptr;
+    if (a->r.size() <= 10) return nullptr;
+    const Approach::Sample td = a->recorded(a->touch_t), before = a->recorded(a->touch_t - 0.5f);
+    const V3 flat{td.pos.x - before.pos.x, td.pos.y - before.pos.y, 0};
+    a->touch_pos = td.pos; a->touch_speed = td.speed;
+    if (len(flat) > 1) a->touch_dir = unit(flat);
+    return a;
 }
 struct Scenario {
     std::string id, title, note;
@@ -560,10 +578,10 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         Scenario c; c.id = id; c.title = title;
         c.kind = kind == "single" ? Single : kind == "multi" ? Multi : kind == "boss" ? Boss : kind == "landing" ? Landing : Capture;
         if (c.kind == Capture) continue;
-        if (c.kind == Landing) {   // landings/<file>: until 3 s after the recorded touchdown
+        if (c.kind == Landing) {   // landings/<file>: until 8 s after the recorded touchdown
             c.approach = load_approach(dir + "/landings/" + file);
             if (!c.approach) { std::fprintf(stderr, "scenes.txt: cannot read landings/%s\n", file.c_str()); continue; }
-            c.seconds = c.approach->touch_t + 3;
+            c.seconds = c.approach->touch_t + 8;
             add(c);
             continue;
         }
@@ -627,7 +645,7 @@ struct Metrics {
     float crashed = -1;     // time the aircraft went below 50 m (the ground is near 0-200 m)
     // landings: 1 down within the limits on the runway, 0 not (crashed, or never down); at touchdown
     int landed = -1;
-    float td_sink = -1, td_bank = 0, td_pitch = 0, td_side = 0;
+    float td_sink = -1, td_bank = 0, td_pitch = 0, td_side = 0, td_late = 0;   // td_late: s after the player
     float clear = -1;       // time the last enemy came down (the run ends there)
 };
 struct Sample { float v[28]; int n; };
@@ -698,7 +716,8 @@ struct Scorer {
         else if (sc.kind == Hold)
             m.cost = m.rms_angle + 0.05f * m.bank_rms + 0.3f * m.reversals + 0.1f * m.chatter;
         else if (sc.kind == Landing)   // on the aim, a smooth stick, a soft touchdown; down within the limits
-            m.cost = m.rms_angle + 0.1f * m.chatter + 0.3f * std::max(m.td_sink, 0.0f) + (m.landed == 1 || m.crashed >= 0 ? 0.0f : 20.0f);
+            m.cost = m.rms_angle + 0.1f * m.chatter + 0.3f * std::max(m.td_sink, 0.0f) + 0.5f * std::max(m.td_late, 0.0f) +
+                     (m.landed == 1 || m.crashed >= 0 ? 0.0f : 20.0f);
         else if (sc.kind == Pursuit)
             m.cost = 0.5f * m.mean_angle + 3 * (1 - m.within5) + 0.2f * m.reversals + 0.05f * m.chatter;
         else if (sc.kind == Boss)   // kept in missile lock, on the gun lead point, the nose near the aim
@@ -1010,7 +1029,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
                 const float track = std::atan2(me.vel.y, me.vel.x) / rad;
                 const float off_heading = std::abs(std::remainder(track - app->heading, 180.0f));   // either way along it
                 float tp, ty, tr; euler(me.b, tp, ty, tr);
-                m.td_sink = -me.vel.z; m.td_bank = tr; m.td_pitch = tp; m.td_side = side;
+                m.td_sink = -me.vel.z; m.td_bank = tr; m.td_pitch = tp; m.td_side = side; m.td_late = t - app->touch_t;
                 m.landed = (m.td_sink <= land_sink && std::abs(tr) <= land_bank && tp >= land_pitch && std::abs(side) <= land_side &&
                             std::abs(along) <= app->half_length && off_heading <= land_heading) ? 1 : 0;
                 if (!m.landed) m.crashed = t;
@@ -1036,7 +1055,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         }
         if (cleared) { run.m.clear = t; break; }
     }
-    if (app && run.m.landed < 0) run.m.landed = 0;   // never down (still flying 3 s after the player was)
+    if (app && run.m.landed < 0) run.m.landed = 0;   // never down (still flying 8 s after the player was)
     if (pilot) {
         Metrics& m = run.m;
         m.foes = int(enc->foes.size()); m.kills = int(pilot->kill_log.size()); m.elite_kills = pilot->elite_kills;
@@ -1062,11 +1081,11 @@ void json_metrics(std::string& out, const Metrics& m) {
         "\"within2\":%.3f,\"within5\":%.3f,\"bank_rms\":%.1f,\"pitch_sat\":%.3f,\"roll_sat\":%.3f,\"roll_effort\":%.3f,\"cost\":%.2f,"
         "\"kills\":%d,\"elite_kills\":%d,\"foes\":%d,\"gun_kills\":%d,\"missiles\":%d,\"first_kill\":%.1f,\"on_lead\":%.3f,"
         "\"close_time\":%.1f,\"to_shot\":%.2f,\"crashed\":%.1f,\"lock_frac\":%.3f,\"clear\":%.1f,"
-        "\"landed\":%d,\"td_sink\":%.1f,\"td_bank\":%.1f,\"td_pitch\":%.1f,\"td_side\":%.0f}",
+        "\"landed\":%d,\"td_sink\":%.1f,\"td_bank\":%.1f,\"td_pitch\":%.1f,\"td_side\":%.0f,\"td_late\":%.1f}",
         m.to5, m.to2, m.settle, m.level, m.overshoot, m.reversals, m.chatter, m.inverted, m.speed_loss, m.alt_change, m.peak_nz,
         m.mean_angle, m.rms_angle, m.within2, m.within5, m.bank_rms, m.pitch_sat, m.roll_sat, m.roll_effort, m.cost,
         m.kills, m.elite_kills, m.foes, m.gun_kills, m.missiles, m.first_kill, m.on_lead, m.close_time, m.to_shot, m.crashed, m.lock_frac, m.clear,
-        m.landed, m.td_sink, m.td_bank, m.td_pitch, m.td_side);
+        m.landed, m.td_sink, m.td_bank, m.td_pitch, m.td_side, m.td_late);
     out += b;
 }
 std::string esc(const std::string& s) {

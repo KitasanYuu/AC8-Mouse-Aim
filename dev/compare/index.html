@@ -185,6 +185,7 @@ const COLS = {
   capture: [['to2', '到 2° 内', 's', -1, sec], ['settle', '稳定 1° 内', 's', -1, sec], ['overshoot', '过冲', '°', -1, deg], ['reversals', '滚转反向', '', -1, num]],
   hold: [['mean_angle', '平均偏差', '°', -1, v => v < 0 ? null : v.toFixed(2)], ['bank_rms', '坡度均方根', '°', -1, deg], ['chatter', '杆来回打', '', -1, num]],
   landing: [['landed', '降落', '', 1, v => v === 1 ? '成功' : '失败'], ['td_sink', '接地下沉', 'm/s', -1, v => v < 0 ? null : v.toFixed(1)],
+            ['td_late', '晚于录像', 's', -1, v => v.toFixed(1)],
             ['mean_angle', '平均偏差', '°', -1, v => v < 0 ? null : v.toFixed(2)], ['chatter', '杆来回打', '', -1, num]],
   pursuit: [['mean_angle', '平均偏差', '°', -1, deg], ['within5', '5° 内', '%', 1, pct], ['reversals', '滚转反向', '', -1, num]],
   single: [['mean_angle', '平均偏差', '°', -1, deg], ['within2', '2° 内', '%', 1, pct], ['within5', '5° 内', '%', 1, pct]],
@@ -243,7 +244,11 @@ function drawBoard() {
   for (const c of conds) {
     const M = metricsOf(c.id, sc.id);
     for (const [key, , , better] of [...cols, ['cost', '', '', -1]]) {
-      const vals = list.map(x => M[x.id] ? M[x.id][key] : null).map(v => v === undefined || v === null || (v < 0 && key !== 'cost') ? null : v);
+      // a negative value means none, except for the cost and a landing's lateness (early is
+      // negative); lateness only once down
+      const signed = key === 'cost' || key === 'td_late';
+      const vals = list.map(x => !M[x.id] || (key === 'td_late' && M[x.id].td_sink < 0) ? null : M[x.id][key])
+        .map(v => v === undefined || v === null || (v < 0 && !signed) ? null : v);
       const r = ranks(vals, better);
       list.forEach((x, i) => { cell[`${c.id}|${key}|${x.id}`] = { v: vals[i], r }; if (key === 'cost' && r[i] !== null) rankSum[i] += r[i]; });
       list.forEach((x, i) => { cell[`${c.id}|${key}|${x.id}`].rank = r[i]; });
@@ -649,7 +654,7 @@ function drawView() {
       const aim = enu([o.fr[F.ax], o.fr[F.ay], o.fr[F.az]]);
       strokePath(ctx, P, [o.pos, add(o.pos, mul(aim, Math.max(150, size * 0.25)))], color, 1, .6, 0, [4, 4]);
     }
-    if (qh) { ctx.fillStyle = color; ctx.font = `11px ${MONO}`; ctx.fillText(shortName(o.c) + (o.gone ? crash ? ' ✕' : ' 清场' : ''), qh[0] + 10, qh[1] + 14); }
+    if (qh) { ctx.fillStyle = color; ctx.font = `11px ${MONO}`; ctx.fillText(shortName(o.c) + (o.gone ? crash ? ' ✕' : sc.kind === 'landing' ? ' 着陆' : ' 清场' : ''), qh[0] + 10, qh[1] + 14); }
   }
 }
 
@@ -750,7 +755,8 @@ function drawGauges() {
       ctx.fillStyle = color; ctx.fillRect(cx + Math.min(0, x) * (w / 2 - 8), y, Math.abs(x) * (w / 2 - 8), 4);
     }
     if (gone) { ctx.fillStyle = 'rgba(14,20,24,.6)'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = crash ? '#f06e5c' : '#5fd38a'; ctx.font = `600 13px ${MONO}`; ctx.textAlign = 'center';
-      ctx.fillText(crash ? '已坠地' : `${arr[arr.length - 1][F.t].toFixed(1)} s 全部击落`, cx, cy + 4); ctx.textAlign = 'start'; }
+      const landing = scenario().kind === 'landing', end = arr[arr.length - 1][F.t].toFixed(1);
+      ctx.fillText(crash ? (landing ? '降落失败' : '已坠地') : `${end} s ${landing ? '着陆' : '全部击落'}`, cx, cy + 4); ctx.textAlign = 'start'; }
     let text = `<div><span>偏差</span>${fr[F.angle].toFixed(1)}°</div><div><span>俯仰</span>${pitch.toFixed(0)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
                `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>`;
     if (fr.length > F.kills && sc.kind === 'multi') text += `<div><span>击落</span>${fr[F.kills]}</div>`;
@@ -809,7 +815,11 @@ function drawLanes() {
           for (const [kt] of data._kills[c.id]) ctx.fillRect(X(kt) - 1, y - 1, 2, LANE_H + 2);
         }
         const last = arr[arr.length - 1];
-        if (last && last[F.t] < T - 0.5) { const crash = crashedRun(c.id); ctx.fillStyle = crash ? '#f06e5c' : '#5fd38a'; ctx.fillText(crash ? '✕ 坠地' : '✓ 全部击落', X(last[F.t]) + 4, y + LANE_H - 2); }
+        if (last && last[F.t] < T - 0.5) {
+          const crash = crashedRun(c.id), landing = scenario().kind === 'landing';
+          ctx.fillStyle = crash ? '#f06e5c' : '#5fd38a';
+          ctx.fillText(crash ? (landing ? '✕ 降落失败' : '✕ 坠地') : landing ? '✓ 着陆' : '✓ 全部击落', X(last[F.t]) + 4, y + LANE_H - 2);
+        }
       });
     });
     // time ticks under the last group
