@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>粗模预览</title>
+<style>
+:root { --bg: #0e1418; --panel: #151d22; --rule: #26323a; --ink: #dbe4e9; --muted: #84959f; color-scheme: dark;
+  --font: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif; --mono: "Cascadia Mono", Consolas, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 var(--font); }
+.page { padding: 10px 14px 18px; display: grid; gap: 10px; }
+.bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 16px; margin: 0; font-weight: 600; }
+.note { color: var(--muted); font-size: 12px; }
+button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+button[aria-pressed=true] { border-color: var(--ink); background: #22303a; }
+input[type=range] { accent-color: #4fb3d9; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 10px; }
+.cell { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; min-width: 0; }
+.cell.wide { grid-column: 1 / -1; }
+.cell h2 { font-size: 13px; margin: 0; font-weight: 600; }
+.cell .src { color: var(--muted); font-size: 11px; }
+.screen { position: relative; height: 300px; }
+.cell.wide .screen { height: 420px; }
+.screen canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="bar">
+    <h1>粗模预览</h1>
+    <div role="group" aria-label="视角">
+      <button type="button" data-view="orbit" aria-pressed="true">旋转</button>
+      <button type="button" data-view="top" aria-pressed="false">俯视</button>
+      <button type="button" data-view="side" aria-pressed="false">侧视</button>
+      <button type="button" data-view="front" aria-pressed="false">前视</button>
+      <button type="button" data-view="rear" aria-pressed="false">后下方</button>
+    </div>
+    <label class="note">LADON 外翼 <input type="range" id="sweep" min="0" max="1" step="0.01" value="0"> <span id="sweepText">展开</span></label>
+    <span class="note">网格 10 m；同一行里的飞机按同一比例画</span>
+  </div>
+  <div class="grid" id="grid"></div>
+</div>
+<script>   // always the current files (the preview is for editing them)
+for (const f of ['models.js', 'models/su35.js', 'models/ladon.js', 'models/probed_su35.js', 'models/probed_adfx02.js', 'models/probed_su57.js']) document.write(`<script src="${f}?${Date.now()}"><\/script>`);
+</script>
+<script>
+(() => {
+'use strict';
+const M = window.AC8_MODELS, rad = Math.PI / 180;
+const items = [
+  { title: 'LADON（本次粗模）', src: '参照图 1–6：全长 128 m，翼展 87.6–148.6 m，六发、鸭翼、双垂尾、外翼下折', tris: s => M.byId.ladon.tris(s), length: 128, wide: true },
+  { title: 'LADON（骨骼定位粗模，另一份工作）', src: 'models/ladon.js', tris: () => window.LADON_ATTITUDE_MESH || [], length: 128, wide: true, missing: !window.LADON_ATTITUDE_MESH },
+  { title: 'Su-57（探针自动重建）', src: 'build_model.py：19.6 × 14.2 m，前缘两点、襟翼、副翼、平尾、方向舵、进气道、喷口均为实测', model: M.probed('su57') || { length: 19.6, tris: () => [] }, missing: !M.probed('su57') },
+  { title: 'ADF-X02（探针自动重建）', src: 'build_model.py：24.0 × 15.8 × 4.6 m，鸭翼、襟翼、副翼、方向舵实测；进气道、喷口、前缘为模板估计', model: M.probed('adfx02') || { length: 24, tris: () => [] }, missing: !M.probed('adfx02') },
+  { title: 'Su-35（探针自动重建）', src: 'build_model.py：网格包围盒 + 骨骼铰点 + 常规战斗机模板', model: M.probed('su35') || { length: 21.9, tris: () => [] }, missing: !M.probed('su35') },
+  { title: 'Su-35（本次粗模）', src: '21.9 m × 15.3 m', model: M.byId.su35 },
+  { title: 'Su-35（骨骼定位粗模，另一份工作）', src: 'models/su35.js', tris: () => window.SU35_ATTITUDE_MESH || [], length: 21.9, missing: !window.SU35_ATTITUDE_MESH },
+  { title: 'MiG-29（Shadow 等，m29a）', src: '17.3 m × 11.4 m', model: M.byId.mig29 },
+  { title: 'Mirage 2000（mr2k）', src: '14.4 m × 9.1 m', model: M.byId.mirage },
+  { title: 'MiG-21（m21b）', src: '15.8 m（含空速管）× 7.15 m', model: M.byId.mig21 },
+  { title: 'A-6E（a06e）', src: '16.6 m × 16.15 m', model: M.byId.a6 },
+  { title: '通用轻型战斗机（差机体 / 未知机型）', src: '15 m × 9.5 m', model: M.byId.light },
+  { title: '无人机（uavc）', src: '约 5 m', model: M.byId.drone },
+];
+let view = 'orbit', sweep = 0;
+const grid = document.getElementById('grid');
+for (const it of items) {
+  if (it.model) { it.tris = s => it.model.tris(s); it.length = it.model.length; }
+  const el = document.createElement('div'); el.className = 'cell' + (it.wide ? ' wide' : '');
+  el.innerHTML = `<h2>${it.title}</h2><div class="src">${it.missing ? '未找到文件' : it.src} · ${it.tris(0).length} 个三角形</div><div class="screen"><canvas></canvas></div>`;
+  grid.appendChild(el); it.canvas = el.querySelector('canvas');
+}
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const n = Math.hypot(...a) || 1; return a.map(v => v / n); };
+function draw(it, time) {
+  const r = it.canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 1.5);
+  const w = Math.round(r.width), h = Math.round(r.height);
+  if (it.canvas.width !== Math.round(w * dpr)) { it.canvas.width = Math.round(w * dpr); it.canvas.height = Math.round(h * dpr); }
+  const ctx = it.canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#10181c'; ctx.fillRect(0, 0, w, h);
+  // camera direction (body axes: x forward, y right, z up)
+  let az = 0, el = 0;
+  if (view === 'orbit') { az = time * 0.0004; el = 22 * rad; }
+  else if (view === 'top') { az = Math.PI; el = 89.9 * rad; }
+  else if (view === 'side') { az = Math.PI / 2; el = 0; }
+  else if (view === 'front') { az = 0; el = 3 * rad; }
+  else { az = Math.PI * 0.9; el = -25 * rad; }
+  const eye = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)];   // from the model toward the camera
+  const fwd = eye.map(v => -v), right = norm(cross(fwd, Math.abs(eye[2]) > .99 ? [1, 0, 0] : [0, 0, 1])), up = cross(right, fwd);
+  const all = it.tris(sweep); let radius = 1;
+  for (const t of all) for (const p of t.v) radius = Math.max(radius, Math.hypot(p[0], p[1], p[2]));
+  const k = Math.min(w, h) * 0.47 / radius;   // orthographic, the airframe filling the cell in any view
+  const P = p => [w / 2 + k * dot(p, right), h / 2 - k * dot(p, up), dot(p, fwd)];
+  // 10 m grid under the model
+  ctx.strokeStyle = '#1d2830';
+  const g = Math.ceil(it.length * .8 / 10) * 10, zg = -it.length * .12;
+  for (let x = -g; x <= g; x += 10) for (const [a, b] of [[[x, -g, zg], [x, g, zg]], [[-g, x, zg], [g, x, zg]]]) {
+    const qa = P(a), qb = P(b); ctx.beginPath(); ctx.moveTo(qa[0], qa[1]); ctx.lineTo(qb[0], qb[1]); ctx.stroke();
+  }
+  const light = norm([0.3, -0.4, 1]);
+  const tris = all.map(t => {
+    const q = t.v.map(P), n = norm(cross(sub(t.v[1], t.v[0]), sub(t.v[2], t.v[0])));
+    return { q, z: (q[0][2] + q[1][2] + q[2][2]) / 3, l: (0.45 + 0.55 * Math.abs(dot(n, light))) * (t.shade || 1), dark: t.dark };
+  }).sort((a, b) => b.z - a.z);
+  ctx.strokeStyle = '#0b1114'; ctx.lineWidth = .6;
+  for (const t of tris) {
+    ctx.fillStyle = t.dark ? '#23303a' : `hsl(200 12% ${Math.round(28 + 52 * t.l)}%)`;
+    ctx.beginPath(); ctx.moveTo(t.q[0][0], t.q[0][1]); ctx.lineTo(t.q[1][0], t.q[1][1]); ctx.lineTo(t.q[2][0], t.q[2][1]); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  // nose marker
+  const nose = P([it.length * .55, 0, 0]); ctx.fillStyle = '#f29a4a'; ctx.font = `11px ${getComputedStyle(document.body).getPropertyValue('--mono')}`; ctx.fillText('机头 →', 8, 16);
+}
+let last = 0;
+function tick(time) {
+  if (time - last > 33) { last = time; for (const it of items) draw(it, time); }
+  if (view === 'orbit') requestAnimationFrame(tick);
+}
+function redraw() { if (view === 'orbit') requestAnimationFrame(tick); else for (const it of items) draw(it, 0); }
+document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => {
+  const was = view; view = b.dataset.view;
+  document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  if (was !== 'orbit' || view !== 'orbit') redraw();
+}));
+document.getElementById('sweep').addEventListener('input', e => {
+  sweep = parseFloat(e.target.value);
+  document.getElementById('sweepText').textContent = sweep < .05 ? '展开' : sweep > .95 ? '后掠' : `${Math.round(sweep * 100)}%`;
+  if (view !== 'orbit') redraw();
+});
+window.addEventListener('resize', () => { if (view !== 'orbit') redraw(); });
+window.preview = { setView: v => document.querySelector(`[data-view=${v}]`).click(), setSweep: s => { const r = document.getElementById('sweep'); r.value = s; r.dispatchEvent(new Event('input')); } };
+redraw();
+})();
+</script>
+</body>
+</html>

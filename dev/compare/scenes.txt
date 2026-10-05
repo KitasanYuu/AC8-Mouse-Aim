@@ -8,14 +8,20 @@
 #   kind    single (one enemy, tracks/), multi (several, battles/), boss (battles/, cut with --boss)
 #   file    the cut file
 #   id      <category>_<nn>: one_, multi_, boss_
-#   title   <category> · <what>
+#   title   <category> · <what>; may begin with start=<m>: start that far behind the enemy
+#           instead of the standard distance (single 1 km, multi 1.5 km, boss 800 m)
 #
 # kind    file                      id        title
 single    20261005-005521_212.txt   one_01    单机 · mr2k 侧向缠斗
 single    20261005-005521_226.txt   one_02    单机 · mr2k 急转
 single    20261005-010417_542.txt   one_03    单机 · Shadow 急转
 single    20261005-010417_610.txt   one_04    单机 · Shadow 近距缠斗
+single    20261005-131536_726.txt   one_05    单机 · Tu-95 机炮（慢速大目标）
 multi     20261004-231557_216.txt   multi_01  多机 · 16 机混战
 multi     20261005-010417_521.txt   multi_02  多机 · Shadow 四机
-boss      20261005-023438_200.txt   boss_01   头目 · LADON 一阶段（两架编队）
-boss      20261005-023438_346.txt   boss_02   头目 · LADON 二阶段
+boss      20261005-102156_93.txt    boss_01   头目 · LADON 一阶段（两架编队）
+boss      20261005-102156_343.txt   boss_02   头目 · LADON 二阶段（含库尔比特）
+boss      20261005-102156_465.txt   boss_03   start=400 头目 · LADON 库尔比特（近距 400 m 起）
+boss      20261005-113403_10.txt    boss_04   头目 · Moon 11 护盾阶段（含 4 架无人机）
+boss      20261005-113403_160.txt   boss_05   start=1000 头目 · Moon 11 缠斗（后方 1 km 起）
+boss      20261005-131536_2026.txt  boss_06   start=1000 头目 · 最后一架 Shadow 缠斗（后方 1 km 起）

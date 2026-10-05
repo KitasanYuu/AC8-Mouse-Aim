@@ -123,6 +123,18 @@ constexpr Plant su35{"su35", "Su-35",
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 1.5f,
     0.20f, 187, 0.0825f, 0.4f, su35_pull, su35_roll, su35_thrust};
+// Su-57 (two Shadow-boss missions, 2026-10-05, attitude differences at 75 Hz, p90): full pull
+// 50-53 deg/s at 100-500 m/s, 44 at 600, 33 at 700, 11 at 800; high-G (throttle and brake held)
+// ~2.5 times that; full roll 110-116 deg/s at 100-400, 92-97 at 500-600, 78 at 700, 49 at 800;
+// full throttle dV/dt 68 m/s^2 at 100, 45 at 400, 14 at 600, ~5 at 700-800.
+constexpr std::array<float, 9> su57_pull{0.92f, 1.0f, 1.04f, 1.06f, 1.04f, 0.96f, 0.89f, 0.66f, 0.22f};
+constexpr std::array<float, 9> su57_roll{0.54f, 1.05f, 1.04f, 1.1f, 1.05f, 0.93f, 0.88f, 0.75f, 0.46f};
+constexpr std::array<float, 9> su57_thrust{60, 68, 62, 53, 45, 36, 14, 4.8f, 0};
+constexpr Plant su57{"su57", "Su-57",
+    0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
+    0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
+    0.15f, 5.4f, 0.35f, 2.5f,
+    0.20f, 187, 0.0825f, 0.4f, su57_pull, su57_roll, su57_thrust};
 // Robustness: 30% more delay and smoothing, less authority (a heavier aircraft, or the
 // fit being optimistic). A controller tuned to the edge of the measured model shows it here.
 constexpr Plant sluggish{"sluggish", "迟钝机体（延迟 ×1.3，权限 ×0.75）",
@@ -208,7 +220,7 @@ struct Enemy {
 };
 
 
-struct Pose { float t; V3 pos; float pitch, yaw, roll; };
+struct Pose { float t; V3 pos; float pitch, yaw, roll; float sweep = -1, fold = -1; };   // sweep, fold: a boss's variable wings (deg), -1 unknown
 Pose pose_at(const std::vector<Pose>& path, float t) {
     if (path.empty()) return {};
     if (t <= path.front().t) return path.front();
@@ -216,7 +228,8 @@ Pose pose_at(const std::vector<Pose>& path, float t) {
         const Pose& a = path[i - 1]; const Pose& b = path[i];
         const float k = (t - a.t) / std::max(b.t - a.t, 1e-3f);
         auto mix = [k](float x, float y) { return x + std::remainder(y - x, 360.0f) * k; };
-        return {t, a.pos + (b.pos - a.pos) * k, a.pitch + (b.pitch - a.pitch) * k, mix(a.yaw, b.yaw), mix(a.roll, b.roll)};
+        return {t, a.pos + (b.pos - a.pos) * k, a.pitch + (b.pitch - a.pitch) * k, mix(a.yaw, b.yaw), mix(a.roll, b.roll),
+                a.sweep + (b.sweep - a.sweep) * k, a.fold + (b.fold - a.fold) * k};
     }
     return path.back();
 }
@@ -229,9 +242,17 @@ V3 lead_point(const std::vector<Pose>& path, float t, V3 from) {
 }
 // Recorded enemies carry only a heading (the actor's pitch and roll read 0): attitude is
 // rebuilt from the path, the nose along the velocity and the bank from the turn.
+// Attitude for a recorded path. The recordings carry the game's own yaw and roll (contacts.lua
+// read pitch under the wrong spelling until 2026-10-05, so it is 0 there): kept when present,
+// pitch then from the climb angle. Without recorded rotation, all three from the path (yaw
+// along it, roll from the lift a coordinated turn needs).
 void orient_from_path(std::vector<Pose>& path) {
     const size_t n = path.size();
     if (n < 3) return;
+    bool recorded = false;
+    for (const Pose& p : path) if (std::abs(p.roll) > 0.5f || std::abs(p.pitch) > 0.5f) { recorded = true; break; }
+    bool recorded_pitch = false;
+    for (const Pose& p : path) if (std::abs(p.pitch) > 0.5f) { recorded_pitch = true; break; }
     std::vector<V3> vel(n);
     for (size_t i = 0; i < n; ++i) {
         const size_t a = i ? i - 1 : 0, b = std::min(i + 1, n - 1);
@@ -243,6 +264,10 @@ void orient_from_path(std::vector<Pose>& path) {
         const size_t a = i ? i - 1 : 0, b = std::min(i + 1, n - 1);
         const V3 acc = (vel[b] - vel[a]) * (1.0f / std::max(path[b].t - path[a].t, 1e-3f));
         const V3 lift = acc - f * dot(acc, f) + V3{0, 0, g0};   // what the wings must supply
+        if (recorded) {
+            if (!recorded_pitch) path[i].pitch = std::asin(std::clamp(f.z, -1.0f, 1.0f)) / rad;
+            continue;
+        }
         path[i].pitch = std::asin(std::clamp(f.z, -1.0f, 1.0f)) / rad;
         path[i].yaw = std::atan2(f.y, f.x) / rad;
         const V3 right{-std::sin(path[i].yaw * rad), std::cos(path[i].yaw * rad), 0}, up = cross(f, right);
@@ -257,7 +282,10 @@ void orient_from_path(std::vector<Pose>& path) {
 // last: the end of the recorded path (for one the player shot down, when that happened).
 // boss: a big aircraft that is not brought down here (LADON); the score is how well it is
 // kept in the sights.
-struct Foe { std::string cls; float first = 0, last = 0; bool elite = false, boss = false; std::vector<Pose> path; };
+// ecm: missiles lock only within 1 km (LADON); escort: a boss's shield drone (Moon 11's uavn):
+// while two or more stay within 150 m of their boss, each projects a field around itself and
+// neither they nor the boss can be harmed (the player's account of the Expert battle)
+struct Foe { std::string cls; float first = 0, last = 0; bool elite = false, boss = false, ecm = false, escort = false; std::vector<Pose> path; };
 struct Encounter {
     std::vector<Foe> foes;
     bool guns_only = false;   // a single enemy: gun tracking for the whole path (never brought down)
@@ -267,7 +295,8 @@ struct Encounter {
 bool elite_class(const std::string& cls) {
     std::string c = cls; for (char& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
     return c.find("shadow") != std::string::npos || c.find("named") != std::string::npos ||
-           c.find("boss") != std::string::npos || c.find("_ladn") != std::string::npos;
+           c.find("boss") != std::string::npos || c.find("_ladn") != std::string::npos || c.find("tewy") != std::string::npos ||
+           c.find("toplak") != std::string::npos;
 }
 // The player starts behind the enemy nearest the middle of those flying at the start (1.5 km;
 // a single enemy, fought with the gun, 1 km),
@@ -295,7 +324,7 @@ void standard_start(Encounter& e, float behind) {
 }
 // tracks/<file>: "enemy t x y z pitch yaw roll" (one enemy; its class in the header line)
 // battles/<file>: "enemy i class first last down elite by_player boss" and "e i t x y z p y r"
-std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single) {
+std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, float behind = -1) {
     std::ifstream in(path);
     if (!in) return nullptr;
     auto e = std::make_shared<Encounter>();
@@ -315,10 +344,13 @@ std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single) 
             size_t i; Foe f; int down = 0, elite = 0, by_player = 0, boss = 0;
             ss >> i >> f.cls >> f.first >> f.last >> down >> elite >> by_player >> boss;
             f.elite = elite != 0; f.boss = boss != 0;
+            f.ecm = f.boss && f.cls.find("_ladn") != std::string::npos;
+            f.escort = f.cls.find("uavn") != std::string::npos;
             if (e->foes.size() <= i) e->foes.resize(i + 1);
             e->foes[i] = f;
         } else if (tag == "e") {
             size_t i; Pose p; ss >> i >> p.t >> p.pos.x >> p.pos.y >> p.pos.z >> p.pitch >> p.yaw >> p.roll;
+            if (!(ss >> p.sweep >> p.fold)) p.sweep = p.fold = -1;   // a boss's wings, when recorded
             if (i < e->foes.size()) e->foes[i].path.push_back(p);
         }
     }
@@ -331,7 +363,7 @@ std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single) 
     }
     // a boss (supersonic, ECM: lock only within 1 km) is met 800 m behind at its own speed
     const bool boss = std::any_of(e->foes.begin(), e->foes.end(), [](const Foe& f) { return f.boss; });
-    standard_start(*e, single ? 1000.0f : boss ? 800.0f : 1500.0f);
+    standard_start(*e, behind > 0 ? behind : single ? 1000.0f : boss ? 800.0f : 1500.0f);
     return e;
 }
 
@@ -349,6 +381,7 @@ struct Scenario {
     float seconds = 8;
     float start_roll = 0;
     float start_pitch = 0, start_p = 0;                 // nose pitch and roll rate (deg/s) at the start
+    float start_alt = 3000, start_speed = 220;           // m, m/s (scripted scenes)
     V3 first{}, next{}; float switch_at = -1;          // capture / chain
     std::function<V3(float)> aim;                        // hold: world aim over time
     std::vector<Segment> program;                        // pursuit: enemy program
@@ -407,6 +440,18 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         return direction(p, y);
     }, "已对准后每 0.7 s 移动鼠标约 1°（实测会引起 ±20° 摇翼）");
     hold("hold_03", "慢拖鼠标", [](float t) { return direction(0, 2 + 4 * t); }, "鼠标匀速平移 4°/s");
+    // Near the sea, sinking fast, the aim raised above the horizon and to one side while banked:
+    // the way the Moon 11 crash happened (2026-10-05 11:33: 650 m/s, 480 m, -280 m/s, 80 deg of
+    // bank, the aim rising and swinging sideways; recorded, it was too late for any controller,
+    // so these start higher). Crash = below 50 m.
+    auto low = [&](std::string id, std::string title, float yaw, std::string note) {
+        Scenario c; c.id = id; c.title = "低空 · " + title; c.kind = Hold; c.seconds = 6;
+        c.start_alt = 900; c.start_speed = 650; c.start_pitch = -25; c.start_roll = 80;
+        c.aim = [yaw](float) { return direction(5, yaw); }; c.note = note; add(c);
+    };
+    low("low_01", "俯冲中瞄准点抬到右上", 30, "900 m、650 m/s、下沉约 275 m/s、右坡度 80° 起，瞄准点在地平线上 5°、右侧 30°（坡度一侧）");
+    low("low_02", "俯冲中瞄准点抬到左上", -30, "900 m、650 m/s、下沉约 275 m/s、右坡度 80° 起，瞄准点在地平线上 5°、左侧 30°（坡度另一侧，Moon 11 撞海时的情形）");
+    low("low_03", "俯冲中瞄准点抬到正前上", 0, "900 m、650 m/s、下沉约 275 m/s、右坡度 80° 起，瞄准点在地平线上 5°、正前方");
     auto pursuit = [&](std::string id, std::string title, V3 offset, float yaw, std::vector<Segment> program, std::string note, float seconds = 14) {
         Scenario c; c.id = id; c.title = "脚本追击 · " + title; c.kind = Pursuit; c.enemy_offset = offset; c.enemy_yaw = yaw; c.program = program;
         c.note = note; c.seconds = seconds; add(c);
@@ -426,19 +471,31 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         std::string kind, file, id;
         if (!(ss >> kind >> file >> id) || kind[0] == '#') continue;
         std::string title; std::getline(ss >> std::ws, title);
+        // optional "start=<m>": begin that far behind the enemy instead of the standard distance
+        float behind = -1;
+        if (title.rfind("start=", 0) == 0) {
+            const size_t sp = title.find(' ');
+            behind = std::stof(title.substr(6, sp - 6));
+            title = sp == std::string::npos ? "" : title.substr(sp + 1);
+        }
         Scenario c; c.id = id; c.title = title;
         c.kind = kind == "single" ? Single : kind == "multi" ? Multi : kind == "boss" ? Boss : Capture;
         if (c.kind == Capture) continue;
         const std::string path = dir + (c.kind == Single ? "/tracks/" : "/battles/") + file;
-        c.encounter = load_encounter(path, c.kind == Single);
+        c.encounter = load_encounter(path, c.kind == Single, behind);
         if (!c.encounter) { std::fprintf(stderr, "scenes.txt: cannot read %s\n", path.c_str()); continue; }
         float end = 0; for (const Foe& f : c.encounter->foes) end = std::max(end, f.last);
         c.seconds = std::floor(end * 4) / 4;
         int bosses = 0, elites = 0; for (const Foe& f : c.encounter->foes) { bosses += f.boss; elites += f.elite; }
         char note[200];
         if (c.kind == Single) std::snprintf(note, sizeof(note), "敌机轨迹取自录像（%s）；我方从敌机后方 1 km 出发，全程用机炮跟踪（不计击落）。", elites ? "精英" : "普通");
-        else std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；我方从敌机后方 %s 的标准位置出发。",
-                           int(c.encounter->foes.size()), elites, bosses, bosses ? "800 m（取头目当时的速度）" : "1.5 km");
+        else {
+            char dist[64];
+            if (behind > 0) std::snprintf(dist, sizeof(dist), "%.0f m", behind);
+            else std::snprintf(dist, sizeof(dist), "%s", bosses ? "800 m" : "1.5 km");
+            std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；我方从敌机后方 %s 出发%s。",
+                          int(c.encounter->foes.size()), elites, bosses, dist, bosses ? "，速度取头目当时的速度" : "");
+        }
         c.note = note;
         add(c);
     }
@@ -549,6 +606,7 @@ struct Condition { const char* id; const char* title; const Plant* plant; float 
 const Condition conditions[] = {
     {"measured", "差机体（实测）", &measured, 0.15f, 0.0f},
     {"su35", "Su-35 高机动（实测）", &su35, 0.15f, 0.0f},
+    {"su57", "Su-57（实测）", &su57, 0.15f, 0.0f},
     {"sluggish", "迟钝机体（差机体延迟 ×1.3、权限 ×0.75）", &sluggish, 0.15f, 0.0f},
 };
 constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
@@ -563,7 +621,7 @@ constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
 // It fires:
 //   missiles: the enemy within 15 deg of the nose at 300-2500 m (a boss with ECM: within 1 km)
 //     for 0.8 s locks it; one missile every 1.5 s at most, ~700 m/s. It hits an ordinary enemy
-//     always; an elite dodges unless launched within 1000 m and 5 deg, and takes two hits;
+//     always; an elite (or a boss's escort drone) dodges unless launched within 1000 m and 5 deg, and takes two hits;
 //     a boss's CIWS stops them (a boss is scored on the lock time, not brought down).
 //   gun: within 1 km, a hit while the nose is within a wingspan (~9 m) of the lead point;
 //     0.5 s of hits bring an enemy down, 1.5 s an elite.
@@ -584,13 +642,33 @@ struct Pilot {
     double close_time = 0, on_lead = 0, lock_time = 0, target_time = 0;
     int elite_kills = 0;
     float throttle = 0, brake = 0, last_range = -1;
+    std::vector<std::pair<float, float>> target_speed;   // the target's speed lately (time, m/s), for its braking
     explicit Pilot(const Encounter& enc, V3 forward)
         : e(enc), killed(enc.foes.size(), 0), hits(enc.foes.size(), 0), missile_hits(enc.foes.size(), 0),
           on_the_way(enc.foes.size(), 0), aim(forward) {}
     bool alive(int i, float t) const { const Foe& f = e.foes[i]; return !killed[i] && t >= f.first && t <= f.last; }
-    int needed(int i) const { return e.foes[i].boss ? 1000000 : e.foes[i].elite ? 2 : 1; }
+    // tough: an elite, or a boss's escort (Moon 11's drones: the player shot none down at Expert)
+    bool tough(int i) const { return e.foes[i].elite || e.foes[i].escort; }
+    int needed(int i) const { return e.foes[i].boss ? 1000000 : tough(i) ? 2 : 1; }
     bool all_down() const { for (char k : killed) if (!k) return false; return true; }
-    float lock_range(int i) const { return e.foes[i].boss ? 1000.0f : 2500.0f; }
+    float lock_range(int i) const { return e.foes[i].ecm ? 1000.0f : 2500.0f; }
+    // a boss with two or more of its escorts within 150 m: shielded, shots do not reach it
+    bool shielded(int i, float t) const {
+        if (!e.foes[i].boss) return false;
+        const V3 p = pose_at(e.foes[i].path, t).pos;
+        int guarding = 0;   // ("near" is a Windows macro)
+        for (int k = 0; k < int(e.foes.size()); ++k)
+            if (e.foes[k].escort && alive(k, t) && len(pose_at(e.foes[k].path, t).pos - p) < 150) ++guarding;
+        return guarding >= 2;
+    }
+    // an escort inside its boss's shield (the boss shielded, this drone within 150 m of it)
+    bool in_field(int k, float t) const {
+        const V3 p = pose_at(e.foes[k].path, t).pos;
+        for (int i = 0; i < int(e.foes.size()); ++i)
+            if (e.foes[i].boss && alive(i, t) && shielded(i, t) && len(pose_at(e.foes[i].path, t).pos - p) < 150) return true;
+        return false;
+    }
+    bool protected_now(int i, float t) const { return shielded(i, t) || (e.foes[i].escort && in_field(i, t)); }
     bool doomed(int i) const { return missile_hits[i] + on_the_way[i] >= needed(i); }
     void kill(float t, int i) {
         killed[i] = 1; kill_log.push_back({t, i});
@@ -599,15 +677,17 @@ struct Pilot {
     }
     void before(float t, float dt, const Aircraft& me) {
         if (target >= 0 && (!alive(target, t) || doomed(target) || len(pose_at(e.foes[target].path, t).pos - me.pos) > 5000)) target = -1;
+        // Moon 11's drones while they shield her cannot be harmed: no point in chasing them
+        if (target >= 0 && e.foes[target].escort && in_field(target, t)) target = -1;
         if (target < 0) {
             float best = 1e9f;
             for (int i = 0; i < int(e.foes.size()); ++i) {
-                if (!alive(i, t) || doomed(i)) continue;
+                if (!alive(i, t) || doomed(i) || (e.foes[i].escort && in_field(i, t))) continue;
                 const V3 to = pose_at(e.foes[i].path, t).pos - me.pos;
                 const float d = len(to);
                 if (d > 8000) continue;
                 const float off = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
-                const float c = off / 20 + d / 1000;
+                const float c = off / 20 + d / 1000 - (e.foes[i].boss && !e.foes[i].ecm ? 3.0f : 0.0f);   // Moon 11 before her drones
                 if (c < best) { best = c; target = i; }
             }
             if (target >= 0) { picked_at = t; shot = false; }
@@ -619,10 +699,12 @@ struct Pilot {
             const V3 flat{me.b.f.x, me.b.f.y, 0};
             aim = len(flat) > 0.1f ? unit(flat) : V3{1, 0, 0};
         }
-        // low over the ground: the aim no lower than a floor that rises as the ground nears
+        // low over the ground: the aim no lower than a floor set by the height 4 s ahead: free
+        // down to 170 m, level there, rising to 25 deg up at 45 m (crash below 50 m). A player
+        // follows LADON down to the sea; a floor from 700 m kept the aircraft above it.
         const float low = std::min(me.pos.z, me.pos.z + me.vel.z * 4);
-        if (low < 700) {
-            const float floor_el = low < 200 ? 20.0f : low < 400 ? 10.0f : 0.0f;
+        if (low < 270) {
+            const float floor_el = std::clamp((170 - low) / 5, -20.0f, 25.0f);
             const float el = std::asin(std::clamp(aim.z, -1.0f, 1.0f)) / rad;
             if (el < floor_el) aim = direction(floor_el, std::atan2(aim.y, aim.x) / rad);
         }
@@ -630,18 +712,33 @@ struct Pilot {
         const float closing = target >= 0 && last_range >= 0 && dt > 0 ? (last_range - range) / dt : 0;
         last_range = target >= 0 ? range : -1;
         throttle = brake = 0;
+        // Speed: hold a following distance (a boss 400 m, others 700 m) by closing at a third of
+        // the excess a second: full throttle when closing slower than that, the brake only when
+        // near and closing much faster. (Coasting between two distances let a fast boss run away:
+        // the aircraft fell to ~1 km behind LADON and never met its somersault up close.)
         const bool boss = target >= 0 && e.foes[target].boss;
-        const float far_range = boss ? 800.0f : 1500.0f, near_range = boss ? 400.0f : 600.0f;
-        if (target >= 0 && off > 40 && len(me.vel) > 150) throttle = brake = 1;
-        else if (target >= 0 && range > far_range && closing < 50) throttle = 1;
-        else if (target >= 0 && range < near_range && closing > (boss ? 30.0f : 80.0f)) brake = 1;
+        const float follow = boss ? 400.0f : 700.0f, want = std::clamp((range - follow) / 3, -60.0f, 200.0f);
+        // The target braking hard (more than ~6 g over the last 0.3 s, as a pilot sees it slow):
+        // throttle off and brake at once while near and closing, instead of running into it.
+        float decel = 0;
+        if (target >= 0) {
+            const float v_now = len(pose_at(e.foes[target].path, t).pos - pose_at(e.foes[target].path, t - 0.1f).pos) / 0.1f;
+            target_speed.push_back({t, v_now});
+            while (!target_speed.empty() && target_speed.front().first < t - 0.3f) target_speed.erase(target_speed.begin());
+            if (target_speed.size() > 1 && t - target_speed.front().first > 0.2f)
+                decel = (target_speed.front().second - v_now) / (t - target_speed.front().first);
+        } else target_speed.clear();
+        if (target >= 0 && decel > 60 && range < 2 * follow && closing > 0) brake = 1;
+        else if (target >= 0 && off > 40 && len(me.vel) > 150) throttle = brake = 1;
+        else if (target >= 0 && closing < want) throttle = 1;
+        else if (target >= 0 && range < follow && closing > want + 60) brake = 1;
     }
     void after(float t, float dt, const Aircraft& me) {
         for (size_t k = 0; k < flying.size();) {   // missiles arriving
             if (t < flying[k].first) { ++k; continue; }
             const int i = flying[k].second;
             --on_the_way[i];
-            if (alive(i, t) && ++missile_hits[i] >= needed(i)) kill(t, i);
+            if (alive(i, t) && !protected_now(i, t) && ++missile_hits[i] >= needed(i)) kill(t, i);
             flying.erase(flying.begin() + k);
         }
         if (target < 0) { lock = 0; return; }
@@ -653,7 +750,7 @@ struct Pilot {
         if (!e.guns_only && lock >= 0.8f && t >= next_launch && !doomed(target)) {
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
             const Foe& f = e.foes[target];
-            const bool good = !f.boss && (!f.elite || (range < 1000 && seen < 5));
+            const bool good = !f.boss && (!tough(target) || (range < 1000 && seen < 5));
             if (good) { flying.push_back({t + range / 700.0f, target}); ++on_the_way[target]; }
             ++missiles;
             next_launch = t + 1.5f;
@@ -665,8 +762,8 @@ struct Pilot {
         if (off < 2) on_lead += dt;
         if (off < std::max(0.5f, std::atan(9.0f / std::max(range, 1.0f)) / rad)) {
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
-            hits[target] += dt;
-            if (!e.guns_only && !e.foes[target].boss && hits[target] >= (e.foes[target].elite ? 1.5f : 0.5f)) { ++gun_kills; kill(t, target); }
+            if (!protected_now(target, t)) hits[target] += dt;
+            if (!e.guns_only && !e.foes[target].boss && hits[target] >= (tough(target) ? 1.5f : 0.5f)) { ++gun_kills; kill(t, target); }
         }
     }
 };
@@ -677,10 +774,10 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
     const Plant& plant = *cond.plant;
     const float dt = 1.0f / 80;   // logged median frame 12.5-13.3 ms
     const Encounter* enc = sc.encounter.get();
-    const float speed0 = enc ? enc->speed : 220;
+    const float speed0 = enc ? enc->speed : sc.start_speed;
     Aircraft me;
     if (enc) me.start(enc->pitch, enc->yaw, 0, speed0, enc->start);
-    else me.start(sc.start_pitch, 0, sc.start_roll, speed0, {0, 0, 3000});
+    else me.start(sc.start_pitch, 0, sc.start_roll, speed0, {0, 0, sc.start_alt});
     me.p = sc.start_p;
     std::unique_ptr<Pilot> pilot;
     if (enc) pilot = std::make_unique<Pilot>(*enc, me.b.f);
@@ -903,7 +1000,8 @@ int main() {
                 data += "]";
             }
             if (sc.encounter) {
-                // every enemy's path at 2 Hz and the kill times, for drawing the encounter
+                // every enemy's path at 2 Hz, a boss at 10 Hz (t, x, y, z, roll, pitch, yaw, and a boss's wing sweep and fold
+                // when recorded; attitude as recorded, pitch from the climb in recordings before 2026-10-05) and the kill times
                 data += ",\"_kills\":" + kills_json + "},\"_foes\":[";
                 for (size_t i = 0; i < sc.encounter->foes.size(); ++i) {
                     const Foe& f = sc.encounter->foes[i];
@@ -911,10 +1009,13 @@ int main() {
                     std::snprintf(head, sizeof(head), "%s[\"%s\",%d,%.1f,%.1f,[", i ? "," : "", esc(f.cls).c_str(), f.boss ? 2 : f.elite ? 1 : 0, f.first, f.last);
                     data += head;
                     bool first_point = true;
-                    for (float t = f.first; t <= f.last; t += 0.5f) {
+                    for (float t = f.first; t <= f.last; t += f.boss ? 0.1f : 0.5f) {   // a boss at 10 Hz (its manoeuvres are seconds long)
                         const Pose e = pose_at(f.path, t);
-                        char pt[96];
-                        std::snprintf(pt, sizeof(pt), "%s[%.1f,%.0f,%.0f,%.0f]", first_point ? "" : ",", t, e.pos.x, e.pos.y, e.pos.z);
+                        char pt[128];
+                        if (e.sweep >= 0)
+                            std::snprintf(pt, sizeof(pt), "%s[%.1f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f]", first_point ? "" : ",", t, e.pos.x, e.pos.y, e.pos.z, e.roll, e.pitch, e.yaw, e.sweep, e.fold);
+                        else
+                            std::snprintf(pt, sizeof(pt), "%s[%.1f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f]", first_point ? "" : ",", t, e.pos.x, e.pos.y, e.pos.z, e.roll, e.pitch, e.yaw);
                         data += pt; first_point = false;
                     }
                     data += "]]";

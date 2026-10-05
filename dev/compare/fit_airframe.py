@@ -16,7 +16,7 @@ def load(path):
     for line in open(path, encoding="utf-8"):
         if not line.strip(): continue
         d = json.loads(line)
-        if d.get("type") == "contacts" or d.get("gt", -1) < 0: continue
+        if d.get("type") or d.get("gt", -1) < 0: continue   # contacts / boss packets
         frames.append(d)
     return frames
 

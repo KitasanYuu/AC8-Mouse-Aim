@@ -16,7 +16,10 @@ dev/compare/battles/<recording>_<start>.txt:
   enemy   one line per enemy aircraft: index, class, first and last time alive, whether it
           was shot down, whether it is an elite, and whether the player shot it down
           (selected within 10 s before it went down; missiles count too)
-  e       that enemy's recorded samples (~10 Hz), relative times
+  e       that enemy's recorded samples (~10 Hz), relative times; a boss (and Moon 11's
+          drones) from the "boss" packets when the recording has them (~25 Hz, since
+          2026-10-05) with the sweep and fold of its variable wings (degrees, left wing; -1
+          without) as two more columns
   own     the player's own flight as recorded, with the selected enemy's index
 Enemies fly their recorded paths: they do not react to the simulated aircraft.
 """
@@ -32,21 +35,25 @@ ap.add_argument("--only-boss", action="store_true")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 # Named aces, Shadow squadrons and bosses (as contacts.lua ranks them)
-elite = lambda cls: bool(re.search("shadow|named|boss|ladon|_ladn", cls, re.I))
+elite = lambda cls: bool(re.search("shadow|named|boss|ladon|_ladn|tewy|toplak", cls, re.I))
 boss = lambda cls: bool(args.boss) and bool(re.search(args.boss, cls))
 
 battles = []
 for path in args.files:
-    frames, snaps = [], []
+    frames, snaps, boss_packets = [], [], []
     for line in open(path, encoding="utf-8"):
         if not line.strip(): continue
         d = json.loads(line)
         if d.get("type") == "contacts": snaps.append(d)
-        elif d.get("gt", -1) >= 0: frames.append(d)
+        elif d.get("type") == "contacts_more" and snaps and snaps[-1]["gt"] == d["gt"]: snaps[-1]["c"] += d["c"]   # the rest of a big sample
+        elif d.get("type") == "boss": boss_packets.append(d)
+        elif not d.get("type") and d.get("gt", -1) >= 0: frames.append(d)
     if not frames or not snaps: continue
     name = os.path.splitext(os.path.basename(path))[0].replace("flight-", "")
     g0 = frames[0]["gt"]
-    hostile = {c[1] for s in snaps for c in s["c"] if len(c) > 10 and c[10] == 1}
+    # enemies: classes the game lists as lock-on candidates (c[11] >= 1, since 2026-10-05: allies
+    # cannot be locked), or that the player selected (c[10], older recordings)
+    hostile = {c[1] for s in snaps for c in s["c"] if (len(c) > 11 and c[11] >= 1) or (len(c) > 10 and c[10] == 1)}
     gts = [f["gt"] for f in frames]
     def frame_at(t):
         return frames[min(bisect.bisect_left(gts, t), len(frames) - 1)]
@@ -95,6 +102,12 @@ for path in args.files:
             return speeds and speeds[len(speeds) // 2] > 60
         enemies = {k: v for k, v in enemies.items() if len(v["samples"]) >= 5 and moving(v)}
         if not enemies: continue
+        # bosses and their escorts: the high-rate samples (with LADON's wings), where the
+        # recording has them
+        for k, e in enemies.items():
+            fine = [(p["gt"] - t0, *b[2:8], b[9], b[10]) for p in boss_packets if t0 <= p["gt"] <= t1
+                    for b in p["b"] if b[0] == k and abs(b[2]) + abs(b[3]) + abs(b[4]) > 1]
+            if len(fine) > len(e["samples"]): e["samples"] = fine
         # A boss's lockable parts are separate actors at its position: a selected object at a
         # boss's position (within 300 m) counts as selecting the boss. Judged by position at
         # each moment, not by class or address: the game reuses addresses, and parts were
@@ -167,7 +180,7 @@ for b in chosen:
                   f"({b['elite']} elite): " + ", ".join(f"{k} x{v}" for k, v in classes.items()) + f"; player in {b['mine']}\n")
         out.write("# player x y z pitch yaw roll speed (start)\n")
         out.write("player " + " ".join(f"{v:.3f}" for v in b["player"]) + "\n")
-        out.write("# enemy index class first_t last_t shot_down elite by_player boss / e index t x y z pitch yaw roll\n")
+        out.write("# enemy index class first_t last_t shot_down elite by_player boss / e index t x y z pitch yaw roll [wing_sweep wing_fold]\n")
         for i, e in enumerate(b["enemies"]):
             out.write(f"enemy {i} {e['cls']} {e['samples'][0][0]:.2f} {e['samples'][-1][0]:.2f} {int(e['down'])} {int(elite(e['cls']))} {int(e['by_player'])} {int(boss(e['cls']))}\n")
             for smp in e["samples"]: out.write(f"e {i} " + " ".join(f"{v:.2f}" for v in smp) + "\n")

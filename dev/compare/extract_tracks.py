@@ -41,9 +41,12 @@ for path in args.files:
         if not line.strip(): continue
         d = json.loads(line)
         if d.get("type") == "contacts": snaps.append(d)
-        elif d.get("gt", -1) >= 0: frames.append(d)
+        elif d.get("type") == "contacts_more" and snaps and snaps[-1]["gt"] == d["gt"]: snaps[-1]["c"] += d["c"]   # the rest of a big sample
+        elif not d.get("type") and d.get("gt", -1) >= 0: frames.append(d)   # not the boss packets
     if not frames or not snaps: continue
-    hostile = {c[1] for s in snaps for c in s["c"] if len(c) > 10 and c[10] == 1}
+    # enemies: classes the game lists as lock-on candidates (c[11] >= 1, since 2026-10-05: allies
+    # cannot be locked), or that the player selected (c[10], older recordings)
+    hostile = {c[1] for s in snaps for c in s["c"] if (len(c) > 11 and c[11] >= 1) or (len(c) > 10 and c[10] == 1)}
     gts = [f["gt"] for f in frames]
     def frame_at(t):
         i = bisect.bisect_left(gts, t)

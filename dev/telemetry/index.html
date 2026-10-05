@@ -158,10 +158,12 @@ const C = { id: 0, cls: 1, x: 2, y: 3, z: 4, pitch: 5, yaw: 6, roll: 7, speed: 8
 // enemy aircraft flagged only part of the time, friendlies never), so a class flagged
 // once in this flight counts as hostile throughout. Older recordings have no flag.
 const enemyClasses = new Set();
-function noteSides(snap) { for (const c of snap.c) if (c.length > C.enemy && c[C.enemy] === 1) enemyClasses.add(c[C.cls]); }
-const isEnemy = c => c.length <= C.enemy || c[C.enemy] === 1 || enemyClasses.has(c[C.cls]);
+// Enemies: the game's lock-on candidates (c[11] >= 1, allies cannot be locked; recorded since
+// 2026-10-05), or classes the player selected (c[C.enemy], older recordings).
+function noteSides(snap) { for (const c of snap.c) if ((c.length > 11 && c[11] >= 1) || (c.length > C.enemy && c[C.enemy] === 1)) enemyClasses.add(c[C.cls]); }
+const isEnemy = c => c.length > 11 ? c[11] >= 1 || enemyClasses.has(c[C.cls]) : c.length <= C.enemy || c[C.enemy] === 1 || enemyClasses.has(c[C.cls]);
 // Named aces, Shadow squadrons and bosses, by class name (BP_OP1020_m29a_CP_Shadow_C, ..._Named_C).
-const isElite = c => /shadow|named|boss|ladon|_ladn/i.test(c[C.cls]);
+const isElite = c => /shadow|named|boss|ladon|_ladn|tewy|toplak/i.test(c[C.cls]);
 const sideColor = c => isElite(c) ? col.elite : isEnemy(c) ? col.enemy : col.friend;
 const contactPos = c => [c[C.y], c[C.x], c[C.z]];   // east, north, up
 let cursor = -1;          // index of the frame shown
@@ -192,8 +194,9 @@ const col = (() => { const s = getComputedStyle(document.documentElement); const
            enemy: g('--enemy'), elite: g('--elite'), friend: g('--friend'), selected: g('--selected'),
            aim: g('--aim'), trail: g('--trail'), warn: g('--warn'), craft: g('--craft'), panel: g('--panel'), mono: g('--mono') }; })();
 // Filling the canvases is most of a frame's cost and grows with their area (a 3440x1440
-// screen): pixel ratio capped at 1.5, a backing store at 0.7 megapixels (the browser scales
-// it up), and sizes from a ResizeObserver instead of a layout read while drawing.
+// screen): at least one pixel per CSS pixel (never upscaled and blurred), high-DPI extra
+// resolution capped at 0.7 megapixels, and sizes from a ResizeObserver instead of a layout
+// read while drawing.
 const MAX_CANVAS_PIXELS = 700000;
 const sizes = new WeakMap();
 const sizeWatch = new ResizeObserver(entries => {
@@ -203,7 +206,9 @@ const sizeWatch = new ResizeObserver(entries => {
 function setup(canvas) {
   let size = sizes.get(canvas);
   if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, size[0] * size[1])));
+  // never below one canvas pixel per CSS pixel (below that the picture is upscaled and blurred);
+  // the cap only limits the extra resolution of a high-DPI screen
+  const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, size[0] * size[1]))));
   const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
@@ -539,6 +544,8 @@ function setStatus(text, cls) { statusEl.textContent = text; statusEl.className 
 function acceptLive(list) {
   for (const fr of list) {
     if (fr.type === 'contacts') { contacts.push(fr); noteSides(fr); continue; }
+    if (fr.type === 'contacts_more') { const last = contacts[contacts.length - 1]; if (last && last.gt === fr.gt) { last.c.push(...fr.c); noteSides(fr); } continue; }
+    if (fr.type) continue;   // other packets ("boss": bosses at 30 Hz) are not flight frames
     const last = frames[frames.length - 1];
     if (last && (fr.t < last.t || fr.t - last.t > 5 || fr.aircraft !== last.aircraft)) { frames = []; contacts = contacts.filter(c => c.gt >= gtOf(fr) - 1); camHeading = null; }
     frames.push(fr);
@@ -590,7 +597,11 @@ async function startReplay(name) {
   stopLive(); mode = 'replay'; setPlaying(false); setStatus('加载录像…');
   const text = await (await fetch('/recordings/' + encodeURIComponent(name))).text();
   const all = text.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
-  frames = all.filter(x => x.type !== 'contacts'); contacts = all.filter(x => x.type === 'contacts');
+  frames = all.filter(x => !x.type); contacts = [];
+  for (const x of all) {   // a big sample comes in several packets: the rest ("contacts_more") join the first
+    if (x.type === 'contacts') contacts.push(x);
+    else if (x.type === 'contacts_more' && contacts.length && contacts[contacts.length - 1].gt === x.gt) contacts[contacts.length - 1].c.push(...x.c);
+  }
   enemyClasses.clear(); contacts.forEach(noteSides);
   cursor = frames.length ? 0 : -1; replayTime = 0; camHeading = null; dirty = true;
   document.getElementById('transport').hidden = false;

@@ -27,11 +27,19 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+html { scrollbar-gutter: stable; }   /* a scrollbar coming and going must not resize the page */
 html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 13px; line-height: 1.45; }
+/* the page takes the window's width (up to 3440 px); the scene page inside it must not have
+   auto margins: a grid item with auto margins shrinks to its content and its width then
+   followed whatever was drawn (the whole page widened and narrowed during playback) */
 .page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 10px 14px 18px; max-width: 3440px; margin: 0 auto; }
 .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .bar h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 600; }
 .note { color: var(--muted); font-size: 12px; }
+/* the scene note: one line whatever its length (full text on hover), so the page below never moves */
+#note { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cams button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cams button[data-cam=follow] { width: 13em; }
 .label { font-size: 11px; color: var(--muted); letter-spacing: .04em; }
 select, button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 9px; }
 button { cursor: pointer; }
@@ -72,13 +80,15 @@ td.total { font-weight: 700; }
 .view canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
 .view .hint { position: absolute; right: 8px; bottom: 6px; color: var(--muted); font-size: 11px; pointer-events: none; }
 .gauges { display: grid; grid-template-columns: repeat(var(--n, 5), minmax(0, 1fr)); gap: 8px; }
-.gauge { border: 1px solid var(--rule); border-radius: 5px; padding: 6px 8px 7px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; background: #121a1f; }
+.gauge { border: 1px solid var(--rule); border-radius: 5px; padding: 6px 8px 7px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; background: #121a1f; }
 .gauge .name { grid-column: 1 / -1; }
 .gauge .name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .gauge .name button { margin-left: auto; padding: 0 6px; font-size: 11px; }
-.gauge .screen { position: relative; min-width: 0; height: clamp(110px, 13vh, 200px); }
+.gauge .screen { position: relative; min-width: 0; height: clamp(160px, 22vh, 300px); }
 .gauge canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.gauge .read { font-family: var(--mono); font-size: 12px; display: grid; align-content: center; gap: 2px; font-variant-numeric: tabular-nums; min-width: 9ch; }
+/* readings under the display, a fixed grid: changing values never resize the display */
+.gauge .read { font-family: var(--mono); font-size: 12px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px 8px; font-variant-numeric: tabular-nums; }
+.gauge .read div { white-space: nowrap; overflow: hidden; text-overflow: clip; }
 .gauge .read span { color: var(--muted); margin-right: 4px; }
 .gauge.crashed { opacity: .55; }
 .gauge .flag { color: var(--warn); font-size: 11px; }
@@ -120,7 +130,7 @@ td.total { font-weight: 700; }
     <span class="note" id="note"></span>
   </div>
 
-  <div id="scenePage" class="page" style="padding:0">
+  <div id="scenePage" class="page" style="padding:0; margin:0; max-width:none">
     <section class="panel">
       <h2 id="boardTitle">横评</h2>
       <div class="board" id="board"></div>
@@ -140,7 +150,7 @@ td.total { font-weight: 700; }
         </div>
       </div>
       <div class="replay-body">
-        <div class="view"><canvas id="view" aria-label="所有飞控同一画面的三维回放"></canvas><span class="hint">拖动旋转 · 滚轮缩放 · 双击复位</span></div>
+        <div class="view"><canvas id="view" aria-label="所有飞控同一画面的三维回放"></canvas><span class="hint" id="viewHint">拖动旋转 · 滚轮缩放 · 双击复位</span></div>
         <div class="gauges" id="gauges"></div>
       </div>
       <div class="timeline-wrap" id="timelineWrap"><div class="timeline" id="timeline"><canvas id="lanes"></canvas><canvas id="lanesCursor"></canvas></div></div>
@@ -152,6 +162,8 @@ td.total { font-weight: 700; }
 </div>
 
 <script src="results/index.js"></script>
+<script src="models.js"></script>
+<script src="models/su35.js"></script>
 <script>
 (() => {
 'use strict';
@@ -287,7 +299,7 @@ function frameAt(arr, t) {
 }
 const ended = (arr, t) => arr.length && t > arr[arr.length - 1][F.t] + 0.3;   // crashed or cleared before t
 const crashedRun = id => { const m = metricsOf(st.cond, st.scen)[id]; return !!m && m.crashed >= 0; };
-function foeAt(foe, t) {   // [class, 0 / 1 elite / 2 boss, first, last, [[t, x, y, z], ...]]
+function foeAt(foe, t) {   // [class, 0 / 1 elite / 2 boss, first, last, [[t, x, y, z, roll, pitch, yaw(, wing sweep, fold)], ...]]
   if (t < foe[2] || t > foe[3]) return null;
   const pts = foe[4]; if (!pts.length) return null;
   let k = 1; while (k < pts.length - 1 && pts[k][0] < t) k++;
@@ -295,12 +307,40 @@ function foeAt(foe, t) {   // [class, 0 / 1 elite / 2 boss, first, last, [[t, x,
   const u = b[0] > a[0] ? Math.max(0, Math.min(1, (t - a[0]) / (b[0] - a[0]))) : 0;
   const p = [a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u];
   const d = sub([b[1], b[2], b[3]], [a[1], a[2], a[3]]);
-  return { pos: enu(p), pitch: Math.atan2(d[2], Math.hypot(d[0], d[1]) || 1) / rad, yaw: Math.atan2(d[1], d[0]) / rad };
+  // Past vertical (a cobra or a somersault) the engine writes the same attitude as pitch
+  // 180 - p with yaw and roll turned 180: b is put in a's form first, so the turn in between
+  // is the short way through the vertical instead of a spin through every attitude.
+  const wrap = v => ((v + 540) % 360) - 180;
+  let bp = b[5], by = b[6], br = b[4];
+  if (a.length > 6 && Math.abs(wrap(by - a[6])) > 90 && Math.abs(wrap(br - a[4])) > 90) {
+    bp = (a[5] >= 0 ? 180 : -180) - bp; by += 180; br += 180;
+  }
+  const ang = (va, vb) => va + wrap(vb - va) * u;
+  const roll = a.length > 4 ? ang(a[4], br) : 0;
+  const speed = b[0] > a[0] ? Math.hypot(...d) / (b[0] - a[0]) : 0;
+  // the game's own yaw and roll from the recording (pitch from the climb); older data: along the path
+  const pitch = a.length > 6 ? a[5] + (bp - a[5]) * u : Math.atan2(d[2], Math.hypot(d[0], d[1]) || 1) / rad;
+  const yaw = a.length > 6 ? ang(a[6], by) : Math.atan2(d[1], d[0]) / rad;
+  // a boss's variable wings as recorded (sweep 24 deg spread .. 66 deg swept), as 0..1
+  const wing = a.length > 8 && a[7] >= 0 ? Math.max(0, Math.min(1, ((a[7] + (b[7] - a[7]) * u) - 24) / 42)) : null;
+  const track = Math.atan2(d[1], d[0]) / rad;   // the way it is flying (steady through a somersault)
+  return { pos: enu(p), pitch, yaw, roll, speed, wing, track };
+}
+// LADON's outer wings when the recording has no wing data (before 2026-10-05): measured since,
+// they have two states only, spread when it slows to 400 m/s and swept again from 475 m/s (a
+// 1.1 s change); between the two the last state holds (per enemy, as the replay passes)
+const wingState = new Map();
+function ladonSweep(at, key) {
+  if (at.wing !== null && at.wing !== undefined) return at.wing;
+  let s = wingState.get(key) ?? (at.speed >= 437 ? 1 : 0);
+  if (at.speed <= 400) s = 0; else if (at.speed >= 475) s = 1;
+  wingState.set(key, s);
+  return s;
 }
 
 // ---------- canvas ----------
-// Canvas sizes from a ResizeObserver (no layout reads while drawing); the backing store is
-// capped (pixel ratio 1.5, 0.6 megapixels) since filling pixels is most of a frame's cost.
+// Canvas sizes from a ResizeObserver (no layout reads while drawing); the backing store is at
+// least one pixel per CSS pixel, with high-DPI extra resolution capped by maxPixels.
 const MONO = getComputedStyle(document.documentElement).getPropertyValue('--mono');
 const sizes = new WeakMap();
 let dirty = true;
@@ -308,7 +348,9 @@ const sizeWatch = new ResizeObserver(entries => { for (const e of entries) sizes
 function fit(canvas, maxPixels = 600000) {
   let size = sizes.get(canvas);
   if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(maxPixels / Math.max(1, size[0] * size[1])));
+  // never below one canvas pixel per CSS pixel (below that the picture is upscaled and blurred);
+  // the cap only limits the extra resolution of a high-DPI screen
+  const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(maxPixels / Math.max(1, size[0] * size[1]))));
   const w = Math.max(1, Math.round(size[0])), h = Math.max(1, Math.round(size[1]));
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -317,7 +359,37 @@ function fit(canvas, maxPixels = 600000) {
 function camera(C, target, w, h, fov, near = 2) {
   const fwd = norm(sub(target, C)), right = norm(cross(fwd, [0, 0, 1])), up = cross(right, fwd);
   const focal = (h / 2) / Math.tan(fov * rad / 2);
-  return p => { const d = sub(p, C), z = dot(d, fwd); return z < near ? null : [w / 2 + focal * dot(d, right) / z, h / 2 - focal * dot(d, up) / z, z]; };
+  const P = p => { const d = sub(p, C), z = dot(d, fwd); return z < near ? null : [w / 2 + focal * dot(d, right) / z, h / 2 - focal * dot(d, up) / z, z]; };
+  P.depth = p => dot(sub(p, C), fwd);
+  P.near = near;
+  return P;
+}
+// A line through world points, each segment cut at the camera's near plane (a trail running
+// past the camera no longer breaks into pieces); segments nearer than `fade` metres fade out
+// so a trail coming from behind the camera does not smear across the picture.
+function strokePath(ctx, P, pts, color, width, alpha, fade = 0, dash = null) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []);
+  const n = P.near + 0.5;
+  for (let k = 1; k < pts.length; k++) {
+    let a = pts[k - 1], b = pts[k];
+    const da = P.depth(a), db = P.depth(b);
+    if (da < n && db < n) continue;
+    if (da < n) a = add(a, mul(sub(b, a), (n - da) / (db - da)));
+    else if (db < n) b = add(a, mul(sub(b, a), (n - da) / (db - da)));
+    // near the camera a long segment (50 m between stored frames at speed) is cut into short
+    // pieces, each faded by its own distance, so it does not blink on and off as a whole
+    const pieces = fade > 0 && Math.min(P.depth(a), P.depth(b)) < fade * 1.5
+      ? Math.max(1, Math.min(16, Math.ceil(Math.hypot(...sub(b, a)) / 8))) : 1;
+    let qa = P(a);
+    for (let i = 1; i <= pieces && qa; i++) {
+      const qb = P(add(a, mul(sub(b, a), i / pieces))); if (!qb) break;
+      let v = 1;
+      if (fade > 0) { const u = Math.max(0, Math.min(1, ((qa[2] + qb[2]) / 2 - n) / fade)); v = u * u * (3 - 2 * u); }
+      if (v > 0.02) { ctx.globalAlpha = alpha * v; ctx.beginPath(); ctx.moveTo(qa[0], qa[1]); ctx.lineTo(qb[0], qb[1]); ctx.stroke(); }
+      qa = qb;
+    }
+  }
+  ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.setLineDash([]);
 }
 const MESH = (() => {
   const tris = [], m = (a, b, c, shade) => { tris.push({ v: [a, b, c], shade }); tris.push({ v: [[a[0], -a[1], a[2]], [c[0], -c[1], c[2]], [b[0], -b[1], b[2]]], shade }); };
@@ -328,17 +400,22 @@ const MESH = (() => {
   tris.push({ v: [[9.5, 0, 0.1], [-8.9, 0, 1.0], [-8.9, 0, -0.6]], shade: 0.6 });
   return tris;
 })();
-function drawJet(ctx, P, A, B, tint, scale = 1) {
+function drawJet(ctx, P, A, B, tint, scale = 1, mesh = MESH, length = 19) {
   const f = enu(B.f), r = enu(B.r), u = enu(B.u);
-  const tris = MESH.map(t => {
+  // far away: a dot (a few pixels of triangles cost the same as a near model)
+  const q0 = P(A), q1 = P(add(A, mul(r, length * scale))), q2 = P(add(A, mul(f, length * scale)));
+  if (q0 && q1 && q2 && Math.max(Math.hypot(q1[0] - q0[0], q1[1] - q0[1]), Math.hypot(q2[0] - q0[0], q2[1] - q0[1])) < 5) {
+    ctx.fillStyle = tint; ctx.fillRect(q0[0] - 1.5, q0[1] - 1.5, 3, 3); return;
+  }
+  const tris = mesh.map(t => {
     const pts = t.v.map(p => add(A, mul(add(mul(f, p[0]), add(mul(r, p[1]), mul(u, p[2]))), scale)));
     const q = pts.map(P); if (q.some(x => !x)) return null;
     const n = norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0])));
-    return { q, z: (q[0][2] + q[1][2] + q[2][2]) / 3, light: (0.45 + 0.55 * Math.abs(dot(n, norm([0.3, -0.4, 1])))) * t.shade, belly: dot(u, n) < 0 };
+    return { q, z: (q[0][2] + q[1][2] + q[2][2]) / 3, light: (0.45 + 0.55 * Math.abs(dot(n, norm([0.3, -0.4, 1])))) * (t.shade ?? 1), belly: dot(u, n) < 0, dark: t.dark };
   }).filter(Boolean).sort((a, b) => b.z - a.z);
   ctx.strokeStyle = '#0b1114';
   for (const t of tris) {
-    ctx.fillStyle = tint; ctx.globalAlpha = 0.35 + 0.6 * t.light * (t.belly ? 0.55 : 1);
+    ctx.fillStyle = t.dark ? '#1b2228' : tint; ctx.globalAlpha = t.dark ? 0.9 : 0.35 + 0.6 * t.light * (t.belly ? 0.55 : 1);
     ctx.beginPath(); ctx.moveTo(t.q[0][0], t.q[0][1]); ctx.lineTo(t.q[1][0], t.q[1][1]); ctx.lineTo(t.q[2][0], t.q[2][1]); ctx.closePath(); ctx.fill(); ctx.stroke();
   }
   ctx.globalAlpha = 1;
@@ -368,21 +445,31 @@ function drawView() {
   const flying = now.filter(o => !o.gone);
   let centre, size;
   const followed = now.find(o => o.c.id === st.follow) || now[0];
-  if (st.cam === 'follow' && followed) { centre = followed.pos; size = 60; }
-  else if (st.cam === 'target' && followed) {
-    const tgt = followed.fr.length > F.tgt && followed.fr[F.tgt] >= 0 ? foeAt(foes[followed.fr[F.tgt]], st.t) : null;
-    centre = tgt ? tgt.pos : scripted || followed.pos; size = 400;
+  let look = null;   // [pitch, yaw] the camera stays behind
+  if (st.cam === 'follow' && followed) { centre = followed.pos; size = 60; look = [followed.fr[F.pitch], followed.fr[F.yaw]]; }
+  else if (st.cam === 'target' && followed) {   // a chase camera behind the target, its distance by the target's size
+    const ti = followed.fr.length > F.tgt && followed.fr[F.tgt] >= 0 ? followed.fr[F.tgt] : -1;
+    const tgt = ti >= 0 ? foeAt(foes[ti], st.t) : null;
+    if (tgt) {
+      const model = window.AC8_MODELS ? AC8_MODELS.forClass(foes[ti][0]) : null;
+      centre = tgt.pos; size = Math.max(60, (model ? model.length : 19) * 2.2); look = [0, tgt.track];
+    } else if (scripted) { centre = scripted; size = 60; look = [followed.fr[F.ep], followed.fr[F.eyaw]]; }
+    else { centre = followed.pos; size = 60; look = [followed.fr[F.pitch], followed.fr[F.yaw]]; }
   } else {
     const pts = flying.map(o => o.pos).concat(scripted ? [scripted] : []);
     for (const o of foesNow) if (flying.some(p => Math.hypot(...sub(o.at.pos, p.pos)) < 4000)) pts.push(o.at.pos);
     if (!pts.length) pts.push(now[0].pos);
     centre = mul(pts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / pts.length);
     size = Math.max(250, ...pts.map(p => Math.hypot(...sub(p, centre)) * 2));
+    if (!DIRECTION_ONLY.has(sc.kind) && flying.length) {   // behind the group's mean heading
+      const f = flying.map(o => enu(basis(o.fr[F.pitch], o.fr[F.yaw], 0).f)).reduce((a, b) => add(a, b), [0, 0, 0]);
+      look = [0, Math.atan2(f[0], f[1]) / rad];
+    }
   }
   const dist = size * 1.4 * orbit.zoom;
   let heading = orbit.yaw * rad;
-  if (st.cam === 'follow' && followed) {   // behind the nose's heading, smoothed (as on the reconstruction page)
-    const f = enu(basis(followed.fr[F.pitch], followed.fr[F.yaw], 0).f), want = Math.atan2(f[0], f[1]);
+  if (look) {   // behind the watched heading, smoothed (as on the reconstruction page)
+    const f = enu(basis(look[0], look[1], 0).f), want = Math.atan2(f[0], f[1]);
     camHeading = camHeading === null ? want : camHeading + (((want - camHeading) / rad + 540) % 360 - 180) * rad * 0.2;
     heading += camHeading;
   } else camHeading = null;
@@ -397,44 +484,68 @@ function drawView() {
   ctx.fillStyle = '#151b17'; ctx.fillRect(0, Math.max(0, Math.min(h, hy)), w, h);
   const G = 1000, z0 = 0, span = Math.max(8, Math.min(30, Math.ceil((dist + Math.max(0, centre[2])) / G) + 6));
   const gx = Math.round(centre[0] / G) * G, gy = Math.round(centre[1] / G) * G;
-  ctx.strokeStyle = '#25313a'; ctx.lineWidth = 1;
-  const seg = (a, b) => { const steps = 10; ctx.beginPath(); let pen = false;
-    for (let i = 0; i <= steps; i++) { const q = P(add(a, mul(sub(b, a), i / steps))); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; } ctx.stroke(); };
-  for (let k = -span; k <= span; k++) { seg([gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0]); seg([gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0]); }
+  for (let k = -span; k <= span; k++) {
+    strokePath(ctx, P, [[gx + k * G, gy - span * G, z0], [gx + k * G, gy + span * G, z0]], '#25313a', 1, 1);
+    strokePath(ctx, P, [[gx - span * G, gy + k * G, z0], [gx + span * G, gy + k * G, z0]], '#25313a', 1, 1);
+  }
+  // air motes: fixed points in space, one per 250 m cell at a hashed spot, so the speed shows
+  // as they stream past at any viewing distance (the ground is kilometres below)
+  { const S = 250, R = Math.min(6, Math.ceil(dist / S) + 2), c0 = centre.map(v => Math.round(v / S));
+    ctx.fillStyle = '#9fb3bd';
+    for (let i = -R; i <= R; i++) for (let j = -R; j <= R; j++) for (let k = -R; k <= R; k++) {
+      const ci = c0[0] + i, cj = c0[1] + j, ck = c0[2] + k; if (ck < 0) continue;
+      const hsh = ((ci * 73856093) ^ (cj * 19349663) ^ (ck * 83492791)) >>> 0;
+      const p = [(ci + (hsh % 997) / 997) * S, (cj + ((hsh >>> 10) % 991) / 991) * S, (ck + ((hsh >>> 20) % 983) / 983) * S];
+      const q = P(p); if (!q) continue;
+      const a = 0.55 * (1 - q[2] / (dist + R * S)); if (a <= 0.03) continue;
+      const r = Math.max(0.8, Math.min(2.5, 400 / q[2]));
+      ctx.globalAlpha = a; ctx.fillRect(q[0] - r / 2, q[1] - r / 2, r, r);
+    }
+    ctx.globalAlpha = 1; }
   { const q0 = P(centre), q1 = P([centre[0], centre[1], z0]);   // drop line to the ground
     if (q0 && q1) { ctx.setLineDash([3, 5]); ctx.strokeStyle = '#84959f'; ctx.globalAlpha = .5; ctx.beginPath(); ctx.moveTo(q0[0], q0[1]); ctx.lineTo(q1[0], q1[1]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; } }
-  const jetScale = Math.max(1, size / 70);
+  const jetScale = 1;   // every airframe at true size, so their sizes compare (far ones become dots)
+  const nearFade = dist * 0.35;
   // enemies
   for (const o of foesNow) {   // enemy trails, the last 6 s
-    const pts = o.f[4]; ctx.strokeStyle = o.f[1] ? '#ff6bd6' : '#e5534b'; ctx.globalAlpha = .55; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
-    for (const pt of pts) { if (pt[0] < st.t - 6 || pt[0] > st.t) continue; const q = P(enu([pt[1], pt[2], pt[3]])); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
-    const qn = P(o.at.pos); if (qn && pen) ctx.lineTo(qn[0], qn[1]);
-    ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    const tail = foeAt(o.f, Math.max(o.f[2], st.t - 6));
+    const pts = (tail ? [tail.pos] : []).concat(o.f[4].filter(pt => pt[0] > st.t - 6 && pt[0] < st.t).map(pt => enu([pt[1], pt[2], pt[3]])));
+    pts.push(o.at.pos);
+    strokePath(ctx, P, pts, o.f[1] ? '#ff6bd6' : '#e5534b', 1.5, .55, nearFade);
   }
   for (const o of foesNow) {
     const tint = o.f[1] === 2 ? '#ff6bd6' : o.f[1] === 1 ? '#ff6bd6' : '#e5534b';
-    drawJet(ctx, P, o.at.pos, basis(o.at.pitch, o.at.yaw, 0), tint, jetScale * (o.f[1] === 2 ? 3 : 1));
-    const q = P(o.at.pos); if (q) { ctx.fillStyle = tint; ctx.font = `11px ${MONO}`; ctx.fillText(o.f[1] === 2 ? '头目' : o.f[1] === 1 ? '精英' : '敌机', q[0] + 10, q[1] - 6); }
+    // models.js: the airframe for the class, at true size (metres); LADON's wings by its speed
+    const model = window.AC8_MODELS ? AC8_MODELS.forClass(o.f[0]) : null;
+    const ladon = /ladn/i.test(o.f[0]);
+    const mesh = model ? model.tris(ladon ? ladonSweep(o.at, o.i) : 0) : MESH;
+    const scale = jetScale;
+    drawJet(ctx, P, o.at.pos, basis(o.at.pitch, o.at.yaw, o.at.roll), tint, scale, mesh, model ? model.length : 19);
+    const q = P(o.at.pos); if (q) { ctx.fillStyle = tint; ctx.font = `11px ${MONO}`; ctx.fillText(ladon ? 'LADON' : o.f[1] === 2 ? '头目' : o.f[1] === 1 ? '精英' : '敌机', q[0] + 10, q[1] - 6); }
   }
-  if (scripted) drawJet(ctx, P, scripted, basis(now[0].fr[F.ep], now[0].fr[F.eyaw], now[0].fr[F.er]), '#e5534b', jetScale);
+  if (scripted) drawJet(ctx, P, scripted, basis(now[0].fr[F.ep], now[0].fr[F.eyaw], now[0].fr[F.er]), '#e5534b', jetScale,
+                        window.AC8_MODELS ? AC8_MODELS.byId.mig29.tris() : MESH, 17.3);
   // each controller: the last 4 s of path, the aircraft, the aim
   for (const o of now) {
     const color = colorOf(o.c.id), off = spread(o.c.id);
-    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.globalAlpha = o.gone ? .35 : .85; ctx.beginPath(); let pen = false;
-    const step = o.arr.length > 1 ? o.arr[1][F.t] - o.arr[0][F.t] : 1;
-    for (let k = Math.max(0, Math.floor((st.t - 4) / step)); k < o.arr.length && o.arr[k][F.t] <= st.t; k++) {
-      const q = P(add(enu([o.arr[k][F.x], o.arr[k][F.y], o.arr[k][F.z]]), off)); if (!q) { pen = false; continue; }
-      pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true;
-    }
-    const qh = P(o.pos); if (qh && pen) ctx.lineTo(qh[0], qh[1]);
-    ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    // the last 4 s, both ends at interpolated positions (the tail slides instead of stepping)
+    const step = o.arr.length > 1 ? o.arr[1][F.t] - o.arr[0][F.t] : 1, t0 = Math.max(0, st.t - 4), trail = [];
+    const at = fr => add(enu([fr[F.x], fr[F.y], fr[F.z]]), off);
+    trail.push(at(frameAt(o.arr, t0)));
+    for (let k = Math.floor(t0 / step) + 1; k < o.arr.length && o.arr[k][F.t] < st.t; k++) trail.push(at(o.arr[k]));
+    trail.push(o.pos);
+    strokePath(ctx, P, trail, color, 2, o.gone ? .35 : .85, nearFade);
+    const qh = P(o.pos);
     const B = basis(o.fr[F.pitch], o.fr[F.yaw], o.fr[F.roll]);
     const crash = o.gone && crashedRun(o.c.id);
-    drawJet(ctx, P, o.pos, B, crash ? '#555' : color, jetScale);
+    // the player's airframe: the Su-35 placed from the runtime skeleton (models/su35.js) when
+    // flying the Su-35 condition, otherwise the light fighter from models.js
+    const own = window.AC8_MODELS && (st.cond === 'su35' ? AC8_MODELS.byId.su35 : AC8_MODELS.byId.light);
+    const mesh = st.cond === 'su35' && window.SU35_ATTITUDE_MESH || (own ? own.tris() : MESH);
+    drawJet(ctx, P, o.pos, B, crash ? '#555' : color, jetScale, mesh);
     if (!o.gone || !crash) {
-      const aim = enu([o.fr[F.ax], o.fr[F.ay], o.fr[F.az]]), end = P(add(o.pos, mul(aim, size * 0.25)));
-      const qp = P(o.pos);
-      if (end && qp) { ctx.strokeStyle = color; ctx.setLineDash([4, 4]); ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(qp[0], qp[1]); ctx.lineTo(end[0], end[1]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
+      const aim = enu([o.fr[F.ax], o.fr[F.ay], o.fr[F.az]]);
+      strokePath(ctx, P, [o.pos, add(o.pos, mul(aim, Math.max(150, size * 0.25)))], color, 1, .6, 0, [4, 4]);
     }
     if (qh) { ctx.fillStyle = color; ctx.font = `11px ${MONO}`; ctx.fillText(shortName(o.c) + (o.gone ? crash ? ' ✕' : ' 清场' : ''), qh[0] + 10, qh[1] + 14); }
   }
@@ -465,26 +576,71 @@ function drawGauges() {
     const fr = frameAt(arr, st.t), gone = ended(arr, st.t), B = basis(fr[F.pitch], fr[F.yaw], fr[F.roll]);
     const crash = gone && crashedRun(c.id);
     g.el.classList.toggle('crashed', crash);
-    const cx = w / 2, cy = h / 2, R = Math.hypot(w, h);
-    // horizon: rotate by bank, shift by pitch (3 px per degree)
-    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-fr[F.roll] * rad);
-    const shift = fr[F.pitch] * 3;
-    ctx.fillStyle = '#1a3240'; ctx.fillRect(-R, -R + shift, 2 * R, R);
-    ctx.fillStyle = '#2a2a1e'; ctx.fillRect(-R, shift, 2 * R, R);
-    ctx.strokeStyle = '#7a8a90'; ctx.beginPath(); ctx.moveTo(-R, shift); ctx.lineTo(R, shift); ctx.stroke();
+    const cx = w / 2, cy = h / 2 + 6, R = Math.hypot(w, h);
+    // A head-up display: one scale for everything, K px per degree (about +-22 deg top to bottom)
+    const K = (h - 24) / 44, HUD = '#9fe0b4', DIM = 'rgba(159,224,180,.55)';
+    const pitch = fr[F.pitch], bank = fr[F.roll];
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-bank * rad);
+    const shift = pitch * K;
+    ctx.fillStyle = '#16303c'; ctx.fillRect(-R, -R + shift, 2 * R, R);
+    ctx.fillStyle = '#282719'; ctx.fillRect(-R, shift, 2 * R, R);
+    // horizon line and pitch ladder (solid above, dashed below), numbers both sides
+    ctx.strokeStyle = HUD; ctx.fillStyle = HUD; ctx.lineWidth = 1.2; ctx.font = `10px ${MONO}`; ctx.textBaseline = 'middle';
+    ctx.beginPath(); ctx.moveTo(-R, shift); ctx.lineTo(-w * .12, shift); ctx.moveTo(w * .12, shift); ctx.lineTo(R, shift); ctx.stroke();
+    const half = Math.min(w * .22, 70);
+    for (let p = -90; p <= 90; p += 5) {
+      if (p === 0) continue;
+      const y = shift - p * K; if (Math.abs(y) > h) continue;
+      const major = p % 10 === 0, len = major ? half : half * .45;
+      ctx.setLineDash(p < 0 ? [5, 4] : []);
+      ctx.beginPath(); ctx.moveTo(-len, y); ctx.lineTo(-len * .3, y); ctx.moveTo(len * .3, y); ctx.lineTo(len, y);
+      if (major) { const tip = p > 0 ? 5 : -5; ctx.moveTo(-len, y); ctx.lineTo(-len, y + tip); ctx.moveTo(len, y); ctx.lineTo(len, y + tip); }
+      ctx.stroke();
+      if (major) { ctx.textAlign = 'right'; ctx.fillText(String(p), -len - 3, y); ctx.textAlign = 'left'; ctx.fillText(String(p), len + 3, y); }
+    }
+    ctx.setLineDash([]);
+    // bank pointer: on the horizon's frame, under the fixed scale
+    const rb = Math.min(w, h) * .42;
+    ctx.beginPath(); ctx.moveTo(0, -rb + 2); ctx.lineTo(-5, -rb + 11); ctx.lineTo(5, -rb + 11); ctx.closePath(); ctx.fill();
     ctx.restore();
-    // the aim relative to the nose: x along the wing, y along the canopy
+    // bank scale (fixed to the aircraft): 0, 10, 20, 30, 45, 60 each side
+    ctx.strokeStyle = HUD; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(cx, cy, rb, (-90 - 62) * rad, (-90 + 62) * rad); ctx.stroke();
+    for (const b of [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60]) {
+      const a = (-90 + b) * rad, l = b % 30 === 0 ? 9 : 5;
+      ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * rb, cy + Math.sin(a) * rb); ctx.lineTo(cx + Math.cos(a) * (rb - l), cy + Math.sin(a) * (rb - l)); ctx.stroke();
+    }
+    // heading tape across the top
+    { const yaw = ((fr[F.yaw] % 360) + 360) % 360, kh = w / 100, y0 = 11;
+      ctx.save(); ctx.beginPath(); ctx.rect(cx - w * .32, 0, w * .64, 22); ctx.clip();
+      ctx.fillStyle = HUD; ctx.textAlign = 'center'; ctx.font = `10px ${MONO}`;
+      for (let d = Math.floor((yaw - 60) / 5) * 5; d <= yaw + 60; d += 5) {
+        const x = cx + (d - yaw) * kh, l = d % 10 === 0 ? 5 : 3;
+        ctx.beginPath(); ctx.moveTo(x, 22); ctx.lineTo(x, 22 - l); ctx.stroke();
+        if (d % 30 === 0) ctx.fillText(String(((d % 360) + 360) % 360 / 10 | 0).padStart(2, '0'), x, y0 - 2);
+      }
+      ctx.restore();
+      ctx.fillStyle = 'rgba(10,16,20,.85)'; ctx.fillRect(cx - 17, 0, 34, 14);
+      ctx.strokeStyle = HUD; ctx.strokeRect(cx - 17, 0, 34, 14);
+      ctx.fillStyle = HUD; ctx.textAlign = 'center'; ctx.fillText(String(Math.round(yaw) % 360).padStart(3, '0'), cx, 7.5); }
+    // flight path marker: the velocity is below the nose by the angle of attack
+    { const fy = cy + fr[F.aoa] * K;
+      ctx.strokeStyle = HUD; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, fy, 4.5, 0, 2 * Math.PI);
+      ctx.moveTo(cx - 4.5, fy); ctx.lineTo(cx - 12, fy); ctx.moveTo(cx + 4.5, fy); ctx.lineTo(cx + 12, fy); ctx.moveTo(cx, fy - 4.5); ctx.lineTo(cx, fy - 9); ctx.stroke(); }
+    // the aim relative to the nose, same scale: x along the wing, y along the canopy
     const aim = [fr[F.ax], fr[F.ay], fr[F.az]];
     const fx = dot(aim, B.f), rx = dot(aim, B.r), ux = dot(aim, B.u);
-    let ax = Math.atan2(rx, fx) / rad * 4, ay = -Math.atan2(ux, fx) / rad * 4;
-    const lim = Math.min(w, h) / 2 - 8, mag = Math.hypot(ax, ay), out = mag > lim;
+    let ax = Math.atan2(rx, fx) / rad * K, ay = -Math.atan2(ux, fx) / rad * K;
+    const lim = Math.min(w / 2, h / 2) - 10, mag = Math.hypot(ax, ay), out = mag > lim;
     if (out) { ax *= lim / mag; ay *= lim / mag; }
     const color = colorOf(c.id);
-    ctx.strokeStyle = '#f2f5f7'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - 16, cy); ctx.lineTo(cx - 5, cy); ctx.moveTo(cx + 5, cy); ctx.lineTo(cx + 16, cy); ctx.moveTo(cx, cy - 4); ctx.lineTo(cx, cy + 4); ctx.stroke();
+    // the nose (gun cross / waterline)
+    ctx.strokeStyle = '#f2f5f7'; ctx.lineWidth = 2; ctx.beginPath();
+    ctx.moveTo(cx - 18, cy); ctx.lineTo(cx - 8, cy); ctx.lineTo(cx - 4, cy + 4); ctx.lineTo(cx, cy); ctx.lineTo(cx + 4, cy + 4); ctx.lineTo(cx + 8, cy); ctx.lineTo(cx + 18, cy); ctx.stroke();
     ctx.strokeStyle = '#f29a4a'; ctx.lineWidth = 2; ctx.beginPath();
     if (out) { const a = Math.atan2(ay, ax); ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a - .5), cy + ay - 9 * Math.sin(a - .5)); ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a + .5), cy + ay - 9 * Math.sin(a + .5)); }
     else ctx.arc(cx + ax, cy + ay, 6, 0, 2 * Math.PI);
-    ctx.stroke(); ctx.lineWidth = 1;
+    ctx.stroke(); ctx.lineWidth = 1; ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
     // stick bars along the bottom: pitch, roll
     for (const [k, v] of [[0, fr[F.sp]], [1, fr[F.sr]]]) {
       const y = h - 12 + k * 6, x = Math.max(-1, Math.min(1, v));
@@ -493,8 +649,7 @@ function drawGauges() {
     }
     if (gone) { ctx.fillStyle = 'rgba(14,20,24,.6)'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = crash ? '#f06e5c' : '#5fd38a'; ctx.font = `600 13px ${MONO}`; ctx.textAlign = 'center';
       ctx.fillText(crash ? '已坠地' : `${arr[arr.length - 1][F.t].toFixed(1)} s 全部击落`, cx, cy + 4); ctx.textAlign = 'start'; }
-    const bank = fr[F.roll];
-    let text = `<div><span>偏差</span>${fr[F.angle].toFixed(1)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
+    let text = `<div><span>偏差</span>${fr[F.angle].toFixed(1)}°</div><div><span>俯仰</span>${pitch.toFixed(0)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
                `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>`;
     if (fr.length > F.kills && sc.kind === 'multi') text += `<div><span>击落</span>${fr[F.kills]}</div>`;
     if (g.text !== text) { g.read.innerHTML = text; g.text = text; }
@@ -654,8 +809,15 @@ function fillScenes() {
     `<optgroup label="${KIND[k]}">${IDX.scenarios.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.id} · ${s.title}</option>`).join('')}</optgroup>`).join('');
   sel.value = st.scen;
 }
+function updateViewHint() {
+  const player = st.cond === 'su35' && window.SU35_ATTITUDE_MESH
+    ? '我机 Su-35 骨骼定位粗模' : '我机为示意粗模';
+  const enemy = window.AC8_MODELS ? ' · 敌机按机型粗模，偏航与滚转取自录像' + (scenario().kind === 'boss' ? '，LADON 外翼取自录像' : '') : '';
+  document.getElementById('viewHint').textContent = player + enemy + ' · 拖动旋转 · 滚轮缩放 · 双击复位';
+}
 function buildCondButtons() {
   const box = document.getElementById('conds'); box.innerHTML = '';
+  updateViewHint();
   for (const c of IDX.plants) {
     const b = document.createElement('button'); b.type = 'button'; b.textContent = c.title.replace(/（.*）/, ''); b.title = c.title;
     b.setAttribute('aria-pressed', String(c.id === st.cond));
@@ -667,7 +829,7 @@ function buildCamButtons() {
   const box = document.getElementById('cams'); box.innerHTML = '';
   const follow = IDX.controllers.find(c => c.id === st.follow) || IDX.controllers[0];
   for (const [id, label] of [['group', '全局'], ['follow', `跟随 ${shortName(follow)}`], ['target', '跟随目标']]) {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.setAttribute('aria-pressed', String(st.cam === id));
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = label; b.dataset.cam = id; b.setAttribute('aria-pressed', String(st.cam === id));
     b.addEventListener('click', () => { st.cam = id; save(); buildCamButtons(); dirty = true; });
     box.appendChild(b);
   }
@@ -676,7 +838,8 @@ function selectScene() {
   const sc = scenario(); st.t = 0; lanesKey = null;
   st.cam = DIRECTION_ONLY.has(sc.kind) ? 'group' : 'follow'; orbit.yaw = DIRECTION_ONLY.has(sc.kind) ? -30 : 0; orbit.pitch = DIRECTION_ONLY.has(sc.kind) ? 18 : 10; orbit.zoom = 1;
   buildCamButtons(); save();
-  document.getElementById('note').textContent = sc.note || '';
+  const note = document.getElementById('note'); note.textContent = sc.note || ''; note.title = sc.note || '';
+  updateViewHint();
   drawBoard(); dirty = true;
 }
 function setTab(tab) {
