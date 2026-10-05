@@ -164,6 +164,8 @@ td.total { font-weight: 700; }
 <script src="results/index.js"></script>
 <script src="models.js"></script>
 <script src="models/su35.js"></script>
+<script src="models/probed_su57.js"></script>
+<script src="models/probed_adfx02.js"></script>
 <script>
 (() => {
 'use strict';
@@ -525,6 +527,18 @@ function drawView() {
   }
   if (scripted) drawJet(ctx, P, scripted, basis(now[0].fr[F.ep], now[0].fr[F.eyaw], now[0].fr[F.er]), '#e5534b', jetScale,
                         window.AC8_MODELS ? AC8_MODELS.byId.mig29.tris() : MESH, 17.3);
+  // LADON's ECM: missiles lock only within 1 km. A sphere of that radius (the horizontal ring and
+  // two upright ones), solid while any controller is inside it, dashed while all are outside.
+  for (const o of foesNow) {
+    if (!/ladn/i.test(o.f[0])) continue;
+    const c = o.at.pos, R = 1000, inside = now.some(n => !n.gone && Math.hypot(...sub(n.pos, c)) < R);
+    const ring = (u, v) => { const pts = []; for (let k = 0; k <= 72; k++) { const a = k / 72 * 2 * Math.PI; pts.push(add(c, add(mul(u, R * Math.cos(a)), mul(v, R * Math.sin(a))))); } return pts; };
+    const col = inside ? '#ffb000' : '#c9a24a', alpha = inside ? .7 : .35, dash = inside ? null : [6, 6];
+    strokePath(ctx, P, ring([1, 0, 0], [0, 1, 0]), col, inside ? 1.5 : 1, alpha, 0, dash);
+    strokePath(ctx, P, ring([1, 0, 0], [0, 0, 1]), col, 1, alpha * .6, 0, dash);
+    strokePath(ctx, P, ring([0, 1, 0], [0, 0, 1]), col, 1, alpha * .6, 0, dash);
+    const q = P(add(c, [0, 0, R])); if (q) { ctx.fillStyle = col; ctx.globalAlpha = alpha + .2; ctx.font = `11px ${MONO}`; ctx.fillText(inside ? 'ECM 1 km · 可锁定' : 'ECM 1 km', q[0] + 6, q[1] - 4); ctx.globalAlpha = 1; }
+  }
   // each controller: the last 4 s of path, the aircraft, the aim
   for (const o of now) {
     const color = colorOf(o.c.id), off = spread(o.c.id);
@@ -539,8 +553,9 @@ function drawView() {
     const B = basis(o.fr[F.pitch], o.fr[F.yaw], o.fr[F.roll]);
     const crash = o.gone && crashedRun(o.c.id);
     // the player's airframe: the Su-35 placed from the runtime skeleton (models/su35.js) when
-    // flying the Su-35 condition, otherwise the light fighter from models.js
-    const own = window.AC8_MODELS && (st.cond === 'su35' ? AC8_MODELS.byId.su35 : AC8_MODELS.byId.light);
+    // flying the Su-35 condition, the probe-built model for the Su-57 and ADF-X02, otherwise
+    // the light fighter from models.js
+    const own = window.AC8_MODELS && (st.cond === 'su35' ? AC8_MODELS.byId.su35 : AC8_MODELS.probed(st.cond) || AC8_MODELS.byId.light);
     const mesh = st.cond === 'su35' && window.SU35_ATTITUDE_MESH || (own ? own.tris() : MESH);
     drawJet(ctx, P, o.pos, B, crash ? '#555' : color, jetScale, mesh);
     if (!o.gone || !crash) {
@@ -810,8 +825,8 @@ function fillScenes() {
   sel.value = st.scen;
 }
 function updateViewHint() {
-  const player = st.cond === 'su35' && window.SU35_ATTITUDE_MESH
-    ? '我机 Su-35 骨骼定位粗模' : '我机为示意粗模';
+  const player = st.cond === 'su35' && window.SU35_ATTITUDE_MESH ? '我机 Su-35 骨骼定位粗模'
+    : window.AC8_MODELS && AC8_MODELS.probed(st.cond) ? '我机按探针实测点生成的粗模' : '我机为示意粗模';
   const enemy = window.AC8_MODELS ? ' · 敌机按机型粗模，偏航与滚转取自录像' + (scenario().kind === 'boss' ? '，LADON 外翼取自录像' : '') : '';
   document.getElementById('viewHint').textContent = player + enemy + ' · 拖动旋转 · 滚轮缩放 · 双击复位';
 }

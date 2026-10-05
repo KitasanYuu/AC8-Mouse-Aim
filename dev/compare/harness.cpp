@@ -95,8 +95,11 @@ struct Plant {
     // Full throttle: dV/dt + g sin(climb) by speed (m/s^2, per 100 m/s, nz < 3, logged).
     std::array<float, 9> thrust_by_speed{43, 43, 35, 29, 22, 8.7f, 3.6f, -3, -10};
 };
+// Entry k is measured over the band k*100 to k*100+99 m/s, so it holds at the band's centre
+// (k*100+50); read at the band's start, every table ran half a band early (the ADF-X02's ~0 at
+// 800-899 m/s made 800 its top speed, while it held 845 behind LADON).
 float by_speed(const std::array<float, 9>& table, float speed) {
-    const float x = std::clamp(speed / 100.0f, 0.0f, 8.0f);
+    const float x = std::clamp((speed - 50.0f) / 100.0f, 0.0f, 8.0f);
     const int i = std::min(int(x), 7);
     return table[i] + (table[i + 1] - table[i]) * (x - i);
 }
@@ -135,6 +138,19 @@ constexpr Plant su57{"su57", "Su-57",
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 2.5f,
     0.20f, 187, 0.0825f, 0.4f, su57_pull, su57_roll, su57_thrust};
+// ADF-X02 (LADON missions, 2026-10-05, dev/compare/fit_speed_tables.py, p90): full pull 56 deg/s
+// below 300 m/s, 38-39 at 300-500, 35 at 500, 23-24 at 600-800, 17 above 800; high-G about 2.7
+// times that; full roll ~100 deg/s to 400, 87 at 400-600, 70 at 600-800, 60 above; full-throttle
+// dV/dt 51 at 300, 37 at 400, 34 at 500, 15 at 600, 6 at 700, ~0 at 850: it keeps up with LADON's
+// 850 m/s first phase, which the Su-35 and Su-57 (~800 m/s at most) cannot.
+constexpr std::array<float, 9> adfx02_pull{1.1f, 1.12f, 1.13f, 0.78f, 0.77f, 0.7f, 0.47f, 0.47f, 0.34f};
+constexpr std::array<float, 9> adfx02_roll{0.95f, 0.95f, 0.93f, 0.98f, 0.83f, 0.82f, 0.68f, 0.65f, 0.57f};
+constexpr std::array<float, 9> adfx02_thrust{42, 42, 50, 51, 37, 34, 15.5f, 5.8f, -0.1f};
+constexpr Plant adfx02{"adfx02", "ADF-X02",
+    0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
+    0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
+    0.15f, 5.4f, 0.35f, 2.7f,
+    0.20f, 187, 0.0825f, 0.4f, adfx02_pull, adfx02_roll, adfx02_thrust};
 // Robustness: 30% more delay and smoothing, less authority (a heavier aircraft, or the
 // fit being optimistic). A controller tuned to the edge of the measured model shows it here.
 constexpr Plant sluggish{"sluggish", "迟钝机体（延迟 ×1.3，权限 ×0.75）",
@@ -607,6 +623,7 @@ const Condition conditions[] = {
     {"measured", "差机体（实测）", &measured, 0.15f, 0.0f},
     {"su35", "Su-35 高机动（实测）", &su35, 0.15f, 0.0f},
     {"su57", "Su-57（实测）", &su57, 0.15f, 0.0f},
+    {"adfx02", "ADF-X02（实测）", &adfx02, 0.15f, 0.0f},
     {"sluggish", "迟钝机体（差机体延迟 ×1.3、权限 ×0.75）", &sluggish, 0.15f, 0.0f},
 };
 constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
@@ -676,7 +693,10 @@ struct Pilot {
         if (target == i) target = -1;
     }
     void before(float t, float dt, const Aircraft& me) {
-        if (target >= 0 && (!alive(target, t) || doomed(target) || len(pose_at(e.foes[target].path, t).pos - me.pos) > 5000)) target = -1;
+        // a fighter more than 5 km away is let go; a boss never (a player chases it whatever the
+        // distance: dropping LADON at 5 km in its 850 m/s phase left the aircraft circling, 60 km behind)
+        if (target >= 0 && (!alive(target, t) || doomed(target) ||
+                            (!e.foes[target].boss && len(pose_at(e.foes[target].path, t).pos - me.pos) > 5000))) target = -1;
         // Moon 11's drones while they shield her cannot be harmed: no point in chasing them
         if (target >= 0 && e.foes[target].escort && in_field(target, t)) target = -1;
         if (target < 0) {
@@ -685,7 +705,7 @@ struct Pilot {
                 if (!alive(i, t) || doomed(i) || (e.foes[i].escort && in_field(i, t))) continue;
                 const V3 to = pose_at(e.foes[i].path, t).pos - me.pos;
                 const float d = len(to);
-                if (d > 8000) continue;
+                if (d > 8000 && !e.foes[i].boss) continue;
                 const float off = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
                 const float c = off / 20 + d / 1000 - (e.foes[i].boss && !e.foes[i].ecm ? 3.0f : 0.0f);   // Moon 11 before her drones
                 if (c < best) { best = c; target = i; }
