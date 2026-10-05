@@ -115,7 +115,7 @@ function drone() {
     both(plate([[1.2, .3], [-1.2, 3], [-1.8, 3], [-1.6, .3]])),
     both(plate([[-1.2, .4, .2], [-2.2, .9, 1.1], [-2.6, .9, 1.1], [-2.5, .4, .2]])));
 }
-// LADON (128 m long, 18.7 m high; 87.6 m span swept, 148.6 m spread). Swept back it is
+// LADON (official: 128 m long, 18.7 m high; 87.6 m span swept, 148.6 m spread). Swept back it is
 // essentially an XB-70: a long slender nose with canards behind the cockpit, one large delta
 // with a straight trailing edge, six engines side by side in a box under the delta with the
 // nozzles in a row, twin fins on the trailing edge, and the outer parts of the delta folding
@@ -132,20 +132,21 @@ function engineBox(x0, x1, w0, w1, zt, zb, ramp) {   // intake box under the win
 }
 function ladonFixed() {
   const nozzles = [];
-  for (const y of [3, 9, 15]) nozzles.push(...both(body([[-57.5, 2.7, 2.7, 2.7], [-60, 2.5, 2.5, 2.5]], { y, z: -4.2, end: true })));   // half the trailing edge a side
+  for (const y of [3, 9, 15]) nozzles.push(...both(body([[-57.5, 2.5, 2.5, 2.5], [-60, 2.3, 2.3, 2.3]], { y, z: -3.6, end: true })));   // half the trailing edge a side
   return [].concat(
-    body([[64, 0, 0, 0], [61, .9, .8, .8], [57, 1.8, 1.6, 1.4], [52, 2.6, 2.3, 2.0], [45, 3.1, 2.7, 2.4], [35, 3.4, 2.8, 2.6], [20, 3.8, 3.0, 2.8], [5, 4.2, 3.0, 3.0]]),
-    body([[56, 0, 0, 0], [54.5, 1.4, .6, .05], [52.5, 1.5, .6, .05], [51.5, 0, 0, 0]], { z: 1.6, dark: true }),
+    // nose tip at 68 m, nozzles end at -60 m: 128 m overall
+    body([[68, 0, 0, 0], [64.8, .9, .8, .8], [60.5, 1.8, 1.6, 1.4], [55.2, 2.6, 2.3, 2.0], [47.7, 3.1, 2.7, 2.4], [37, 3.4, 2.8, 2.6], [21, 3.8, 3.0, 2.8], [5, 4.2, 3.0, 3.0]]),
+    body([[59.5, 0, 0, 0], [57.9, 1.4, .6, .05], [55.8, 1.5, .6, .05], [54.7, 0, 0, 0]], { z: 1.6, dark: true }),
     body([[12, 3.8, 3.0, 3.0], [0, 4.2, 3.0, 2.0], [-30, 4.2, 2.6, 1.6], [-50, 3.6, 2.0, 1.2], [-58, 2.6, 1.4, 1.0]]),   // spine over the box
     // the fixed wing (user's sketch): an isosceles triangle with the pivot at its outer
     // corner, its rear side running back in to 9.6 m; from that corner a triangle flaring out
     // to the trailing-edge corner (its leading edge stays under the swept wing: no gap)
     both(plate([[18.6, 3.5], [0.4, 13.6], [-13, 9.6], [-13, 3.5]])),
     both(plate([[-13, 9.6], [-58, REAR_CORNER], [-58, 3.5], [-13, 3.5]])),
-    engineBox(-8, -57.5, 9, 18, -.5, -7.4, 9),                                             // six engines in one box, widening aft
+    engineBox(-8, -57.5, 9, 18, -.5, -6.2, 9),                                             // six engines in one box, widening aft
     nozzles,
     both(plate([[44, 2.5], [38, 9], [35.5, 9], [35, 2.5]], { z: .5 })),                  // canards
-    both(plate([[-38, 15, .3], [-53, 16.3, 15], [-58.5, 16.3, 15], [-58.5, 15, .3]])));   // fins, in line with the outer engines
+    both(plate([[-38, 15, .3], [-53, 16.3, 12.4], [-58.5, 16.3, 12.4], [-58.5, 15, .3]])));   // fins, in line with the outer engines; 18.7 m fin tip to box bottom
 }
 // The outer wing, rigid, drawn spread: its root along the front triangle's rear side, the
 // pivot at that triangle's outer corner, 26 deg leading-edge sweep, tip at 74.3 m. Swept, it
