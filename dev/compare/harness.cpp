@@ -745,9 +745,82 @@ const Condition conditions[] = {
 };
 constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
 
+// The simulated player's hand on the mouse: not an aimbot. A person sees the target a moment
+// late, moves the mouse in separate strokes (each with a bell-shaped speed, landing a few
+// percent off), takes a moment to react to a new target (more to find one outside the view),
+// and between strokes follows the target's motion only in part. So the aim jumps in steps,
+// overshoots, and wanders around the lead point while tracking, which is what the controller
+// has to fly through. The numbers are those of a competent player (the logged player's mouse,
+// checked against them, was a little slower and less steady: a reference, not the standard).
+struct Hand {
+    float react = 0.22f;      // s from a new target to the first stroke
+    float search = 0.35f;     // s more when the target is beyond view_half from the nose
+    float view_half = 40;     // deg
+    float delay = 0.12f;      // s the seen target lags
+    float dwell = 0.06f;      // s between a stroke's end and the next decision
+    float gain = 0.95f;       // share of the seen error a stroke covers
+    float scatter = 0.07f;    // endpoint scatter, share of the stroke (each axis, 1 sigma)
+    float floor_deg = 0.12f;  // endpoint scatter of the smallest strokes, deg
+    float pursuit = 0.8f;     // share of the target's apparent motion followed between strokes
+    float max_speed = 700;    // deg/s
+    V3 cursor{1, 0, 0}; bool primed = false, moving = false;
+    V3 axis{0, 0, 1}; float total = 0, done = 0, t0 = 0, dur = 0, next = 0;
+    int last_target = -2;
+    std::deque<std::pair<float, V3>> seen;
+    std::mt19937 rng{20261005};
+    std::normal_distribution<float> n01{0.0f, 1.0f};
+    static V3 rotate(V3 v, V3 k, float a) {   // Rodrigues, k a unit axis
+        return v * std::cos(a) + cross(k, v) * std::sin(a) + k * (dot(k, v) * (1 - std::cos(a)));
+    }
+    V3 at(float t) const {   // the wanted direction as it was at t
+        if (seen.empty()) return cursor;
+        for (size_t k = seen.size(); k-- > 0;) if (seen[k].first <= t) return seen[k].second;
+        return seen.front().second;
+    }
+    static float mj(float s) { s = std::clamp(s, 0.0f, 1.0f); return s * s * s * (10 - 15 * s + 6 * s * s); }   // minimum jerk
+    V3 step(float t, float dt, V3 want, int target, V3 nose) {
+        seen.push_back({t, want});
+        while (seen.size() > 2 && seen.front().first < t - delay - 0.5f) seen.pop_front();
+        if (!primed) { cursor = want; primed = true; last_target = target; next = t; }
+        if (target != last_target) {   // a new target: react first (and find it, if out of view)
+            last_target = target; moving = false;
+            const float off = std::acos(std::clamp(dot(nose, want), -1.0f, 1.0f)) / rad;
+            next = t + react + (off > view_half ? search : 0);
+        }
+        const V3 now_seen = at(t - delay), before = at(t - delay - 0.1f);
+        // between strokes, the target's seen motion followed in part (smooth pursuit)
+        if (t >= next - dwell) {
+            const V3 w = cross(before, now_seen);
+            const float a = std::asin(std::clamp(len(w), 0.0f, 1.0f)) / 0.1f * dt;
+            if (len(w) > 1e-6f && a < 0.5f) cursor = unit(rotate(cursor, unit(w), pursuit * a));
+        }
+        if (moving) {
+            const float f = mj((t - t0) / dur), d = (f - done) * total;
+            cursor = unit(rotate(cursor, axis, d)); done = f;
+            if (t >= t0 + dur) { moving = false; next = t + dwell; }
+        } else if (t >= next) {   // the next stroke, toward the target as seen, landing a little off
+            const float err = std::acos(std::clamp(dot(cursor, now_seen), -1.0f, 1.0f));
+            if (err < 0.02f * rad) { next = t + dwell; return cursor; }
+            const V3 k = unit(cross(cursor, now_seen));
+            V3 end = rotate(cursor, k, gain * err);
+            const V3 side = unit(cross(end, k));
+            const float sigma = std::hypot(scatter * gain * err, floor_deg * rad);
+            end = unit(rotate(end, k, sigma * n01(rng)));
+            end = unit(rotate(end, side, sigma * n01(rng)));
+            const V3 kk = cross(cursor, end);
+            if (len(kk) < 1e-7f) { next = t + dwell; return cursor; }
+            axis = unit(kk); total = std::acos(std::clamp(dot(cursor, end), -1.0f, 1.0f)); done = 0; t0 = t;
+            dur = std::max(0.09f + 0.045f * std::log2(1 + total / rad / 0.5f), total / rad / max_speed);   // Fitts-like
+            moving = true;
+        }
+        return cursor;
+    }
+};
+
 // The simulated player: the same decisions for every controller. Picks an enemy the way the
 // game's target selection tends to (nearest the nose, distance counting), keeps it until it is
-// down or over 5 km away, puts the mouse on its gun lead point, and works the throttle:
+// down or over 5 km away, moves the mouse by hand toward its gun lead point (Hand: strokes,
+// reaction, scatter; never an aimbot), and works the throttle:
 // throttle+brake (a high-G turn) while the enemy is more than 40 deg off the nose, full
 // throttle while it is beyond 1.5 km (a boss: 800 m) and not closing at 50 m/s, brake inside
 // 600 m (a boss: 400 m) when closing fast. Low over the ground it does not follow the aim into
@@ -787,7 +860,9 @@ struct Pilot {
     float picked_at = 0; bool shot = false;
     double to_shot = 0; int shots_timed = 0;
     int target = -1;
-    V3 aim{1, 0, 0};
+    V3 aim{1, 0, 0};       // where the hand has the mouse (what the controller flies to)
+    V3 lead{1, 0, 0};      // the gun lead point itself (firing and the gun-aim measure)
+    Hand hand;
     float range = 0;
     std::vector<std::pair<float, int>> kill_log;
     std::vector<char> kill_gun;                  // per kill: brought down by the gun
@@ -858,12 +933,13 @@ struct Pilot {
             if (target >= 0) { picked_at = t; shot = false; }
         }
         if (target >= 0) {
-            aim = lead_point(e.foes[target].path, t, me.pos);
+            lead = lead_point(e.foes[target].path, t, me.pos);
             range = len(pose_at(e.foes[target].path, t).pos - me.pos);
         } else {   // nobody to attack: level flight on the current heading
             const V3 flat{me.b.f.x, me.b.f.y, 0};
-            aim = len(flat) > 0.1f ? unit(flat) : V3{1, 0, 0};
+            lead = len(flat) > 0.1f ? unit(flat) : V3{1, 0, 0};
         }
+        aim = hand.step(t, dt, lead, target, me.b.f);   // the mouse, moved by hand (see Hand)
         // low over the ground: the aim no lower than a floor set by the height 4 s ahead: free
         // down to 170 m, level there, rising to 25 deg up at 45 m (crash below 50 m). A player
         // follows LADON down to the sea; a floor from 700 m kept the aircraft above it.
@@ -935,7 +1011,9 @@ struct Pilot {
             if (doomed(target)) { target = -1; lock = 0; return; }
         }
         if (range > 1000) return;
-        const float off = std::acos(std::clamp(dot(me.b.f, aim), -1.0f, 1.0f)) / rad;
+        // the nose against the lead point itself: the player fires when the sight is on it,
+        // wherever the mouse happens to be
+        const float off = std::acos(std::clamp(dot(me.b.f, lead), -1.0f, 1.0f)) / rad;
         close_time += dt;
         if (off < 2) on_lead += dt;
         if (off < 2) {   // the trigger: rounds along the nose, judged on arrival
