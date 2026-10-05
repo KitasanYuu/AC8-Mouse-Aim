@@ -87,9 +87,9 @@ struct ManeuverTuning {
     // Inside level_inside deg the wings are simply held level: the direction to a target
     // that close swings from side to side and the bank with it.
     float level_inside=1.0f;
-    float level_per_deg=20.0f, rollout_rate=0.0f, rollout_lag=0.25f;
+    float level_per_deg=10.0f, rollout_rate=0.0f, rollout_lag=0.25f;   // 20 until 2026-10-05
     // Roll toward where a moving target will be this far ahead (s).
-    float pursuit_ahead=0.0f;
+    float pursuit_ahead=0.3f;   // 0 until 2026-10-05
     // A target moving faster than pursuit_speed deg/s (fully at twice it) is chased: the
     // pull may slice (chase_slice = 1) and is not traded for a push. A chased target has
     // no arrival to level the wings for: chase_level = 1 lifts the level_per_deg limit for
@@ -118,7 +118,7 @@ struct ManeuverTuning {
     // credited, at most overlap_max degrees, fading out within 15 deg of the target
     // (none within 5), where a misaligned pull swings the target around the nose.
     float overlap_max=30.0f;
-    float upright=1;                          // upright preference (0 = exact lift alignment)
+    float upright=0;                          // upright preference (0 = exact lift alignment; 1 until 2026-10-05)
     // Most bank for a pull toward a target below the turn: slice_bank for small
     // corrections (no belly-up for a slight down-left adjustment), slice_deep from twice
     // slice_from (a nose-low slice in a big turn), and fully inverted only for targets

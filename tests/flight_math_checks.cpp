@@ -8,7 +8,12 @@
 namespace {
 using namespace flight;
 bool close_to(float a,float b,float tolerance=0.1f) { return std::abs(a-b)<tolerance; }
-Guidance guide(const Basis& body,V aim) { Maneuver m; return m.step(body,aim); }
+// The rules as tuned until 2026-10-05 (upright preference 1, 20 deg of bank per degree to go,
+// no pursuit lead): the checks below describe them, and they remain selectable. The defaults
+// since then (the game's tuning: upright 0, level_per_deg 10, pursuit_ahead 0.3) are checked
+// after them.
+Maneuver upright_maneuver() { Maneuver m; m.t.upright=1; m.t.level_per_deg=20; m.t.pursuit_ahead=0; return m; }
+Guidance guide(const Basis& body,V aim) { Maneuver m=upright_maneuver(); return m.step(body,aim); }
 }
 
 int main() {
@@ -54,18 +59,18 @@ int main() {
 
     // Directly behind: committed upward oblique reversal, right by default.
     g=guide(level,{-1,0,0});
-    assert(g.tail && close_to(g.roll_error,ManeuverTuning{}.tail_bank) && g.pitch_error>0);
+    assert(g.tail && close_to(g.roll_error,upright_maneuver().t.tail_bank) && g.pitch_error>0);
     // Nose vertical has no horizon: hold roll and pull straight through.
     g=guide(basis(90,0,0),{0,0,-1});
     assert(g.tail && g.roll_error==0 && close_to(g.pitch_error,180));
 
     // The side chosen on entry is kept while the target jitters behind the tail.
     {
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         g=m.step(level,unit({-1,-0.05f,0}));
-        assert(g.tail && close_to(g.roll_error,-ManeuverTuning{}.tail_bank));
+        assert(g.tail && close_to(g.roll_error,-upright_maneuver().t.tail_bank));
         g=m.step(level,unit({-1,0.05f,0}));
-        assert(g.tail && close_to(g.roll_error,-ManeuverTuning{}.tail_bank));
+        assert(g.tail && close_to(g.roll_error,-upright_maneuver().t.tail_bank));
         const float exit=150*rad;
         assert(m.step(level,{std::cos(exit),std::sin(exit),0}).tail);
         const float done=140*rad;
@@ -79,9 +84,9 @@ int main() {
     // A few degrees sideways: bank toward it (limited by the distance still to go) and
     // pull, rather than leave it to the weak rudder (logged: 5 deg took 2-3 s).
     g=guide(level,basis(0,5,0).f);
-    assert(g.roll_error>60 && g.roll_error<=ManeuverTuning{}.level_per_deg*4+0.5f);
+    assert(g.roll_error>20.0f*3 && g.roll_error<=20.0f*4+0.5f);
     g=guide(level,basis(0,2,0).f);
-    assert(g.roll_error>5 && g.roll_error<=ManeuverTuning{}.level_per_deg+0.5f);
+    assert(g.roll_error>5 && g.roll_error<=20.0f+0.5f);
     // Inverted near the target: roll upright.
     g=guide(basis(0,0,180),basis(0,1,0).f);
     assert(std::abs(g.roll_error)>165);
@@ -113,7 +118,7 @@ int main() {
     // Top of a loop: inverted, target over the canopy. Keep pulling, no flip.
     {
         // The bank already held is eased off while pulling, not cut to the limit.
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         const Basis top=basis(0,0,180);
         g=m.step(top,unit(top.f+top.u*std::tan(30*rad)));
         assert(!g.pushing && std::abs(g.roll_error)<60 && g.pitch_error>5);
@@ -121,15 +126,27 @@ int main() {
     // A lateral target crossing the wing plane keeps the pull choice (no flip),
     // banking toward it on both sides of the plane.
     {
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         g=m.step(level,basis(0.3f,30,0).f);
         assert(!g.pushing && g.roll_error>80);
         g=m.step(level,basis(-0.3f,30,0).f);
         assert(!g.pushing && g.roll_error>80);
-        Maneuver close_in;
+        Maneuver close_in=upright_maneuver();
         const float up=close_in.step(level,basis(0.3f,8,0).f).roll_error;
         const float down=close_in.step(level,basis(-0.3f,8,0).f).roll_error;
         assert(up>15 && down>15 && std::abs(up-down)<10);
+    }
+
+    // The defaults since 2026-10-05 (the game's tuning): a few degrees sideways banks at most
+    // level_per_deg (10) per degree to go; a small correction below level flight is still a
+    // straight push (no half roll) without the upright preference.
+    {
+        Maneuver m;
+        g=m.step(level,basis(0,5,0).f);
+        assert(g.roll_error>30 && g.roll_error<=40.5f);
+        Maneuver d;
+        g=d.step(level,basis(-10,0,0).f);
+        assert(g.pushing && close_to(g.roll_error,0) && g.pitch_error<0);
     }
 
     // Axis linearization pre-inverts the game's power curve.
@@ -140,7 +157,7 @@ int main() {
     // A target beside the aircraft is never reached by pushing, even right after
     // a push toward a target below (logged: rolled away 90 deg, then pushed).
     {
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         assert(m.step(level,basis(-10,0,0).f).pushing);
         g=m.step(level,basis(0,-10,0).f);
         assert(!g.pushing && g.roll_error<-20);
@@ -153,7 +170,7 @@ int main() {
     // flip-flopped between push and roll-and-pull for 4 s (logged, then ground impact).
     {
         const Basis inverted=basis(0,0,180);
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         int flips=0;
         // The target swings toward and away from the wing line on the floor side (world
         // up when inverted), across the 70/85 deg push limits.
@@ -169,7 +186,7 @@ int main() {
     // level (logged: held inverted 1.5 deg off target for 6 s, nothing closing it).
     {
         const Basis banked=basis(0,0,134);
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         m.step(banked,unit(banked.f+banked.u*std::tan(40*rad)));
         g=m.step(banked,unit(banked.f+banked.r*std::tan(1.5f*rad)));
         assert(std::abs(g.roll_error)>60);
@@ -180,7 +197,7 @@ int main() {
     // swung it around the nose as fast as the roll chased it (logged corkscrew).
     {
         const Basis level=basis(0,0,0);
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         g=m.step(level,unit(level.f+level.r*std::tan(12*rad)),Plant{},0,130);
         assert(std::abs(g.roll_error)>40 && g.pitch_error>=0 && g.pitch_error<6);
     }
@@ -204,7 +221,7 @@ int main() {
     // pull and rudder, not roll right and push, nor roll belly-up (both reported).
     {
         const Basis level=basis(0,0,0);
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         const float off=40*rad, around=45*rad;
         g=m.step(level,unit(level.f*std::cos(off)+(level.u*(-std::cos(around))+level.r*(-std::sin(around)))*std::sin(off)));
         // A nose-low slice at most (bank up to slice_deep), never rolled belly-up.
@@ -222,7 +239,7 @@ int main() {
     // to align the lift with the pitch held (logged: stayed inverted 2 s, hit the ground).
     {
         const Basis inverted=basis(0,0,-150);
-        Maneuver m;
+        Maneuver m=upright_maneuver();
         m.step(inverted,unit(inverted.f+inverted.u*std::tan(40*rad)));
         for(int i=0;i<3;++i) m.step(inverted,unit(inverted.f+inverted.u*std::tan(-1.5f*rad)));
         g=m.step(inverted,unit(inverted.f+inverted.u*std::tan(-6*rad))); // target moves up (world)

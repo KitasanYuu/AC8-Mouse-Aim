@@ -1230,6 +1230,7 @@ int main() {
     std::string out_dir = "dev/compare", config = "Payload/Game/Binaries/Win64/UE4SS/Mods/AC8MouseAim/config.ini";
     std::vector<std::pair<std::string, std::string>> variants;
     std::string only;
+    bool all_refs = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = args[i];
         const auto eq = arg.find('=');
@@ -1238,6 +1239,7 @@ int main() {
         if (key == "out") out_dir = value;
         else if (key == "config") config = value;
         else if (key == "only") only = value;
+        else if (key == "refs") all_refs = value == "all";
         else if (key == "variant") {   // "label:key=value;key=value"
             const auto colon = value.find(':');
             variants.push_back({value.substr(0, colon), colon == std::string::npos ? "" : value.substr(colon + 1)});
@@ -1252,17 +1254,40 @@ int main() {
     CreateDirectoryA((out_dir + "/results").c_str(), nullptr);
     std::vector<Entry> entries;
     const flight::Tuning base = ours_tuning(config, "", scratch);
-    entries.push_back({"ours", "本仓库 · 默认配置", "src/flight_logic.h + Payload config.ini", [base] { return std::make_unique<Ours>(base); }});
-    // the configuration installed in the game (dev\Dev-Deploy remembers the game folder)
+    entries.push_back({"ours", "当前版本", "src/flight_logic.h + Payload config.ini", [base] { return std::make_unique<Ours>(base); }});
+    // The game's installed [tuning] is the development configuration (tuned there, live): it
+    // is not a column of its own but must equal the repository's. Any key that differs is
+    // reported here and at the top of the scorecard, to be brought into the repository.
+    // (dev\Dev-Deploy remembers the game folder.)
+    std::string drift;
     {
         std::ifstream game(".dev-game-path");
         std::string root; std::getline(game, root);
         if (root.rfind("\xEF\xBB\xBF", 0) == 0) root.erase(0, 3);   // written by PowerShell with a BOM
         while (!root.empty() && (root.back() == '\r' || root.back() == ' ')) root.pop_back();
         const std::string installed = root + "\\Game\\Binaries\\Win64\\UE4SS\\Mods\\AC8MouseAim\\config.ini";
+        auto tuning_keys = [](const std::string& path) {
+            std::map<std::string, std::string> keys;
+            std::ifstream in(path);
+            bool on = false;
+            for (std::string line; std::getline(in, line);) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+                if (!line.empty() && line[0] == '[') { on = line == "[tuning]"; continue; }
+                const auto eq = line.find('=');
+                if (!on || line.empty() || line[0] == ';' || eq == std::string::npos) continue;
+                keys[line.substr(0, eq)] = line.substr(eq + 1);
+            }
+            return keys;
+        };
         if (!root.empty() && std::ifstream(installed)) {
-            const flight::Tuning t = ours_tuning(installed, "", scratch);
-            entries.push_back({"ours_game", "本仓库 · 游戏现配置", installed, [t] { return std::make_unique<Ours>(t); }});
+            const auto repo = tuning_keys(config), game_keys = tuning_keys(installed);
+            for (const auto& [k, v] : game_keys) {
+                const auto it = repo.find(k);
+                if (it == repo.end() || it->second != v)
+                    drift += "  " + k + ": game " + v + ", repository " + (it == repo.end() ? std::string("(unset)") : it->second) + "\n";
+            }
+            for (const auto& [k, v] : repo) if (!game_keys.count(k)) drift += "  " + k + ": game (unset), repository " + v + "\n";
+            if (!drift.empty()) std::fprintf(stderr, "The game's [tuning] differs from the repository's:\n%s", drift.c_str());
         }
     }
     // archived configurations (dev/compare/configs/*.ini, "; label: <name>" on the first line):
@@ -1287,16 +1312,20 @@ int main() {
             std::string id = "arch_" + f.substr(0, f.rfind('.'));
             for (char& c : id) if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
             const flight::Tuning t = ours_tuning(path, "", scratch);
-            entries.push_back({id, "本仓库 · " + label, "dev/compare/configs/" + f, [t] { return std::make_unique<Ours>(t); }});
+            entries.push_back({id, label, "dev/compare/configs/" + f, [t] { return std::make_unique<Ours>(t); }});
         }
     }
     for (size_t i = 0; i < variants.size(); ++i) {
         const flight::Tuning t = ours_tuning(config, variants[i].second, scratch);
-        entries.push_back({"ours_v" + std::to_string(i + 1), "本仓库 · " + variants[i].first, variants[i].second, [t] { return std::make_unique<Ours>(t); }});
+        entries.push_back({"ours_v" + std::to_string(i + 1), "试 · " + variants[i].first, variants[i].second, [t] { return std::make_unique<Ours>(t); }});
     }
-    entries.push_back({"upstream_legacy", "主仓库 0.2.30", "FletcherMiya 052cd6a controller_mode=0", [] { return std::make_unique<UpstreamLegacy>(); }});
-    entries.push_back({"upstream_coord", "主仓库 0.2.35 协调制导", "FletcherMiya 052cd6a controller_mode=1", [] { return std::make_unique<UpstreamCoordinated>(); }});
-    entries.push_back({"pw5", "xsd467 pw5", "xsd467 821f442 pw5-flight-control", [] { return std::make_unique<Pw5>(); }});
+    // outside references: the upstream release by default; refs=all adds upstream's 0.2.35
+    // (which upstream itself rolled back) and xsd467's pw5
+    entries.push_back({"upstream_legacy", "上游 0.2.30", "FletcherMiya 052cd6a controller_mode=0", [] { return std::make_unique<UpstreamLegacy>(); }});
+    if (all_refs) {
+        entries.push_back({"upstream_coord", "上游 0.2.35", "FletcherMiya 052cd6a controller_mode=1", [] { return std::make_unique<UpstreamCoordinated>(); }});
+        entries.push_back({"pw5", "pw5 · xsd467", "xsd467 821f442 pw5-flight-control", [] { return std::make_unique<Pw5>(); }});
+    }
 
     const auto list = scenarios(out_dir);
     std::string index = "window.COMPARE_INDEX={\"controllers\":[";
@@ -1402,6 +1431,7 @@ int main() {
     // is better), then each controller's rank count and total per condition.
     std::string card = "Flight controller comparison (dev/compare): the same decisions against the same enemies.\n"
                        "Cost per scene (lower is better), one row per condition.\n\nControllers:\n";
+    if (!drift.empty()) card = "WARNING: the game's [tuning] differs from the repository's (bring it in):\n" + drift + "\n" + card;
     for (const auto& e : entries) card += "  " + e.id + "  " + e.label + "  [" + e.source + "]\n";
     char line[512];
     auto header = [&](const char* first) {
