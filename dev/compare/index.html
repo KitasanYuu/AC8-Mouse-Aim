@@ -426,6 +426,11 @@ function drawJet(ctx, P, A, B, tint, scale = 1, mesh = MESH, length = 19) {
 // ---------- the shared 3D view: every controller in one picture ----------
 const orbit = { yaw: -30, pitch: 18, zoom: 1 };
 let camHeading = null;
+// The global camera's centre and reach, eased in real time (0.5 s) toward what the scene asks
+// for: taken raw, every enemy crossing the 4 km line, leaving, or going down for all, and every
+// controller crashing, moved the view in one jump. A new scene, condition or camera, or a jump
+// along the timeline, cuts straight to it.
+let camEase = null;
 // Scenes where the aim is only a direction start every aircraft at the same point: they are
 // drawn side by side, 60 m apart across the starting heading, so they do not overlap.
 function spread(id) {
@@ -461,6 +466,7 @@ function drawView() {
   let centre, size;
   const followed = now.find(o => o.c.id === st.follow) || now[0];
   let look = null;   // [pitch, yaw] the camera stays behind
+  let lookWeight = 1;   // how readily the camera turns to it
   if (st.cam === 'follow' && followed) { centre = followed.pos; size = 60; look = [followed.fr[F.pitch], followed.fr[F.yaw]]; }
   else if (st.cam === 'target' && followed) {   // a chase camera behind the target, its distance by the target's size
     const ti = followed.fr.length > F.tgt && followed.fr[F.tgt] >= 0 ? followed.fr[F.tgt] : -1;
@@ -474,20 +480,40 @@ function drawView() {
     const pts = flying.map(o => o.pos).concat(scripted ? [scripted] : []);
     for (const o of foesNow) if (flying.some(p => Math.hypot(...sub(o.at.pos, p.pos)) < 4000)) pts.push(o.at.pos);
     if (!pts.length) pts.push(now[0].pos);
-    centre = mul(pts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / pts.length);
-    size = Math.max(250, ...pts.map(p => Math.hypot(...sub(p, centre)) * 2));
+    const wantCentre = mul(pts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / pts.length);
+    const wantSize = Math.max(250, ...pts.map(p => Math.hypot(...sub(p, wantCentre)) * 2));
+    // eased: the offset from the controllers' mean position (which moves smoothly, and is followed
+    // at once: easing the whole centre left the view hundreds of metres behind at 600 m/s) and the reach
+    const anchorPts = flying.length ? flying.map(o => o.pos) : [now[0].pos];
+    const anchor = mul(anchorPts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / anchorPts.length);
+    const wantOffset = sub(wantCentre, anchor);
+    const key = `${st.scen}|${st.cond}|${st.cam}`, wall = performance.now();
+    if (!camEase || camEase.key !== key || Math.abs(st.t - camEase.t) > 2) camEase = { key, offset: wantOffset, size: wantSize };
+    else {
+      const k = 1 - Math.exp(-Math.min(0.2, (wall - camEase.wall) / 1000) / 0.5);
+      camEase.offset = add(camEase.offset, mul(sub(wantOffset, camEase.offset), k));
+      camEase.size *= Math.pow(wantSize / camEase.size, k);
+      // keep drawing while it settles (also when paused)
+      if (Math.hypot(...sub(wantOffset, camEase.offset)) > 0.5 || Math.abs(Math.log(wantSize / camEase.size)) > 0.002) dirty = true;
+    }
+    camEase.t = st.t; camEase.wall = wall;
+    centre = add(anchor, camEase.offset); size = camEase.size;
     if (!DIRECTION_ONLY.has(sc.kind) && flying.length) {   // behind the group's mean heading
       const f = flying.map(o => enu(basis(o.fr[F.pitch], o.fr[F.yaw], 0).f)).reduce((a, b) => add(a, b), [0, 0, 0]);
       look = [0, Math.atan2(f[0], f[1]) / rad];
+      // how much they agree (1 all one way, 0 scattered): scattered, the mean heading swings
+      // about at random, and the camera follows it only that much
+      lookWeight = Math.hypot(f[0], f[1]) / flying.length;
     }
   }
   const dist = size * 1.4 * orbit.zoom;
   let heading = orbit.yaw * rad;
   if (look) {   // behind the watched heading, smoothed (as on the reconstruction page)
     const f = enu(basis(look[0], look[1], 0).f), want = Math.atan2(f[0], f[1]);
-    camHeading = camHeading === null ? want : camHeading + (((want - camHeading) / rad + 540) % 360 - 180) * rad * 0.2;
+    camHeading = camHeading === null ? want : camHeading + (((want - camHeading) / rad + 540) % 360 - 180) * rad * 0.2 * lookWeight * lookWeight;
     heading += camHeading;
   } else camHeading = null;
+  window.ac8cam = { centre, size, heading };   // debugging
   const cp = orbit.pitch * rad;
   const C = add(centre, mul([-Math.sin(heading) * Math.cos(cp), -Math.cos(heading) * Math.cos(cp), Math.sin(cp)], dist));
   const P = camera(C, centre, w, h, 55, 2);
