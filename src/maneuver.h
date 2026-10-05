@@ -95,7 +95,7 @@ struct ManeuverTuning {
     // no arrival to level the wings for: chase_level = 1 lifts the level_per_deg limit for
     // it (logged gun attacks: held off the lift by that limit, the pull dragged the nose
     // past the enemy, which slid to the side of the canopy and stayed there).
-    float pursuit_speed=4.0f, chase_slice=0.0f, chase_level=0.0f;
+    float pursuit_speed=4.0f, chase_slice=0.0f, chase_level=1.0f;
     float push_enter=120.0f, push_exit=135.0f;     // largest errors always roll and pull
     // A push is used only for targets close to straight below the floor: at most this
     // much roll to bring the floor onto the target (enter / give up).
@@ -129,11 +129,11 @@ struct ManeuverTuning {
 };
 struct Maneuver {
     ManeuverTuning t;
-    bool tail=false, pushing=false;
+    bool tail=false, pushing=false, escaping=false;   // escaping: the belly-up push near the ground
     int limit_side=0;                      // side of a bank-limited lift, held near straight below
-    int side=1, tail_side=1, roll_side=1;
+    int side=1, tail_side=1, roll_side=1, escape_side=1;
     float last_angle=-1, closing=0;        // closing rate on the target, deg/s
-    void reset() { tail=false; pushing=false; limit_side=0; side=1; tail_side=1; roll_side=1; last_angle=-1; closing=0; }
+    void reset() { tail=false; pushing=false; escaping=false; limit_side=0; side=1; tail_side=1; roll_side=1; escape_side=1; last_angle=-1; closing=0; }
     // One rule for every distance, decided each frame from the current geometry: roll
     // the canopy (or, for targets straight below, the floor) toward the target within the
     // bank limits, pitch along it, rudder for the rest. The only memory is hysteresis on
@@ -162,6 +162,32 @@ struct Maneuver {
         const float up=std::atan2(hx,hy);
         const float lag=plant.pitch_delay+plant.pitch_input;
         g.yaw_weight=1;
+        // Near the ground, sinking, the canopy facing down (beyond 135 deg of bank), the aim
+        // above the nose: roll the canopy to the sky the short way, held to one side, and pull
+        // as it comes up, by as much as the aim stands above the nose. Not aimed at the aim
+        // itself: with it behind the tail its bearing swings about, and the rear reversal or a
+        // roll that changed its mind took the seconds there were not (bench, Selene low over
+        // the sea: 400 m, inverted, 30 deg nose-down, the aim snatched up behind: rolling one
+        // way and back for 3 s into the sea). Not a push: inverted, the game's push has almost
+        // no authority (logged). Held until the canopy is well up or the danger gone.
+        const bool low_and_aim_up=t.ground_guard>0 && ground_time<t.ground_guard && dot(aim,{0,0,1})>b.f.z;
+        const bool was_escaping=escaping;
+        if(!low_and_aim_up || b.u.z>0.5f) escaping=false;
+        else if(b.u.z<-0.7f) escaping=true;
+        if(escaping) {
+            tail=false; pushing=false;
+            g.tail=false; g.pushing=false; g.turn_weight=1;
+            // the short way to the canopy up; the side kept only near straight inverted, where
+            // the short way flips (the usual roll latch went the long way round: 205 deg, bench)
+            float r=roll_toward(hx/std::max(hn,1e-3f),hy/std::max(hn,1e-3f));
+            if(!was_escaping) escape_side=r>=0?1:-1;
+            if((r>=0?1:-1)!=escape_side) { if(std::abs(r)>160.0f) r+=360.0f*escape_side; else escape_side=-escape_side; }
+            g.roll_error=r;   // canopy to the sky
+            const float gap=(std::asin(std::clamp(aim.z,-1.0f,1.0f))-std::asin(std::clamp(b.f.z,-1.0f,1.0f)))/rad;
+            const float credit=std::min(std::max(0.0f,roll_rate*(g.roll_error>=0?1.0f:-1.0f))*lag,t.overlap_max);
+            g.pitch_error=gap*std::max(0.0f,std::cos(std::max(0.0f,std::abs(g.roll_error)-credit)*rad));
+            return g;
+        }
         if(!tail && g.angle>t.tail_enter) { tail=true; tail_side=side; }
         else if(tail && g.angle<t.tail_exit) tail=false;
         g.tail=tail;

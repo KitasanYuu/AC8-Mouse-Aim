@@ -19,5 +19,6 @@ struct Controller {
     virtual ~Controller() = default;
     virtual void reset() = 0;                 // new flight: forget everything
     virtual Stick step(const Sense&) = 0;
+    virtual const char* trace() const { return ""; }   // the last step's internals, for BENCH_TRACE
 };
 }

@@ -272,6 +272,7 @@ dev\Dev-Deploy.cmd -GamePath "D:\SteamLibrary\steamapps\common\ACE COMBAT 8"
 - 截取录像：`dev/compare/extract_battles.py`（整段空战，`--window <录像名>:<起>-<止>` 指定；`--boss ladn_CP_C --only-boss` 用于 LADON 这类靠部位锁定的头目；敌我按录像里的锁定候选标记区分，Tu-95 机翼等可锁定部位并入机体），存到 `battles/`，再在 `scenes.txt` 里加一行。单个敌机片段仍可用 `dev/compare/extract_tracks.py` 截取（`scenes.txt` 的 `single` 类），目前不使用。
 - 参评飞控：本仓库工作区（`src/` + Payload 的 `[tuning]`）、本仓库按游戏里现装的 config.ini（仓库根目录的 `.dev-game-path` 指向游戏目录时）、主仓库 0.2.30 与 0.2.35、xsd467 pw5。其他仓库的源码按提交原样放在 `dev/compare/controllers/<名称>/`（只改命名空间），适配器见同目录的 `.h`；新增飞控时照此添加并在 `harness.cpp` 注册。
 - 试参数：`dev\compare\compare.cmd "variant=kd 0.1:pitch_kd=0.1;level_per_deg=10"`，会作为额外一列与当前配置并排。
+- 配置存档：`dev/compare/configs/*.ini`（首行 `; label: 名称`）每次都作为固定的对照列参评。目前有 2026-10-05 的旧默认配置（`pitch_kd` 0.25、`chase_level` 0）和当时游戏里装的配置。文件里没写的键取当天代码的默认值，存档要把需要保持的值写明。
 - `dev/compare/scorecard.txt` 随仓库提交，改飞控后重跑，用 git diff 看各场景分数的变化。
 
 `ac8_flight_logic.dll` 仅用于开发，不在 Payload 中；正式安装使用主 DLL 内置的同一份逻辑代码。

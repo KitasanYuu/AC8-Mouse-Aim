@@ -38,5 +38,6 @@ struct Ours : Controller {
         flight::logic_step(tuning, *state, in, out);
         return {out.pitch, out.roll, out.yaw};
     }
+    const char* trace() const override { return out.trace; }
 };
 }

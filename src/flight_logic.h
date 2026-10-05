@@ -50,7 +50,7 @@ struct Tuning {
     // the lag ratios and chattered at ~2.5 Hz in game. Brake with this fraction of the
     // opposite authority, and close the last degrees at gain (1/s). Tuned in the
     // closed-loop simulation (tests/flight_sim.cpp).
-    float pitch_kd=0.25f;              // stick per deg/s of predicted rate error
+    float pitch_kd=0.1f;               // stick per deg/s of predicted rate error (0.25 until 2026-10-05)
     float roll_kv=1.5f;                // roll acceleration per deg/s of rate error (1/s)
     float pitch_brake=0.45f, roll_brake=0.45f;
     float pitch_unload=0;              // opposite authority used to slow a wanted rotation (0 = full)

@@ -1063,7 +1063,8 @@ std::vector<int> reference_order(const Encounter& e, float seconds, int prefer, 
     return order;
 }
 
-std::string trace_scene;   // BENCH_TRACE=<scene>:<controller>@<condition>: plant internals, first 4 s
+std::string trace_scene;   // BENCH_TRACE=<scene>:<controller>@<condition>[,<from s>]: the controller's internals for 6 s
+float trace_from = 0;
 Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_frames, const std::string& ctl_id = "") {
     const bool trace_this = !trace_scene.empty() && trace_scene == sc.id + ":" + ctl_id + "@" + cond.id;
     const Plant& plant = *cond.plant;
@@ -1103,6 +1104,13 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         if (app) {   // along the player's path (see Approach)
             const V3 ahead = app->at(t + Approach::lookahead).pos - me.pos;
             target = len(ahead) > 1 ? unit(ahead) : direction(rec.aim_p, rec.aim_y);
+            // no steeper than the path itself less 20 deg: a slow aircraft fallen behind and above
+            // the path was aimed 70 deg down at 600 m, as no one would, and one flying the aim
+            // exactly dived into the sea
+            const V3 p0 = app->at(t).pos, p1 = app->at(t + 0.5f).pos, d = p1 - p0;
+            const float path_el = len(d) > 1 ? std::asin(std::clamp(d.z / len(d), -1.0f, 1.0f)) / rad : 0;
+            const float el = std::asin(std::clamp(target.z, -1.0f, 1.0f)) / rad;
+            if (el < path_el - 20) target = direction(path_el - 20, std::atan2(target.y, target.x) / rad);
         }
         if (pilot) {
             pilot->before(t, dt, me);
@@ -1126,8 +1134,9 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
                 {me.vel.x, me.vel.y, me.vel.z}, {me.acc.x, me.acc.y, me.acc.z}, me.pos.z};
         Stick u = ctl.step(s);
         u.pitch = std::clamp(u.pitch, -1.0f, 1.0f); u.roll = std::clamp(u.roll, -1.0f, 1.0f); u.yaw = std::clamp(u.yaw, -1.0f, 1.0f);
-        trace_on = trace_this && k % 8 == 0 && t < 4;
-        if (trace_on) std::printf("t %.2f stick %.2f thr %.0f brk %.0f pitch %.1f aim_el %.1f\n", t, u.pitch, throttle, brake, pitch, std::asin(target.z) / rad);
+        trace_on = trace_this && k % 8 == 0 && t >= trace_from && t < trace_from + 6;
+        if (trace_on) std::printf("t %.2f alt %.0f vz %.0f stick %.2f %.2f thr %.0f brk %.0f pitch %.1f roll %.0f aim_el %.1f | %s\n", t, me.pos.z, me.vel.z,
+                                  u.pitch, u.roll, throttle, brake, pitch, roll, std::asin(target.z) / rad, ctl.trace());
         me.step(plant, u, throttle, brake, dt);
         trace_on = false;
         if (app) {
@@ -1234,7 +1243,11 @@ int main() {
             variants.push_back({value.substr(0, colon), colon == std::string::npos ? "" : value.substr(colon + 1)});
         }
     }
-    if (const char* tr = std::getenv("BENCH_TRACE")) trace_scene = tr;
+    if (const char* tr = std::getenv("BENCH_TRACE")) {
+        trace_scene = tr;
+        const auto comma = trace_scene.find(',');
+        if (comma != std::string::npos) { trace_from = std::stof(trace_scene.substr(comma + 1)); trace_scene.erase(comma); }
+    }
     const std::string scratch = out_dir + "/results/tuning.ini";
     CreateDirectoryA((out_dir + "/results").c_str(), nullptr);
     std::vector<Entry> entries;
@@ -1250,6 +1263,31 @@ int main() {
         if (!root.empty() && std::ifstream(installed)) {
             const flight::Tuning t = ours_tuning(installed, "", scratch);
             entries.push_back({"ours_game", "本仓库 · 游戏现配置", installed, [t] { return std::make_unique<Ours>(t); }});
+        }
+    }
+    // archived configurations (dev/compare/configs/*.ini, "; label: <name>" on the first line):
+    // fixed columns to compare later changes against. Keys a file leaves out take the code's
+    // defaults of the day, so an archive writes out what it must keep.
+    {
+        std::vector<std::string> files;
+        WIN32_FIND_DATAA fd;
+        const HANDLE h = FindFirstFileA((out_dir + "/configs/*.ini").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do files.push_back(fd.cFileName); while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
+        std::sort(files.begin(), files.end());
+        for (const std::string& f : files) {
+            const std::string path = out_dir + "/configs/" + f;
+            std::ifstream in(path); std::string first; std::getline(in, first);
+            const auto at = first.find("label:");
+            std::string label = at == std::string::npos ? f : first.substr(at + 6);
+            while (!label.empty() && (label.front() == ' ')) label.erase(0, 1);
+            while (!label.empty() && (label.back() == '\r' || label.back() == ' ')) label.pop_back();
+            std::string id = "arch_" + f.substr(0, f.rfind('.'));
+            for (char& c : id) if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+            const flight::Tuning t = ours_tuning(path, "", scratch);
+            entries.push_back({id, "本仓库 · " + label, "dev/compare/configs/" + f, [t] { return std::make_unique<Ours>(t); }});
         }
     }
     for (size_t i = 0; i < variants.size(); ++i) {
