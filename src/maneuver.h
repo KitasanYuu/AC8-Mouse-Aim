@@ -297,9 +297,14 @@ struct Maneuver {
         // way, as much as the canopy already faces up (the pull above waits for the lift to be
         // within 90 deg of the target: bench, 650 m/s and 275 m/s down, 80 deg banked, the
         // first 0.75 s went to the roll alone, 270 m). Nothing when the aim is below the nose.
+        // No more than the aim stands above the nose: landing (the runway at sea level, so a
+        // second or two from it all the way down) an aim 0.5 deg above the nose was taken as
+        // 60 deg, a full pull past it and a full push back every 0.5-1 s (logged, M28, all
+        // three landings).
         if(!pushing && t.ground_guard>0 && ground_time<t.ground_guard && dot(aim,{0,0,1})>b.f.z) {
             const float urgency=1-smoothstep(0.4f*t.ground_guard,t.ground_guard,ground_time);
-            g.pitch_error=std::max(g.pitch_error,60.0f*urgency*std::max(0.0f,b.u.z));
+            const float above=(std::asin(std::clamp(dot(aim,{0,0,1}),-1.0f,1.0f))-std::asin(std::clamp(b.f.z,-1.0f,1.0f)))/rad;
+            g.pitch_error=std::max(g.pitch_error,std::min(60.0f*urgency,above)*std::max(0.0f,b.u.z));
         }
         // The rudder takes the part of the target off the pitch plane: beside the nose,
         // or across the lift in a turn (a bank-limited turn toward a target below it:

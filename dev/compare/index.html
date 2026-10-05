@@ -173,7 +173,7 @@ const PALETTE = { ours: '#4fb3d9', ours_game: '#f5d04c', upstream_legacy: '#f29a
 const EXTRA = ['#ff7aa8', '#8fd0c4', '#b0b8ff', '#e8e8e8'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
 const shortName = c => c.label.replace(/^本仓库 · /, '').replace(/^主仓库 /, '');
-const KIND = { capture: '通用机动 · 捕获', switch: '通用机动 · 换目标', hold: '通用机动 · 保持与低空', chain: '连续', pursuit: '脚本追击', single: '单机', multi: '多机缠斗', boss: '头目战' };
+const KIND = { capture: '通用机动 · 捕获', switch: '通用机动 · 换目标', hold: '通用机动 · 保持与低空', landing: '通用机动 · 战时降落', chain: '连续', pursuit: '脚本追击', single: '单机', multi: '多机缠斗', boss: '头目战' };
 const KINDS = Object.keys(KIND);
 const DIRECTION_ONLY = new Set(['capture', 'switch', 'chain', 'hold']);   // the aim is a direction: positions do not matter
 // Key metrics per kind: [key, label, unit, better (-1 lower, +1 higher), format]
@@ -184,6 +184,8 @@ const num = v => v.toFixed(0);
 const COLS = {
   capture: [['to2', '到 2° 内', 's', -1, sec], ['settle', '稳定 1° 内', 's', -1, sec], ['overshoot', '过冲', '°', -1, deg], ['reversals', '滚转反向', '', -1, num]],
   hold: [['mean_angle', '平均偏差', '°', -1, v => v < 0 ? null : v.toFixed(2)], ['bank_rms', '坡度均方根', '°', -1, deg], ['chatter', '杆来回打', '', -1, num]],
+  landing: [['landed', '降落', '', 1, v => v === 1 ? '成功' : '失败'], ['td_sink', '接地下沉', 'm/s', -1, v => v < 0 ? null : v.toFixed(1)],
+            ['mean_angle', '平均偏差', '°', -1, v => v < 0 ? null : v.toFixed(2)], ['chatter', '杆来回打', '', -1, num]],
   pursuit: [['mean_angle', '平均偏差', '°', -1, deg], ['within5', '5° 内', '%', 1, pct], ['reversals', '滚转反向', '', -1, num]],
   single: [['mean_angle', '平均偏差', '°', -1, deg], ['within2', '2° 内', '%', 1, pct], ['within5', '5° 内', '%', 1, pct]],
   multi: [['kills', '击落', '', 1, num], ['clear', '全部击落', 's', -1, v => v < 0 ? null : v.toFixed(1)], ['to_shot', '选定到开火', 's', -1, sec], ['on_lead', '机炮瞄准', '%', 1, pct]],
@@ -541,6 +543,16 @@ function drawView() {
     ctx.globalAlpha = 1; }
   { const q0 = P(centre), q1 = P([centre[0], centre[1], z0]);   // drop line to the ground
     if (q0 && q1) { ctx.setLineDash([3, 5]); ctx.strokeStyle = '#84959f'; ctx.globalAlpha = .5; ctx.beginPath(); ctx.moveTo(q0[0], q0[1]); ctx.lineTo(q1[0], q1[1]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; } }
+  // a landing's runway (as fitted from the recording's ground rolls): the surface, its edges and
+  // a dashed centre line, on the ground plane
+  if (sc.runway) {
+    const [cx, cy, hd, hl, hw] = sc.runway, u = [Math.cos(hd * rad), Math.sin(hd * rad)], n = [-u[1], u[0]];
+    const at = (a, s) => enu([cx + u[0] * a + n[0] * s, cy + u[1] * a + n[1] * s, z0]);
+    const corners = [at(-hl, -hw), at(hl, -hw), at(hl, hw), at(-hl, hw)], q = corners.map(P);
+    if (q.every(Boolean)) { ctx.fillStyle = '#2a3236'; ctx.beginPath(); q.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.fill(); }
+    strokePath(ctx, P, [...corners, corners[0]], '#c9d3d8', 1.5, .8);
+    strokePath(ctx, P, [at(-hl, 0), at(hl, 0)], '#e8e8e8', 1, .7, 0, [12, 10]);
+  }
   const jetScale = 1;   // every airframe at true size, so their sizes compare (far ones become dots)
   const nearFade = dist * 0.35;
   // enemies

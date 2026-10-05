@@ -74,8 +74,9 @@ V chase_direction(const Chase& c,float t) {
 }
 // With switch_at>=0 the target moves to next at that time (chained maneuvers) and the
 // metrics restart there, times relative to the switch.
+// altitude / sink (m, m/s, held constant): near the ground, for the low-altitude guard
 Result fly(const Truth& truth,float start_roll,V target,const Tuning& tuning,float seconds=10,
-          V next=V{},float switch_at=-1,const Chase* chase=nullptr) {
+          V next=V{},float switch_at=-1,const Chase* chase=nullptr,float altitude=0,float sink=0) {
     const float dt=1.0f/75;
     Basis b=basis(0,0,start_roll);
     float q=init_q,p=init_p,r=0, fq=init_q,fp=init_p,fr=0, sq=0,sr=0, last_q=0,last_r=0;
@@ -101,7 +102,8 @@ Result fly(const Truth& truth,float start_roll,V target,const Tuning& tuning,flo
         const float pitch=std::asin(std::clamp(f.z,-1.0f,1.0f))/rad, yaw=std::atan2(f.y,f.x)/rad;
         const V right0{-std::sin(yaw*rad),std::cos(yaw*rad),0}, up0=cross(f,right0);
         const float roll=std::atan2(dot(b.u,right0),dot(b.u,up0))/rad;
-        const LogicInput in{pitch,yaw,roll,target.x,target.y,target.z,fq+jitter(rng),fr,fp+jitter(rng),dt,0};
+        LogicInput in{pitch,yaw,roll,target.x,target.y,target.z,fq+jitter(rng),fr,fp+jitter(rng),dt,0};
+        if(altitude>0) { in.altitude=altitude; in.vel_z=-sink; }
         maneuver_debug=verbose && k%4==0;
         logic_step(tuning,state,in,out);
         if(verbose && k%4==0) std::printf("t=%.2f %s\n",k*dt,out.trace);
@@ -349,6 +351,14 @@ int main(int argc,char** argv) {
         for(const Chase& c:chases) {
             const Result r=fly(*truth,0,chase_direction(c,0),tuning,10,V{},-1,&c);
             std::printf("  %-26s mean %5.1fdeg after 3s, roll reversals %d, chatter %d, inverted %.1fs\n",c.name,r.track,r.reversals,r.chatter,r.inverted);
+        }
+        // Landing flare: 30 m up, sinking 10 m/s (3 s from sea level: the low-altitude guard is
+        // on), wings level, the aim 1 deg above the nose. The guard once took that as 60 deg:
+        // full pull past it, full push back, every 0.5-1 s (logged, M28 landings).
+        {
+            const Result r=fly(*truth,0,direction(1,0),tuning,4,V{},-1,nullptr,30,10);
+            std::printf("  %-26s overshoot %4.1fdeg, chatter %d\n","landing flare 1 up",r.overshoot,r.chatter);
+            if(r.chatter>2 || r.overshoot>3.0f) ok=false;
         }
     }
     std::printf(ok?"Simulation checks passed.\n":"Simulation checks FAILED (nominal and weak plants must settle with <3deg overshoot).\n");
