@@ -544,14 +544,15 @@ function drawView() {
   { const q0 = P(centre), q1 = P([centre[0], centre[1], z0]);   // drop line to the ground
     if (q0 && q1) { ctx.setLineDash([3, 5]); ctx.strokeStyle = '#84959f'; ctx.globalAlpha = .5; ctx.beginPath(); ctx.moveTo(q0[0], q0[1]); ctx.lineTo(q1[0], q1[1]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; } }
   // a landing's runway (as fitted from the recording's ground rolls): the surface, its edges and
-  // a dashed centre line, on the ground plane
+  // the centre line stripes, on the ground plane. The stripes are laid in metres (36 m painted,
+  // 24 m gap): dashed on screen, the pattern slid along the line as the camera moved
   if (sc.runway) {
     const [cx, cy, hd, hl, hw] = sc.runway, u = [Math.cos(hd * rad), Math.sin(hd * rad)], n = [-u[1], u[0]];
     const at = (a, s) => enu([cx + u[0] * a + n[0] * s, cy + u[1] * a + n[1] * s, z0]);
     const corners = [at(-hl, -hw), at(hl, -hw), at(hl, hw), at(-hl, hw)], q = corners.map(P);
     if (q.every(Boolean)) { ctx.fillStyle = '#2a3236'; ctx.beginPath(); q.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.fill(); }
     strokePath(ctx, P, [...corners, corners[0]], '#c9d3d8', 1.5, .8);
-    strokePath(ctx, P, [at(-hl, 0), at(hl, 0)], '#e8e8e8', 1, .7, 0, [12, 10]);
+    for (let a = -hl + 30; a + 36 <= hl - 30; a += 60) strokePath(ctx, P, [at(a, 0), at(a + 36, 0)], '#e8e8e8', 1, .7);
   }
   const jetScale = 1;   // every airframe at true size, so their sizes compare (far ones become dots)
   const nearFade = dist * 0.35;
@@ -609,15 +610,20 @@ function drawView() {
     ctx.globalAlpha = 1;
   }
   // LADON's ECM: missiles lock only within 1 km. A sphere of that radius (the horizontal ring and
-  // two upright ones), solid while any controller is inside it, dashed while all are outside.
+  // two upright ones), solid while any controller is inside it, dashed while all are outside
+  // (every other 5 deg arc: fixed on the sphere, where a dash pattern on screen slid as the view moved).
   for (const o of foesNow) {
     if (!/ladn/i.test(o.f[0])) continue;
     const c = o.at.pos, R = 1000, inside = now.some(n => !n.gone && Math.hypot(...sub(n.pos, c)) < R);
     const ring = (u, v) => { const pts = []; for (let k = 0; k <= 72; k++) { const a = k / 72 * 2 * Math.PI; pts.push(add(c, add(mul(u, R * Math.cos(a)), mul(v, R * Math.sin(a))))); } return pts; };
-    const col = inside ? '#ffb000' : '#c9a24a', alpha = inside ? .7 : .35, dash = inside ? null : [6, 6];
-    strokePath(ctx, P, ring([1, 0, 0], [0, 1, 0]), col, inside ? 1.5 : 1, alpha, 0, dash);
-    strokePath(ctx, P, ring([1, 0, 0], [0, 0, 1]), col, 1, alpha * .6, 0, dash);
-    strokePath(ctx, P, ring([0, 1, 0], [0, 0, 1]), col, 1, alpha * .6, 0, dash);
+    const col = inside ? '#ffb000' : '#c9a24a', alpha = inside ? .7 : .35;
+    const draw = (pts, width, a) => {
+      if (inside) { strokePath(ctx, P, pts, col, width, a); return; }
+      for (let k = 0; k + 1 < pts.length; k += 2) strokePath(ctx, P, [pts[k], pts[k + 1]], col, width, a);
+    };
+    draw(ring([1, 0, 0], [0, 1, 0]), inside ? 1.5 : 1, alpha);
+    draw(ring([1, 0, 0], [0, 0, 1]), 1, alpha * .6);
+    draw(ring([0, 1, 0], [0, 0, 1]), 1, alpha * .6);
     const q = P(add(c, [0, 0, R])); if (q) { ctx.fillStyle = col; ctx.globalAlpha = alpha + .2; ctx.font = `11px ${MONO}`; ctx.fillText(inside ? 'ECM 1 km · 可锁定' : 'ECM 1 km', q[0] + 6, q[1] - 4); ctx.globalAlpha = 1; }
   }
   // each controller: the last 4 s of path, the aircraft, the aim
