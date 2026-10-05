@@ -2,6 +2,7 @@
 local directory = assert(debug.getinfo(1, "S").source:sub(2):match("^(.*[/\\])"))
 local aim_camera = dofile(directory .. "camera.lua")
 local gaze_probe = dofile(directory .. "gaze_probe.lua")
+local mesh_probe = dofile(directory .. "mesh_probe.lua")
 local gaze = dofile(directory .. "gaze.lua")
 local start_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_start"))
 local reload_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_reload"))
@@ -161,6 +162,7 @@ else
                 return
             end
             gaze_probe.update(pawn,controller,directory)
+            mesh_probe.update(pawn,directory,contacts.active())   -- automatic while recording
             local rotation = pawn:K2_GetActorRotation()
             assert(rotation, "K2_GetActorRotation returned nil")
             local pitch = rotation_component(rotation, "Pitch")

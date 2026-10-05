@@ -103,6 +103,13 @@ struct ManeuverTuning {
     // A target more than push_below deg beyond the bank a pull may use (exit at
     // push_below_exit) is pushed for, wings toward level.
     float push_below=60.0f, push_below_exit=45.0f;
+    // Near the ground, sinking: within ground_guard seconds of reaching sea level at the present
+    // sink rate, no push unless its force points up (belly-up); the target is reached by roll
+    // and pull. The aim stays the player's; only the way to it changes. Logged 2026-10-05:
+    // at 650 m/s, 480 m and -280 m/s the aim rose while 80 deg banked, and the push chosen to
+    // reach it sideways cost the 0.5 s that would have pulled out. 0 = off. (Altitude is above
+    // sea level: over high ground it does not help, and does not get in the way.)
+    float ground_guard=5.0f;
     float choice_margin=0.6f;                      // seconds a push must lose by to switch to a pull
     float push_bias=0.3f;                          // seconds a push may be slower and still be chosen
     float tail_enter=160.0f, tail_exit=145.0f, tail_bank=50.0f;
@@ -138,7 +145,7 @@ struct Maneuver {
     // plus the shortest stop; roll_rate: measured (deg/s); lead_u/lead_r: how fast the
     // target itself moves across the nose, along the canopy and right wing (deg/s).
     Guidance step(const Basis& b,V aim,const Plant& plant=Plant{},float pitch_coming=0,float roll_rate=0,
-                  float lead_u=0,float lead_r=0,float dt=0) {
+                  float lead_u=0,float lead_r=0,float dt=0,float ground_time=1e9f) {
         (void)pitch_coming;
         Guidance g;
         const float fx=std::clamp(dot(aim,b.f),-1.0f,1.0f), rx=dot(aim,b.r), ux=dot(aim,b.u);
@@ -238,6 +245,7 @@ struct Maneuver {
         else if(std::abs(push_roll)>t.push_roll_exit) pushing=false;
         else if(pushing) { if(pull_time+t.choice_margin<push_time) pushing=false; }
         else pushing=may_push && push_time<pull_time+t.push_bias;
+        if(pushing && t.ground_guard>0 && ground_time<t.ground_guard && upright_after(push_roll)>-0.2f) pushing=false;
         // Direction the canopy should point (the floor faces the target when pushing).
         float cx=pushing?-lx:lx, cy=pushing?-ly:ly;
         if(horizon>0) {
@@ -285,6 +293,14 @@ struct Maneuver {
         const float along=std::max(0.0f,s*std::atan2(rx*cx+ux*cy,fx)/rad);
         const float lift_left=std::max(0.0f,std::abs(g.roll_error)-credit);
         g.pitch_error=plane*(1-w)+s*along*w*std::max(0.0f,std::cos(lift_left*rad));
+        // Near the ground, sinking, the aim above the nose: pull while the roll is still under
+        // way, as much as the canopy already faces up (the pull above waits for the lift to be
+        // within 90 deg of the target: bench, 650 m/s and 275 m/s down, 80 deg banked, the
+        // first 0.75 s went to the roll alone, 270 m). Nothing when the aim is below the nose.
+        if(!pushing && t.ground_guard>0 && ground_time<t.ground_guard && dot(aim,{0,0,1})>b.f.z) {
+            const float urgency=1-smoothstep(0.4f*t.ground_guard,t.ground_guard,ground_time);
+            g.pitch_error=std::max(g.pitch_error,60.0f*urgency*std::max(0.0f,b.u.z));
+        }
         // The rudder takes the part of the target off the pitch plane: beside the nose,
         // or across the lift in a turn (a bank-limited turn toward a target below it:
         // roll, pull and rudder, as a pilot would).

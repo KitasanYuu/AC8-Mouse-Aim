@@ -371,7 +371,7 @@ inline Tuning read_tuning(const wchar_t* path) {
     auto& m=t.maneuver;
     get(L"near_end",m.near_end); get(L"far_start",m.far_start); get(L"level_per_deg",m.level_per_deg); get(L"rollout_rate",m.rollout_rate);
     get(L"rollout_lag",m.rollout_lag); get(L"pursuit_ahead",m.pursuit_ahead); get(L"push_enter",m.push_enter); get(L"push_exit",m.push_exit);
-    get(L"push_roll_enter",m.push_roll_enter); get(L"push_roll_exit",m.push_roll_exit); get(L"push_below",m.push_below); get(L"pursuit_speed",m.pursuit_speed); get(L"level_inside",m.level_inside); get(L"slice_ease",m.slice_ease); get(L"slice_hold",m.slice_hold); get(L"chase_slice",m.chase_slice); get(L"chase_level",m.chase_level); get(L"push_below_exit",m.push_below_exit); get(L"choice_margin",m.choice_margin); get(L"push_bias",m.push_bias);
+    get(L"push_roll_enter",m.push_roll_enter); get(L"push_roll_exit",m.push_roll_exit); get(L"push_below",m.push_below); get(L"pursuit_speed",m.pursuit_speed); get(L"level_inside",m.level_inside); get(L"slice_ease",m.slice_ease); get(L"slice_hold",m.slice_hold); get(L"chase_slice",m.chase_slice); get(L"chase_level",m.chase_level); get(L"push_below_exit",m.push_below_exit); get(L"choice_margin",m.choice_margin); get(L"push_bias",m.push_bias); get(L"ground_guard",m.ground_guard);
     get(L"tail_enter",m.tail_enter); get(L"tail_exit",m.tail_exit); get(L"tail_bank",m.tail_bank); get(L"latch_limit",m.latch_limit);
     get(L"overlap_max",m.overlap_max); get(L"upright",m.upright); get(L"slice_bank",m.slice_bank); get(L"slice_deep",m.slice_deep);
     get(L"slice_from",m.slice_from); get(L"invert_min_angle",m.invert_min_angle);
@@ -575,8 +575,10 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
     }
     const float lead_pitch=t.lead_gain*std::clamp(s.lead_pitch,-t.lead_max,t.lead_max);
     const float lead_yaw=t.lead_gain*std::clamp(s.lead_yaw,-t.lead_max,t.lead_max);
+    // Seconds to sea level at the present sink rate (the push guard near the ground).
+    const float ground_time=in.vel_z<-5.0f?std::max(0.0f,in.altitude)/-in.vel_z:1e9f;
     const Guidance g=s.maneuver.step(b,{in.aim_x,in.aim_y,in.aim_z},p,pitch_coming,in.roll_rate,
-                                     s.lead_pitch,s.lead_yaw,in.dt);
+                                     s.lead_pitch,s.lead_yaw,in.dt,ground_time);
     calibration_settle(s.cal,in,g);
     if(g.tail!=s.tail_logged && !out.event[0]) {
         s.tail_logged=g.tail;

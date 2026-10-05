@@ -29,4 +29,6 @@ build\lua.exe tests\rig_math_checks.lua
 if errorlevel 1 exit /b 1
 build\lua.exe tests\contacts_checks.lua
 if errorlevel 1 exit /b 1
-echo Lua syntax, rig math and contacts checks passed.
+build\lua.exe tests\mesh_probe_checks.lua
+if errorlevel 1 exit /b 1
+echo Lua syntax, rig math, contacts and mesh probe checks passed.
