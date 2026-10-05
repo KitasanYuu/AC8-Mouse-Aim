@@ -180,7 +180,7 @@ const PALETTE = { ours: '#4fb3d9', ours_game: '#f5d04c', upstream_legacy: '#f29a
 const EXTRA = ['#ff7aa8', '#8fd0c4', '#b0b8ff', '#e8e8e8'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
 const shortName = c => c.label.replace(/^本仓库 · /, '').replace(/^主仓库 /, '');
-const KIND = { capture: '捕获', switch: '换目标', chain: '连续', hold: '保持', pursuit: '脚本追击', single: '单机', multi: '多机', boss: '头目' };
+const KIND = { capture: '通用机动 · 捕获', switch: '通用机动 · 换目标', hold: '通用机动 · 保持与低空', chain: '连续', pursuit: '脚本追击', single: '单机', multi: '多机缠斗', boss: '头目战' };
 const KINDS = Object.keys(KIND);
 const DIRECTION_ONLY = new Set(['capture', 'switch', 'chain', 'hold']);   // the aim is a direction: positions do not matter
 // Key metrics per kind: [key, label, unit, better (-1 lower, +1 higher), format]

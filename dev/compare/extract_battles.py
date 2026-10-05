@@ -54,6 +54,9 @@ for path in args.files:
     # enemies: classes the game lists as lock-on candidates (c[11] >= 1, since 2026-10-05: allies
     # cannot be locked), or that the player selected (c[10], older recordings)
     hostile = {c[1] for s in snaps for c in s["c"] if (len(c) > 11 and c[11] >= 1) or (len(c) > 10 and c[10] == 1)}
+    # lockable parts of a big aircraft (Tu-95 / Tu-160 wings and gun turret, Moon 11's guns) sit
+    # at its body's position and are recorded only while selected: the body stands for them
+    hostile = {k for k in hostile if not re.search(r"ChildWing|_gsh\d|LaserPod|_x40a_RG", k)}
     gts = [f["gt"] for f in frames]
     def frame_at(t):
         return frames[min(bisect.bisect_left(gts, t), len(frames) - 1)]

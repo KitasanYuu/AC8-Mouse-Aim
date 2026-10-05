@@ -409,18 +409,17 @@ struct Scenario {
 std::vector<Scenario> scenarios(const std::string& dir) {
     std::vector<Scenario> s;
     auto add = [&](Scenario c) { s.push_back(c); };
-    // Captures: the mouse moved to a direction and held.
+    // General manoeuvres, as few as cover the distinct behaviours (scenes whose controller
+    // rankings matched others, or that the recorded battles cover, were dropped 2026-10-05):
+    // small, large and rear captures, a slight push, switches against the roll and to the belly,
+    // holding still and with mouse nudges, and the low dive recovery.
     auto cap = [&](std::string id, std::string title, V3 dir, float roll = 0, std::string note = "") {
-        Scenario c; c.id = id; c.title = "捕获 · " + title; c.kind = Capture; c.first = unit(dir); c.start_roll = roll; c.note = note; add(c);
+        Scenario c; c.id = id; c.title = "通用机动 · 捕获 " + title; c.kind = Capture; c.first = unit(dir); c.start_roll = roll; c.note = note; add(c);
     };
-    cap("cap_01", "右 3°", direction(0, 3), 0, "小角度修正");
-    cap("cap_02", "右 10°", direction(0, 10));
-    cap("cap_03", "右 90°", direction(0, 90));
-    cap("cap_04", "右后 150°", direction(0, 150), 0, "大角度：方向选择");
-    cap("cap_05", "上 20°", direction(20, 0));
-    cap("cap_06", "下 15°", direction(-15, 0), 0, "小幅下压：不应翻成倒飞");
-    cap("cap_07", "右 60° 低 12°", direction(-12, 60), 0, "目标在地平线下方的转弯");
-    cap("cap_08", "倒飞起始右 15°", direction(0, 15), 180, "推杆与拉杆距离相近");
+    cap("man_01", "右 3°", direction(0, 3), 0, "小角度修正");
+    cap("man_02", "右 90°", direction(0, 90));
+    cap("man_03", "右后 150°", direction(0, 150), 0, "大角度：方向选择");
+    cap("man_04", "下 15°", direction(-15, 0), 0, "小幅下压：不应翻成倒飞");
     // A new target picked while the aircraft is still rolling from the last one (switches
     // against the roll cost ~1.5 s in recorded battles). Nose 30 deg up, 60 deg left bank,
     // rolling right at 45 deg/s; the target 35 deg off at a clock position around the nose.
@@ -429,24 +428,17 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         const float a = 35 * rad, c = clock * rad;
         Scenario x; x.kind = Switch; x.start_pitch = 30; x.start_roll = -60; x.start_p = 45;
         x.first = unit(b0.f * std::cos(a) + (b0.u * std::cos(c) + b0.r * std::sin(c)) * std::sin(a));
-        x.id = id; x.title = "换目标 · " + title;
+        x.id = id; x.title = "通用机动 · 换目标 " + title;
         x.note = "坡度左 60°、机头上仰 30°、正以 45°/s 向右滚时，新目标出现在偏 35° 处";
         add(x);
     };
-    sw("sw_01", "座舱方向 35°", 0);
-    sw("sw_02", "顺滚转方向 90°", 90);
-    sw("sw_03", "逆滚转方向 90°", -90);
-    sw("sw_04", "机腹方向 35°", 175);
-    auto chain = [&](std::string id, std::string title, V3 a, float at, V3 b, std::string note) {
-        Scenario c; c.id = id; c.title = "连续 · " + title; c.kind = Chain; c.first = unit(a); c.next = unit(b); c.switch_at = at; c.seconds = 10; c.note = note; add(c);
-    };
-    chain("seq_01", "右 90° 途中转左下", direction(0, 90), 2.2f, direction(-30, 50), "到达附近时换目标，指标从切换时刻起算");
-    chain("seq_02", "右 30° 途中转左 20°", direction(0, 30), 1.0f, direction(0, -20), "左右反向，指标从切换时刻起算");
+    sw("man_05", "逆滚转方向 90°", -90);
+    sw("man_06", "机腹方向 35°", 175);
     auto hold = [&](std::string id, std::string title, std::function<V3(float)> aim, std::string note) {
-        Scenario c; c.id = id; c.title = "保持 · " + title; c.kind = Hold; c.seconds = 10; c.aim = aim; c.note = note; add(c);
+        Scenario c; c.id = id; c.title = "通用机动 · 保持 " + title; c.kind = Hold; c.seconds = 10; c.aim = aim; c.note = note; add(c);
     };
-    hold("hold_01", "平飞", [](float) { return direction(0, 0); }, "鼠标不动，只有角速度测量噪声：晃不晃");
-    hold("hold_02", "鼠标微调", [](float t) {
+    hold("man_07", "平飞", [](float) { return direction(0, 0); }, "鼠标不动，只有角速度测量噪声：晃不晃");
+    hold("man_08", "鼠标微调", [](float t) {
         float p = 0, y = 2;
         for (int k = 1; k <= int(t / 0.7f); ++k) {
             const unsigned h = static_cast<unsigned>(k) * 2654435761u;
@@ -455,31 +447,17 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         }
         return direction(p, y);
     }, "已对准后每 0.7 s 移动鼠标约 1°（实测会引起 ±20° 摇翼）");
-    hold("hold_03", "慢拖鼠标", [](float t) { return direction(0, 2 + 4 * t); }, "鼠标匀速平移 4°/s");
-    // Near the sea, sinking fast, the aim raised above the horizon and to one side while banked:
+    // Near the sea, sinking fast, the aim raised above the horizon on the side away from the bank:
     // the way the Moon 11 crash happened (2026-10-05 11:33: 650 m/s, 480 m, -280 m/s, 80 deg of
     // bank, the aim rising and swinging sideways; recorded, it was too late for any controller,
-    // so these start higher). Crash = below 50 m.
-    auto low = [&](std::string id, std::string title, float yaw, std::string note) {
-        Scenario c; c.id = id; c.title = "低空 · " + title; c.kind = Hold; c.seconds = 6;
+    // so this starts higher). Crash = below 50 m.
+    {
+        Scenario c; c.id = "man_09"; c.title = "通用机动 · 低空 俯冲中瞄准点抬到左上"; c.kind = Hold; c.seconds = 6;
         c.start_alt = 900; c.start_speed = 650; c.start_pitch = -25; c.start_roll = 80;
-        c.aim = [yaw](float) { return direction(5, yaw); }; c.note = note; add(c);
-    };
-    low("low_01", "俯冲中瞄准点抬到右上", 30, "900 m、650 m/s、下沉约 275 m/s、右坡度 80° 起，瞄准点在地平线上 5°、右侧 30°（坡度一侧）");
-    low("low_02", "俯冲中瞄准点抬到左上", -30, "900 m、650 m/s、下沉约 275 m/s、右坡度 80° 起，瞄准点在地平线上 5°、左侧 30°（坡度另一侧，Moon 11 撞海时的情形）");
-    low("low_03", "俯冲中瞄准点抬到正前上", 0, "900 m、650 m/s、下沉约 275 m/s、右坡度 80° 起，瞄准点在地平线上 5°、正前方");
-    auto pursuit = [&](std::string id, std::string title, V3 offset, float yaw, std::vector<Segment> program, std::string note, float seconds = 14) {
-        Scenario c; c.id = id; c.title = "脚本追击 · " + title; c.kind = Pursuit; c.enemy_offset = offset; c.enemy_yaw = yaw; c.program = program;
-        c.note = note; c.seconds = seconds; add(c);
-    };
-    pursuit("pur_01", "持续转弯", {700, 120, 0}, 0, {{1, 65, 0}, {99, 65, 16}}, "敌机 65° 坡度稳定盘旋（约 16°/s）");
-    pursuit("pur_02", "急转脱离", {600, -80, 20}, 0, {{1.5f, 0, 0}, {2.2f, -80, 0}, {99, -80, 30}}, "1.5 s 后左压 80° 急拉 30°/s");
-    pursuit("pur_03", "剪刀", {500, 0, 0}, 0,
-            {{0.5f, 70, 0}, {3, 70, 20}, {3.5f, -70, 0}, {6, -70, 20}, {6.5f, 70, 0}, {9, 70, 20}, {9.5f, -70, 0}, {99, -70, 20}}, "每 3 s 反向一次");
-    pursuit("pur_04", "小幅抖动", {450, 0, 0}, 0,
-            {{1.0f, 25, 4}, {2.2f, -25, 4}, {3.0f, 20, 3}, {4.5f, -30, 5}, {5.5f, 25, 4}, {7, -20, 3}, {8, 30, 5}, {9.5f, -25, 4}, {11, 20, 3}, {99, -25, 4}},
-            "敌机在机头前方左右小幅抖动（实测会满杆左右滚）");
-    pursuit("pur_05", "对头后反转", {1800, 150, 60}, 180, {{99, 0, 0}}, "对头交错后掉头 180°（方向选择）", 16);
+        c.aim = [](float) { return direction(5, -30); };
+        c.note = "900 m、650 m/s、下沉约 275 m/s、右坡度 80° 起，瞄准点在地平线上 5°、左侧 30°（坡度另一侧，Moon 11 撞海时的情形）";
+        add(c);
+    }
     // Recorded enemies, from the list: "<kind> <file> <id> <title>", kind single / multi / boss.
     std::ifstream list(dir + "/scenes.txt");
     for (std::string line; std::getline(list, line);) {
