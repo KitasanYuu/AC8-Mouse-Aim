@@ -440,7 +440,20 @@ function drawView() {
   const list = IDX.controllers.filter(c => data[c.id]);
   const now = list.map(c => { const arr = data[c.id]; const fr = frameAt(arr, st.t); return { c, arr, fr, pos: add(enu([fr[F.x], fr[F.y], fr[F.z]]), spread(c.id)), gone: ended(arr, st.t) }; });
   const foes = data._foes || [];
-  const foesNow = foes.map((f, i) => ({ f, i, at: foeAt(f, st.t) })).filter(o => o.at);
+  // kills so far, per controller in its own order (n = its 1st, 2nd... kill), and who has
+  // brought each enemy down: one brought down by every controller is drawn only as their marks
+  const killsNow = [], killedBy = new Map();
+  for (const c of list) {
+    const log = (data._kills && data._kills[c.id]) || [];
+    log.forEach(([kt, i], k) => {
+      if (kt > st.t) return;
+      killsNow.push({ c, i, n: k + 1, t: kt });
+      if (!killedBy.has(i)) killedBy.set(i, new Set());
+      killedBy.get(i).add(c.id);
+    });
+  }
+  const downForAll = i => killedBy.has(i) && killedBy.get(i).size === list.length;
+  const foesNow = foes.map((f, i) => ({ f, i, at: foeAt(f, st.t) })).filter(o => o.at && !downForAll(o.i));
   // the scripted pursuit enemy travels in every run alike
   const scripted = sc.kind === 'pursuit' && now[0] ? enu([now[0].fr[F.ex], now[0].fr[F.ey], now[0].fr[F.ez]]) : null;
   // camera target and distance
@@ -523,10 +536,44 @@ function drawView() {
     const mesh = model ? model.tris(ladon ? ladonSweep(o.at, o.i) : 0) : MESH;
     const scale = jetScale;
     drawJet(ctx, P, o.at.pos, basis(o.at.pitch, o.at.yaw, o.at.roll), tint, scale, mesh, model ? model.length : 19);
-    const q = P(o.at.pos); if (q) { ctx.fillStyle = tint; ctx.font = `11px ${MONO}`; ctx.fillText(ladon ? 'LADON' : o.f[1] === 2 ? '头目' : o.f[1] === 1 ? '精英' : '敌机', q[0] + 10, q[1] - 6); }
+    // names: ordinary enemies only in small fights (in a crowd of 98 they buried the marks)
+    const name = ladon ? 'LADON' : o.f[1] === 2 ? '头目' : o.f[1] === 1 ? '精英' : foes.length <= 12 ? '敌机' : '';
+    const q = name && P(o.at.pos); if (q) { ctx.fillStyle = tint; ctx.font = `11px ${MONO}`; ctx.fillText(name, q[0] + 10, q[1] - 6); }
   }
   if (scripted) drawJet(ctx, P, scripted, basis(now[0].fr[F.ep], now[0].fr[F.eyaw], now[0].fr[F.er]), '#e5534b', jetScale,
                         window.AC8_MODELS ? AC8_MODELS.byId.mig29.tris() : MESH, 17.3);
+  // Kills: an X in the controller's colour where it brought the enemy down, with its number
+  // (the controller's 1st, 2nd... kill). Several controllers' marks on one spot fan out.
+  const slot = id => Math.max(0, list.findIndex(c => c.id === id));
+  ctx.font = `bold 11px ${MONO}`; ctx.lineWidth = 2;
+  for (const k of killsNow) {
+    const at = foeAt(foes[k.i], Math.min(k.t, foes[k.i][3]));
+    const q = at && P(at.pos); if (!q) continue;
+    const color = colorOf(k.c.id), r = 5, j = slot(k.c.id), dx = (j - (list.length - 1) / 2) * 5;
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.globalAlpha = .9;
+    ctx.beginPath(); ctx.moveTo(q[0] + dx - r, q[1] - r); ctx.lineTo(q[0] + dx + r, q[1] + r);
+    ctx.moveTo(q[0] + dx + r, q[1] - r); ctx.lineTo(q[0] + dx - r, q[1] + r); ctx.stroke();
+    ctx.fillText(String(k.n), q[0] + 8, q[1] + 4 + (j - (list.length - 1) / 2) * 11);
+  }
+  ctx.globalAlpha = 1;
+  // Targets: each controller's present target in a square of its colour (nested when several
+  // share one), numbered with the kill it would be (its kills so far + 1)
+  {
+    const shared = new Map();
+    for (const o of now) {
+      if (o.gone || !(o.fr.length > F.tgt) || o.fr[F.tgt] < 0) continue;
+      const i = o.fr[F.tgt], at = foes[i] && foeAt(foes[i], st.t);
+      const q = at && P(at.pos); if (!q) continue;
+      const ring = shared.get(i) || 0; shared.set(i, ring + 1);
+      const color = colorOf(o.c.id), r = 11 + ring * 4;
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.globalAlpha = .95; ctx.setLineDash([]);
+      ctx.strokeRect(q[0] - r, q[1] - r, 2 * r, 2 * r);
+      const next = 1 + killsNow.filter(k => k.c.id === o.c.id).length;
+      ctx.fillStyle = color; ctx.font = `bold 11px ${MONO}`;
+      ctx.fillText('#' + next, q[0] - r - 2 - ctx.measureText('#' + next).width, q[1] - r + 9 + ring * 11);
+    }
+    ctx.globalAlpha = 1;
+  }
   // LADON's ECM: missiles lock only within 1 km. A sphere of that radius (the horizontal ring and
   // two upright ones), solid while any controller is inside it, dashed while all are outside.
   for (const o of foesNow) {
