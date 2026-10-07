@@ -112,6 +112,10 @@ std::atomic<bool> hud_enabled{true};
 std::atomic<bool> trace_enabled{false};
 // Axes the player is flying by keyboard (1 pitch, 2 roll, 4 yaw), for trace analysis.
 std::atomic<int> keyboard_axes{0};
+// The player's own flight input as the game has it from its bindings (keyboard or gamepad):
+// the aircraft's InputPitch, InputRoll and right minus left yaw, read each frame by the Lua script
+// (the mod's own stick goes elsewhere: these stayed 0 while it flew; logged 2026-10-07).
+std::atomic<float> player_pitch{0}, player_roll{0}, player_yaw{0};
 std::atomic<float> input_throttle{0}, input_brake{0};  // the game's InputThrottle / InputBrake
 // Post-stall requested: the key held (a toggle that a later high-G used up could be spent by
 // an unintended one, or one over 500 km/h, reported).
@@ -777,7 +781,7 @@ void release_controls() {
 
 // Called synchronously on the game thread. Fixed numeric arguments replace
 // the pipe queue, sscanf and the camera-target disk snapshot entirely.
-void receive_pose(const double (&v)[20]) {
+void receive_pose(const double (&v)[23]) {
     const uintptr_t address=static_cast<uintptr_t>(v[0]);
     const float pitch=float(v[1]),yaw=float(v[2]),roll=float(v[3]);
     const float view_pitch=float(v[4]),view_yaw=float(v[5]),view_roll=float(v[6]);
@@ -787,7 +791,8 @@ void receive_pose(const double (&v)[20]) {
     input_brake.store(float(std::clamp(v[14],-2.0,2.0)));
     actor_x=v[15]; actor_y=v[16]; actor_z=v[17];
     game_time=v[18];
-    const bool autopilot=v[19]!=0;
+    player_pitch.store(float(v[19])); player_roll.store(float(v[20])); player_yaw.store(float(v[22]-v[21]));
+    const bool autopilot=v[21]>=0.5 && v[22]>=0.5;   // both yaw inputs held
     if(autopilot_active.exchange(autopilot)!=autopilot) {
         mouse_dx.store(0); mouse_dy.store(0);
         if(!autopilot) recenter_requested.store(true);
@@ -1225,12 +1230,12 @@ uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context)
     }
     if(!active.load() || GetTickCount64()-pose_tick.load()>1000 || !enabled.load() ||
        game_paused.load() || yielding() || !foreground_is_game()) return original(state,context);
-    // Manual pitch also suspends automatic roll, matching MouseFlight maneuvers.
-    // Preserve AC's native keyboard values, including opposing-key handling.
-    auto held=[](int key) { return (GetAsyncKeyState(key)&0x8000)!=0; };
-    const bool keyboard_pitch=held('W') || held('S');
-    const bool keyboard_roll=keyboard_pitch || held('A') || held('D');
-    const bool keyboard_yaw=held('Q') || held('E');
+    // The player's own input on an axis takes it over, whatever the binding (it had been W/S, A/D
+    // and Q/E held, wrong for other bindings and a gamepad). Manual pitch also suspends automatic
+    // roll, matching MouseFlight maneuvers. AC's native values are kept, opposing keys included.
+    const bool keyboard_pitch=std::abs(player_pitch.load())>0.05f;
+    const bool keyboard_roll=keyboard_pitch || std::abs(player_roll.load())>0.05f;
+    const bool keyboard_yaw=std::abs(player_yaw.load())>0.05f;
     keyboard_axes.store((keyboard_pitch?1:0)|(keyboard_roll?2:0)|(keyboard_yaw?4:0));
     bool override_input = true; // Lifecycle/foreground already checked above.
     if (override_input && reinterpret_cast<uintptr_t>(state) == pawn + 0x22a0) {
@@ -1454,10 +1459,11 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_begin(void*) {
 extern "C" __declspec(dllexport) int ac8_mouseaim_frame(lua_State* state) {
     if(!running.load() || !on_bridge_thread()) return 0;
     PerfSpan timing(perf_bridge);
-    LuaView lua(state); double v[20]{};
+    LuaView lua(state); double v[23]{};
     if(!read_numbers(lua,v) || !live_pointer_number(v[0])) { release_controls(); return 0; }
     for(size_t i=1;i<11;++i) if(std::abs(v[i])>1e12) { release_controls(); return 0; }
-    if((v[11]!=0 && v[11]!=1) || (v[12]!=0 && v[12]!=1) || (v[19]!=0 && v[19]!=1)) { release_controls(); return 0; }
+    if((v[11]!=0 && v[11]!=1) || (v[12]!=0 && v[12]!=1)) { release_controls(); return 0; }
+    for(size_t i=19;i<23;++i) if(!std::isfinite(v[i]) || std::abs(v[i])>2) { release_controls(); return 0; }
     receive_pose(v);
     const bool on=enabled.load() && !game_paused.load() && !yielding() && foreground_is_game();
     lua.set_number(on?1:0); lua.set_number(look_pitch.load()); lua.set_number(look_yaw.load());

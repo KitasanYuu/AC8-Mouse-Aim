@@ -266,12 +266,14 @@ else
             local throttle,brake=0,0
             pcall(function() throttle=tonumber(pawn.InputThrottle) or 0 end)
             pcall(function() brake=tonumber(pawn.InputBrake) or 0 end)
-            -- The game's autopilot: both yaw inputs held (Q+E, or the autopilot key, which the game
-            -- turns into both); it flies only while they are held.
-            local autopilot=0
-            pcall(function()
-                if (tonumber(pawn.InputLeftYaw) or 0)>=0.5 and (tonumber(pawn.InputRightYaw) or 0)>=0.5 then autopilot=1 end
-            end)
+            -- The player's own flight input, as the game has it from its bindings (keyboard or
+            -- gamepad): it takes over an axis; both yaw inputs held is the game's autopilot (Q+E, or
+            -- the autopilot key, which the game turns into both).
+            local input_pitch,input_roll,input_left,input_right=0,0,0,0
+            pcall(function() input_pitch=tonumber(pawn.InputPitch) or 0 end)
+            pcall(function() input_roll=tonumber(pawn.InputRoll) or 0 end)
+            pcall(function() input_left=tonumber(pawn.InputLeftYaw) or 0 end)
+            pcall(function() input_right=tonumber(pawn.InputRightYaw) or 0 end)
             -- The game's world clock: positions and attitudes advance by game frames.
             local game_time=-1
             pcall(function() game_time=tonumber(pause_gameplay:GetTimeSeconds(pawn)) or -1 end)
@@ -279,7 +281,7 @@ else
                 camera_pitch,camera_yaw,camera_roll,fov,ox,oy,oz,paused and 1 or 0,gazing and 1 or 0,
                 throttle,brake,
                 assert(rotation_component(position,"X")),assert(rotation_component(position,"Y")),
-                assert(rotation_component(position,"Z")),game_time,autopilot)
+                assert(rotation_component(position,"Z")),game_time,input_pitch,input_roll,input_left,input_right)
             assert(on~=nil,'Native frame rejected')
             pcall(contacts.update,pawn,game_time)
             pcall(watch_lod,pawn,ox,oy,oz,fov)
