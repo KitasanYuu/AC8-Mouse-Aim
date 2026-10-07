@@ -107,37 +107,66 @@ local function player_plane()
 end
 
 -- The player model's detail (issue #7, a lower-detail model reported with the mod's camera):
--- every 3 s the body mesh's predicted LOD and the camera's distance from the aircraft, into
--- UE4SS.log. Read-only; the component is looked up once per aircraft.
+-- once per aircraft, the body mesh's LOD switch points (each LOD's screen size, the mesh's bounds)
+-- and the engine's LOD settings; every 3 s, when it changes, the LOD the engine picks, the camera's
+-- distance from the aircraft and the FOV. Into UE4SS.log; read-only.
 local lod_watch = { pawn = nil, mesh = nil, next = 0, last = nil }
-local function watch_lod(pawn, ox, oy, oz)
+local function lod_settings(mesh)
+    local parts = {}
+    local asset
+    for _, get in ipairs({ function() return mesh:GetSkeletalMeshAsset() end, function() return mesh.SkeletalMesh end,
+                           function() return mesh.SkinnedAsset end }) do
+        local ok, value = pcall(get)
+        if ok and value and value:IsValid() then asset = value; break end
+    end
+    if asset then
+        local sizes = {}
+        pcall(function()
+            asset.LODInfo:ForEach(function(_, element)
+                local okv, info = pcall(function() return element:get() end)
+                if not okv or not info then info = element end
+                local oks, size = pcall(function() return info.ScreenSize.Default end)
+                sizes[#sizes + 1] = oks and string.format('%.3f', tonumber(size) or -1) or '?'
+            end)
+        end)
+        parts[#parts + 1] = 'screen sizes [' .. table.concat(sizes, ' ') .. ']'
+        pcall(function() parts[#parts + 1] = 'mesh min LOD ' .. tostring(asset.MinLod.Default) end)
+    else
+        parts[#parts + 1] = 'mesh asset unreadable'
+    end
+    pcall(function() parts[#parts + 1] = string.format('bounds radius %.0f cm', mesh.Bounds.SphereRadius) end)
+    pcall(function() parts[#parts + 1] = 'forced ' .. tostring(mesh.ForcedLodModel) .. ' min ' .. tostring(mesh.MinLodModel) ..
+        ' override min ' .. tostring(mesh.bOverrideMinLod) end)
+    local system = StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+    if system and system:IsValid() then
+        for _, name in ipairs({ 'r.SkeletalMeshLODBias', 'r.SkeletalMeshLODRadiusScale', 'r.ViewDistanceScale',
+                                'r.StaticMeshLODDistanceScale', 'sg.ViewDistanceQuality', 'r.ScreenPercentage' }) do
+            local ok, value = pcall(function() return system:GetConsoleVariableFloatValue(name) end)
+            parts[#parts + 1] = name .. '=' .. (ok and tostring(value) or '?')
+        end
+    end
+    return table.concat(parts, ', ')
+end
+local function watch_lod(pawn, ox, oy, oz, fov)
     local now = os.clock()
     if now < lod_watch.next then return end
     lod_watch.next = now + 3
     local address = pawn:GetAddress()
     if lod_watch.pawn ~= address then
-        lod_watch.pawn = address; lod_watch.mesh = nil
-        -- a TArray, not a table (as mesh_probe.lua walks it): ForEach, each element by get()
-        local cls = StaticFindObject('/Script/Engine.SkeletalMeshComponent')
-        local ok, list = pcall(function() return pawn:K2_GetComponentsByClass(cls) end)
-        if ok and list then
-            pcall(function()
-                list:ForEach(function(_, element)
-                    local okc, c = pcall(function() return element:get() end)
-                    if not okc or not c then c = element end
-                    local okn, name = pcall(function() return c:GetFullName() end)
-                    if okn and name and name:find('PlaneBodyMesh', 1, true) then lod_watch.mesh = c; return true end
-                end)
-            end)
-        end
-        if not lod_watch.mesh then print('[AC8MouseAim] LOD watch: no PlaneBodyMesh found\n') end
+        lod_watch.pawn = address; lod_watch.mesh = nil; lod_watch.last = nil
+        local ok, mesh = pcall(function() return pawn.PlaneBodyMesh end)
+        if ok and mesh and mesh:IsValid() then lod_watch.mesh = mesh end
+        if not lod_watch.mesh then print('[AC8MouseAim] LOD watch: no PlaneBodyMesh found\n'); return end
+        local okd, detail = pcall(lod_settings, lod_watch.mesh)
+        print('[AC8MouseAim] LOD watch ' .. (pawn:GetFullName():match('^(%S+)') or '?') .. ': ' .. (okd and detail or tostring(detail)) .. '\n')
     end
     local mesh = lod_watch.mesh
     if not mesh or not mesh:IsValid() then return end
     local ok, lod = pcall(function() return mesh:GetPredictedLODLevel() end)
     if not ok then print('[AC8MouseAim] LOD watch: ' .. tostring(lod) .. '\n'); lod_watch.next = now + 60; return end
     if type(lod) ~= 'number' then local okv, v = pcall(function() return lod:get() end); if okv then lod = v end end
-    local line = string.format('LOD body=%s camera %.1f m from the aircraft', tostring(lod), math.sqrt(ox * ox + oy * oy + oz * oz) / 100)
+    local line = string.format('LOD body=%s camera %.0f m from the aircraft, FOV %.0f', tostring(lod),
+        math.sqrt(ox * ox + oy * oy + oz * oz) / 100, tonumber(fov) or -1)
     if line ~= lod_watch.last then print('[AC8MouseAim] ' .. line .. '\n'); lod_watch.last = line end
 end
 
@@ -247,7 +276,7 @@ else
                 assert(rotation_component(position,"Z")),game_time)
             assert(on~=nil,'Native frame rejected')
             pcall(contacts.update,pawn,game_time)
-            pcall(watch_lod,pawn,ox,oy,oz)
+            pcall(watch_lod,pawn,ox,oy,oz,fov)
             local desired_camera
             if gazing then
                 aim_camera.seed(camera,rotation_component)
