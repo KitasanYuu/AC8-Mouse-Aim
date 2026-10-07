@@ -198,7 +198,7 @@ const AIM_RING = 1.8;   // deg: the mod's mouse ring (25 px radius at 1080p, the
 const TARGET_BOX = 1.0;   // deg: half the target box, inside the mouse ring as in game
 // the gun ring green as the game draws it, red while rounds fired now would hit (the game shows no such thing)
 const HUD_AIM = '#f2f5f7', HUD_ENEMY = '#ff5a5a', HUD_LEAD = '#5fd38a', HUD_WINDOW = '#ff4040', HUD_TRUE = '#f2f5f7', HUD_JUDGED = '#ffd25a';
-const PALETTE = { ours: '#4fb3d9', arch_baseline_20261005: '#9aa7b0', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a' };
+const PALETTE = { ours: '#4fb3d9', alf_1_0_0: '#9aa7b0', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a' };
 const EXTRA = ['#ff7aa8', '#8fd0c4', '#b0b8ff', '#e8e8e8'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
 const shortName = c => c.label;
@@ -1064,7 +1064,7 @@ function summaryTables(list) {
     return list.map((x, k) => `<td class="cell ${k ? '' : 'gap'}" style="background:${rankColor(r[k], list.length)}">${v[k] === null ? '—' : fmt(v[k])}</td>`).join('');
   };
   const head = title => `<tr class="metric"><th>${title}</th>` + list.map((x, k) => `<th class="${k ? '' : 'gap'}"><span class="chip" style="background:${colorOf(x.id)}"></span>${shortName(x)}</th>`).join('') + '</tr>';
-  let html = '<table class="summary"><thead>' + head('全部机型 · 相对基线 10-05（&lt; 1 更好）') + '</thead><tbody>';
+  let html = '<table class="summary"><thead>' + head('全部机型 · 相对 0.2.30+Alf.1.0.0（&lt; 1 更好）') + '</thead><tbody>';
   html += `<tr><td>每个场景同权（几何平均）</td>${cells(S.per_scene, -1, v => v.toFixed(3))}</tr>`;
   html += `<tr><td>每类场景同权</td>${cells(S.per_kind, -1, v => v.toFixed(3))}</tr>`;
   html += `<tr><td>平均名次</td>${cells(S.mean_rank, -1, v => v.toFixed(2))}</tr>`;
@@ -1108,7 +1108,7 @@ function drawOverview() {
   html += '</tr></tfoot></table>';
   // every aircraft (the bench's order): each controller's total cost over all scenes and its crashes
   const S = window.COMPARE_SUMMARY;
-  html += `<table class="planes"><thead><tr class="metric"><th>每个机型 · ${S ? '相对基线（&lt; 1 更好）' : '总代价'}（✕ 坠地次数）</th>`;
+  html += `<table class="planes"><thead><tr class="metric"><th>每个机型 · ${S ? '相对 1.0.0（&lt; 1 更好）' : '总代价'}（✕ 坠地次数）</th>`;
   list.forEach((x, k) => { html += `<th class="${k ? '' : 'gap'}"><span class="chip" style="background:${colorOf(x.id)}"></span>${shortName(x)}</th>`; });
   html += '</tr></thead><tbody>';
   for (const c of IDX.plants) {

@@ -19,6 +19,7 @@
 // Writes dev/compare/scorecard.txt (kept in git: a diff shows what a change did) and
 // dev/compare/results/*.js for dev/compare/index.html.
 #include "controllers/ours.h"
+#include "controllers/alf_1_0_0.h"
 #include "controllers/upstream.h"
 #include "controllers/pw5.h"
 #include "controllers/pw11.h"
@@ -1913,7 +1914,10 @@ int main() {
     CreateDirectoryA((out_dir + "/results").c_str(), nullptr);
     std::vector<Entry> entries;
     const flight::Tuning base = ours_tuning(config, "", scratch);
-    entries.push_back({"ours", "当前版本", "src/flight_logic.h + Payload config.ini", [base] { return std::make_unique<Ours>(base); }});
+    entries.push_back({"ours", "开发版", "src/flight_logic.h + Payload config.ini", [base] { return std::make_unique<Ours>(base); }});
+    // releases, frozen (code and [tuning]): the latest is the baseline the summary scores against
+    const alf_1_0_0::Tuning release_1_0_0 = alf_1_0_0_tuning(out_dir);
+    entries.push_back({"alf_1_0_0", "0.2.30+Alf.1.0.0", "alf-v1.0.0 (dev/compare/controllers/alf_1_0_0)", [release_1_0_0] { return std::make_unique<Alf_1_0_0>(release_1_0_0); }});
     // The game's installed [tuning] is the development configuration (tuned there, live): it
     // is not a column of its own but must equal the repository's. Any key that differs is
     // reported here and at the top of the scorecard, to be brought into the repository.
@@ -1980,12 +1984,12 @@ int main() {
     }
     // outside references: the upstream release by default; refs=all adds upstream's 0.2.35
     // (which upstream itself rolled back) and xsd467's older pw5
-    entries.push_back({"upstream_legacy", "上游 0.2.30", "FletcherMiya 052cd6a controller_mode=0", [] { return std::make_unique<UpstreamLegacy>(); }});
+    entries.push_back({"upstream_legacy", "FletcherMiya 0.2.30", "FletcherMiya 052cd6a controller_mode=0", [] { return std::make_unique<UpstreamLegacy>(); }});
     // xsd467's latest, shown by default: the newest outside work to measure against
-    entries.push_back({"pw11", "pw.11 · xsd467", "xsd467 05d7f48 pw5-flight-control", [] { return std::make_unique<Pw11>(); }});
+    entries.push_back({"pw11", "xsd467 pw.11", "xsd467 05d7f48 pw5-flight-control", [] { return std::make_unique<Pw11>(); }});
     if (all_refs) {
-        entries.push_back({"upstream_coord", "上游 0.2.35", "FletcherMiya 052cd6a controller_mode=1", [] { return std::make_unique<UpstreamCoordinated>(); }});
-        entries.push_back({"pw5", "pw5 · xsd467", "xsd467 821f442 pw5-flight-control", [] { return std::make_unique<Pw5>(); }});
+        entries.push_back({"upstream_coord", "FletcherMiya 0.2.35", "FletcherMiya 052cd6a controller_mode=1", [] { return std::make_unique<UpstreamCoordinated>(); }});
+        entries.push_back({"pw5", "xsd467 pw5", "xsd467 821f442 pw5-flight-control", [] { return std::make_unique<Pw5>(); }});
     }
 
     load_conditions(out_dir);
@@ -2202,14 +2206,14 @@ int main() {
         card += "\n";
     }
     // Summaries. Scene costs mix seconds, degrees, kill shares and stick reversals with rough
-    // weights, so their plain sum is no verdict: each controller is put against the 10-05 baseline
+    // weights, so their plain sum is no verdict: each controller is put against the latest release (0.2.30+Alf.1.0.0)
     // scene by scene, (cost + 1) / (baseline + 1), and those ratios are averaged geometrically
     // (< 1 better), a battle flown in several orders (M28) counted once. Shown three ways (every
     // scene alike; every kind of scene alike; the mean rank) for every aircraft and overall.
     struct Summary { std::vector<double> per_scene, per_kind, mean_rank; std::vector<std::vector<double>> per_plant; };
     const size_t n_ctl = entries.size();
     size_t base_ctl = 0;
-    for (size_t i = 0; i < n_ctl; ++i) if (entries[i].id == "arch_baseline_20261005") base_ctl = i;
+    for (size_t i = 0; i < n_ctl; ++i) if (entries[i].id == "alf_1_0_0") base_ctl = i;
     auto summarize = [&](const std::map<std::string, std::vector<std::vector<float>>>& costs) {
         Summary S;
         S.per_plant.assign(condition_count, std::vector<double>(n_ctl, 1.0));
@@ -2291,11 +2295,11 @@ int main() {
         for (double x : v) { std::snprintf(line, sizeof(line), fmt, x); card += line; }
         card += "\n";
     };
-    header("summary (vs 10-05 baseline, geometric mean of (cost+1) ratios, < 1 better)");
+    header("summary (vs release 0.2.30+Alf.1.0.0, geometric mean of (cost+1) ratios, < 1 better)");
     row_of("per scene", main_summary.per_scene, " %16.3f");
     row_of("per kind", main_summary.per_kind, " %16.3f");
     row_of("mean rank", main_summary.mean_rank, " %16.2f");
-    header("per aircraft (per scene, vs baseline)");
+    header("per aircraft (per scene, vs release 1.0.0)");
     for (int p = 0; p < condition_count; ++p) row_of(conditions[p].id.c_str(), main_summary.per_plant[p], " %16.3f");
     std::string summary_js = "window.COMPARE_SUMMARY={\"controllers\":[";
     for (size_t i = 0; i < n_ctl; ++i) summary_js += std::string(i ? "," : "") + "\"" + entries[i].id + "\"";
@@ -2333,7 +2337,7 @@ int main() {
     summary_js += "},\"profiles\":[";
     if (robust && only.empty()) {
         // other players, other luck: the ranking should hold (the standard profile is the one tuned on)
-        header("robustness (per scene vs baseline, by player profile; tuned on std only)");
+        header("robustness (per scene vs release 1.0.0, by player profile; tuned on std only)");
         row_of(pilot_profiles[0].id, main_summary.per_scene, " %16.3f");
         summary_js += std::string("{\"id\":\"") + pilot_profiles[0].id + "\",\"title\":\"" + esc(pilot_profiles[0].title) + "\",\"per_scene\":" + arr(main_summary.per_scene) +
                       ",\"mean_rank\":" + arr(main_summary.mean_rank) + "}";
