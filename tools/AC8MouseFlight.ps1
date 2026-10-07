@@ -231,16 +231,22 @@ function Invoke-Install([string]$Game) {
     $modSource = Join-Path $source 'Game\Binaries\Win64\UE4SS\Mods\AC8MouseAim'
     $configPath = Join-Path $L.Mod 'config.ini'
 
-    # Settings the player chose in [control] survive an update; version adaptation
-    # keys (input slots, axis signs) and diagnostics come from the new files.
+    # Settings the player chose in [control] and the keys in [keys] survive an update; version
+    # adaptation keys (input slots, axis signs) and diagnostics come from the new files.
     $kept = [ordered]@{}
     if (Test-Path -LiteralPath $configPath) {
         $section = ''
         foreach ($line in Get-Content -LiteralPath $configPath) {
             if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1].Trim(); continue }
-            if ($section -eq 'control' -and $line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$' -and
+            if ($section -in @('control', 'keys') -and $line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$' -and
                 $Matches[1] -notin @('pitch_slot', 'roll_slot', 'pitch_sign', 'roll_sign', 'yaw_sign', 'input_probe')) {
-                $kept[$Matches[1]] = $Matches[2]
+                $kept["$section/$($Matches[1])"] = $Matches[2]
+            }
+        }
+        # The two keys that were in [control] before [keys] existed.
+        foreach ($moved in @(@('post_stall_key', 'post_stall'), @('tuning_key', 'tuning'))) {
+            if ($kept.Contains("control/$($moved[0])") -and -not $kept.Contains("keys/$($moved[1])")) {
+                $kept["keys/$($moved[1])"] = $kept["control/$($moved[0])"]
             }
         }
     }
@@ -273,10 +279,10 @@ function Invoke-Install([string]$Game) {
         $section = ''; $restored = 0
         $lines = foreach ($line in Get-Content -LiteralPath $configPath) {
             if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1].Trim(); $line; continue }
-            if ($section -eq 'control' -and $line -match '^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$' -and
-                $kept.Contains($Matches[2]) -and $Matches[4].Trim() -ne $kept[$Matches[2]]) {
+            if ($section -in @('control', 'keys') -and $line -match '^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$' -and
+                $kept.Contains("$section/$($Matches[2])") -and $Matches[4].Trim() -ne $kept["$section/$($Matches[2])"]) {
                 $restored++
-                "$($Matches[1])$($Matches[2])$($Matches[3])$($kept[$Matches[2]])"
+                "$($Matches[1])$($Matches[2])$($Matches[3])$($kept["$section/$($Matches[2])"])"
             } else { $line }
         }
         if ($restored -gt 0) {

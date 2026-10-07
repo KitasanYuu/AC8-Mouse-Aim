@@ -38,7 +38,7 @@ function M.update(pawn,frame_time)
     end)
     if not ok then
         failed=true
-        print('[AC8MouseAim] Gaze detection unavailable: '..tostring(result)..'; F8 remains available.\n')
+        print('[AC8MouseAim] Gaze detection unavailable: '..tostring(result)..'; the mouse aim toggle key remains available.\n')
         return false
     end
     return result==true

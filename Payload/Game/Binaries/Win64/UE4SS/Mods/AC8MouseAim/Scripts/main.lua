@@ -6,12 +6,11 @@ local mesh_probe = dofile(directory .. "mesh_probe.lua")
 local spec_probe = dofile(directory .. "spec_probe.lua")
 local gaze = dofile(directory .. "gaze.lua")
 local start_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_start"))
-local reload_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_reload"))
 local begin_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_begin"))
 local frame_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_frame"))
 local camera_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_camera"))
 local release_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_release"))
-local perf_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_perf"))
+local requests_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_requests"))
 -- Optional: other aircraft for the telemetry stream (contacts.lua).
 local send_native = package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_send")
 local contacts = dofile(directory .. "contacts.lua")
@@ -178,14 +177,14 @@ local function camera_rotation(manager, fallback)
     return fallback
 end
 
-RegisterKeyBind(Key.F10, function()
-    local ok, err = pcall(reload_native)
-    notice(ok and "Configuration reload queued for next game frame." or ("Reload failed: " .. tostring(err)))
-end)
-RegisterKeyBind(Key.F6, function() gaze_probe.request() end)
-RegisterKeyBind(Key.F7, function() spec_probe.run(directory, notice) end)   -- hangar ratings snapshot
-RegisterKeyBind(Key.F8, function() ExecuteInGameThread(function() mesh_probe.hangar(directory) end) end)   -- hangar aircraft geometry
-RegisterKeyBind(Key.F5, function() perf_native() end)
+-- No keys are bound here: config.ini [keys] has them all and the native side watches them (reload
+-- and performance counters it carries out itself); the ones done here come as requests each frame.
+local function carry_out_requests()
+    local requests = tonumber(requests_native()) or 0
+    if requests % 2 == 1 then gaze_probe.request() end                                       -- camera_probe
+    if math.floor(requests / 2) % 2 == 1 then pcall(spec_probe.run, directory, notice) end   -- hangar_specs
+    if math.floor(requests / 4) % 2 == 1 then pcall(mesh_probe.hangar, directory) end        -- hangar_geometry
+end
 
 assert(start_native(1729,0.125)==30,'AC8 direct bridge unavailable; control disabled (check native log).')
 
@@ -194,6 +193,7 @@ if EngineTickAvailable == false or type(LoopInGameThreadAfterFrames) ~= "functio
 else
     LoopInGameThreadAfterFrames(1, function()
         begin_native()
+        pcall(carry_out_requests)
         local ok, err = pcall(function()
             local now = os.time()
             if now < next_search then return end

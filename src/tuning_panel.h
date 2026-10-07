@@ -1,4 +1,4 @@
-// In-game tuning panel: tuning_key (F3) opens a list of config.ini values over the game; the
+// In-game tuning panel: [keys] tuning (F3) opens a list of config.ini values over the game; the
 // arrow keys pick and change them while flying, and each change is written to config.ini, which
 // the mod reloads within 0.5 s (poll_dev_files). config.ini stays the only place values live.
 // Keys the panel uses are kept from the game while it is open (its window procedure), so the
@@ -174,7 +174,8 @@ struct KeyRepeat {
 void panel_poll() {
     static bool toggle_down=false;
     static KeyRepeat up,down,left,right,back;
-    const int toggle=config.tuning_key;
+    const Config::Keys& keys=config.keys;
+    const int toggle=keys.tuning;
     const bool toggle_held=toggle>0 && (GetAsyncKeyState(toggle)&0x8000)!=0;
     std::lock_guard<std::mutex> lock(panel_mutex);
     if(toggle_held && !toggle_down && foreground_is_game()) {
@@ -192,16 +193,16 @@ void panel_poll() {
     if(!panel_open.load()) return;
     panel_flush(false);
     if(!panel_active() || !foreground_is_game()) return;
-    if(up.fire(VK_UP)) panel.selected=(panel.selected+panel_count-1)%panel_count;
-    if(down.fire(VK_DOWN)) panel.selected=(panel.selected+1)%panel_count;
+    if(up.fire(keys.tuning_up)) panel.selected=(panel.selected+panel_count-1)%panel_count;
+    if(down.fire(keys.tuning_down)) panel.selected=(panel.selected+1)%panel_count;
     const PanelItem& item=panel_items[panel.selected];
     float& value=panel.value[panel.selected];
     const float previous=value;
-    const bool fine=!item.integer && (GetAsyncKeyState(VK_SHIFT)&0x8000)!=0;
+    const bool fine=!item.integer && keys.tuning_fine>0 && (GetAsyncKeyState(keys.tuning_fine)&0x8000)!=0;
     const float step=fine ? item.step/5 : item.step;
-    if(left.fire(VK_LEFT)) value-=step;
-    if(right.fire(VK_RIGHT)) value+=step;
-    if(back.fire(VK_BACK)) value=panel.was[panel.selected];
+    if(left.fire(keys.tuning_less)) value-=step;
+    if(right.fire(keys.tuning_more)) value+=step;
+    if(back.fire(keys.tuning_undo)) value=panel.was[panel.selected];
     if(value!=previous) {
         value=std::clamp(std::round(value/(item.step/5))*(item.step/5),item.min,item.max);
         if(item.integer) value=std::round(value);
@@ -212,14 +213,17 @@ void panel_poll() {
 // Keys kept from the game: the toggle key always; the panel's keys while it is open. A key's
 // release goes where its press went (a press before the panel opened is the game's to release).
 std::atomic<bool> panel_swallowed[256]{};
-bool panel_key(int vk) { return vk==VK_UP || vk==VK_DOWN || vk==VK_LEFT || vk==VK_RIGHT || vk==VK_BACK; }
+bool panel_key(int vk) {
+    const Config::Keys& k=config.keys;
+    return vk>0 && (vk==k.tuning_up || vk==k.tuning_down || vk==k.tuning_less || vk==k.tuning_more || vk==k.tuning_undo);
+}
 WNDPROC game_window_proc{};
 HWND panel_window{};
 LRESULT CALLBACK panel_window_proc(HWND window,UINT message,WPARAM wparam,LPARAM lparam) {
     if((message==WM_KEYDOWN || message==WM_KEYUP || message==WM_SYSKEYDOWN || message==WM_SYSKEYUP) && wparam<256) {
         const int vk=int(wparam);
         const bool press=message==WM_KEYDOWN || message==WM_SYSKEYDOWN;
-        if(press && (vk==config.tuning_key || (panel_active() && panel_key(vk)))) {
+        if(press && ((vk==config.keys.tuning && vk>0) || (panel_active() && panel_key(vk)))) {
             static bool reported=false;
             if(!reported) { reported=true; log_line("tuning panel: key 0x%02X kept from the game",vk); }
             panel_swallowed[vk].store(true);
@@ -241,7 +245,7 @@ void panel_attach(HWND window) {
     if(!game_window_proc) return;
     panel_window=window;
     SetWindowLongPtrW(window,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(&panel_window_proc));
-    log_line("tuning panel: attached to the game window (toggle key 0x%02X)",config.tuning_key);
+    log_line("tuning panel: attached to the game window (toggle key %s)",key_label(config.keys.tuning).c_str());
 }
 
 // draw_overlay: the panel, top left below the status line; returns where it was drawn. Compact:
@@ -263,12 +267,12 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
     struct Line { std::string text; COLORREF color; int item=-1; };
     std::vector<Line> lines;
     char row[160]{};
-    char key_name[16]{};
-    if(config.tuning_key>=VK_F1 && config.tuning_key<=VK_F24) snprintf(key_name,sizeof(key_name),"F%d",config.tuning_key-VK_F1+1);
-    else snprintf(key_name,sizeof(key_name),"0x%02X",config.tuning_key);
-    snprintf(row,sizeof(row),"MouseFlight tuning  (%s close)",key_name);
+    const Config::Keys& keys=config.keys;   // as [keys] has them
+    snprintf(row,sizeof(row),"MouseFlight tuning  (%s close)",key_label(keys.tuning).c_str());
     lines.push_back({row,RGB(255,255,255)});
-    lines.push_back({"Up/Down  Left/Right (Shift fine)  Bksp undo",RGB(150,150,150)});
+    snprintf(row,sizeof(row),"%s/%s  %s/%s (%s fine)  %s undo",key_label(keys.tuning_up).c_str(),key_label(keys.tuning_down).c_str(),
+        key_label(keys.tuning_less).c_str(),key_label(keys.tuning_more).c_str(),key_label(keys.tuning_fine).c_str(),key_label(keys.tuning_undo).c_str());
+    lines.push_back({row,RGB(150,150,150)});
     for(int i=0;i<panel_count;++i) {
         const PanelItem& item=panel_items[i];
         if(item.group) lines.push_back({item.group,RGB(120,200,255)});

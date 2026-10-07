@@ -84,11 +84,16 @@ struct Config {
     float near_view_expo = 1.5f, near_view_mouse = 1.0f, near_view_inertia = 0.06f, near_view_level = 0.0f;
     // Live telemetry to dev/telemetry (UDP port on 127.0.0.1); 0 = off.
     int telemetry_port = 0;
-    // Post-stall request key (virtual-key code; 0 = none): held, a high-G pressed below
-    // 500 km/h enters the game's post-stall maneuver (see post_stall_override).
-    int post_stall_key = VK_XBUTTON1;
-    // Opens and closes the in-game tuning panel (tuning_panel.h); 0 = none.
-    int tuning_key = VK_F3;
+    // The mod's keys, [keys] in config.ini (virtual-key codes; 0 = none), read again on every
+    // reload. post_stall: held, a high-G pressed below 500 km/h enters the game's post-stall
+    // maneuver (see post_stall_override). camera_probe, hangar_specs and hangar_geometry are
+    // carried out by the Lua script (lua_requests).
+    struct Keys {
+        int toggle=VK_F8, recenter=VK_F9, free_look='F', hud=VK_F7, post_stall=VK_XBUTTON1, trace=VK_F4,
+            reload=VK_F10, perf=VK_F5, camera_probe=VK_F6, hangar_specs=VK_F7, hangar_geometry=VK_F8,
+            tuning=VK_F3, tuning_up=VK_UP, tuning_down=VK_DOWN, tuning_less=VK_LEFT, tuning_more=VK_RIGHT,
+            tuning_fine=VK_SHIFT, tuning_undo=VK_BACK;
+    } keys;
 };
 
 struct Pose {
@@ -228,32 +233,45 @@ int read_config_int(const wchar_t* key, int fallback) {
     return GetPrivateProfileIntW(L"control", key, fallback, config_path);
 }
 
-// A key by name, for every bindable key: XButton1/XButton2 (mouse side buttons, back and
-// forward), MButton, F1-F24, a letter or digit, or a virtual-key code (0x05 or 5). Empty or
-// "none" is no key; anything else unreadable keeps the default.
-int read_config_key(const wchar_t* key, int fallback) {
-    wchar_t value[64]{};
-    GetPrivateProfileStringW(L"control", key, L"", value, 64, config_path);
-    std::wstring text(value);
-    if(text==L"") return fallback;
+// Key names for [keys]: F1-F24, a letter or digit, these names, or a virtual-key code (0x26 or 38).
+// Empty keeps the default; "none" is no key.
+const struct KeyName { const wchar_t* name; int vk; } key_names[]={
+    {L"XButton1",VK_XBUTTON1},{L"XButton2",VK_XBUTTON2},{L"MButton",VK_MBUTTON},
+    {L"Shift",VK_SHIFT},{L"Ctrl",VK_CONTROL},{L"Alt",VK_MENU},{L"Space",VK_SPACE},{L"Tab",VK_TAB},
+    {L"CapsLock",VK_CAPITAL},{L"Enter",VK_RETURN},{L"Backspace",VK_BACK},{L"Up",VK_UP},{L"Down",VK_DOWN},
+    {L"Left",VK_LEFT},{L"Right",VK_RIGHT},{L"Insert",VK_INSERT},{L"Delete",VK_DELETE},{L"Home",VK_HOME},
+    {L"End",VK_END},{L"PageUp",VK_PRIOR},{L"PageDown",VK_NEXT},
+    {L"Numpad0",VK_NUMPAD0},{L"Numpad1",VK_NUMPAD1},{L"Numpad2",VK_NUMPAD2},{L"Numpad3",VK_NUMPAD3},
+    {L"Numpad4",VK_NUMPAD4},{L"Numpad5",VK_NUMPAD5},{L"Numpad6",VK_NUMPAD6},{L"Numpad7",VK_NUMPAD7},
+    {L"Numpad8",VK_NUMPAD8},{L"Numpad9",VK_NUMPAD9}};
+int parse_key(std::wstring text,int fallback) {
     while(!text.empty() && iswspace(text.back())) text.pop_back();
     while(!text.empty() && iswspace(text.front())) text.erase(text.begin());
-    for(auto& c:text) c=towupper(c);
-    if(text.empty() || text==L"NONE") return 0;
-    static const struct { const wchar_t* name; int vk; } names[]={
-        {L"XBUTTON1",VK_XBUTTON1},{L"XBUTTON2",VK_XBUTTON2},{L"MBUTTON",VK_MBUTTON},
-        {L"SHIFT",VK_SHIFT},{L"CTRL",VK_CONTROL},{L"ALT",VK_MENU},{L"SPACE",VK_SPACE},
-        {L"TAB",VK_TAB},{L"CAPSLOCK",VK_CAPITAL}};
-    for(const auto& n:names) if(text==n.name) return n.vk;
-    if(text.size()>=2 && text[0]==L'F' && iswdigit(text[1])) {
+    if(text.empty()) return fallback;
+    if(_wcsicmp(text.c_str(),L"none")==0) return 0;
+    for(const auto& n:key_names) if(_wcsicmp(text.c_str(),n.name)==0) return n.vk;
+    if(text.size()>=2 && towupper(text[0])==L'F' && iswdigit(text[1])) {
         const int f=_wtoi(text.c_str()+1);
         if(f>=1 && f<=24) return VK_F1+f-1;
     }
-    if(text.size()==1 && (iswalpha(text[0]) || iswdigit(text[0]))) return int(text[0]);
+    if(text.size()==1 && (iswalpha(text[0]) || iswdigit(text[0]))) return int(towupper(text[0]));
     wchar_t* end{};
     const long code=wcstol(text.c_str(),&end,0);
     if(end!=text.c_str() && *end==0 && code>0 && code<256) return int(code);
     return fallback;
+}
+int read_key(const wchar_t* section,const wchar_t* key,int fallback) {
+    wchar_t value[64]{};
+    GetPrivateProfileStringW(section,key,L"",value,64,config_path);
+    return parse_key(value,fallback);
+}
+// A key's name as [keys] writes it (for the panel's help line).
+std::string key_label(int vk) {
+    if(vk<=0) return "none";
+    if(vk>=VK_F1 && vk<=VK_F24) return "F"+std::to_string(vk-VK_F1+1);
+    for(const auto& n:key_names) if(n.vk==vk) { char text[32]{}; WideCharToMultiByte(CP_ACP,0,n.name,-1,text,32,nullptr,nullptr); return text; }
+    if((vk>='A' && vk<='Z') || (vk>='0' && vk<='9')) return std::string(1,char(vk));
+    char text[8]{}; snprintf(text,sizeof(text),"0x%02X",vk); return text;
 }
 
 void load_config() {
@@ -294,8 +312,27 @@ void load_config() {
     config.near_view_box_x = std::clamp(read_config_float(L"near_view_box_x", config.near_view_box_x), 0.1f, 0.95f);
     config.near_view_box_y = std::clamp(read_config_float(L"near_view_box_y", config.near_view_box_y), 0.1f, 0.95f);
     config.telemetry_port = std::clamp(read_config_int(L"telemetry_port", 0), 0, 65535);
-    config.post_stall_key = read_config_key(L"post_stall_key", VK_XBUTTON1);
-    config.tuning_key = read_config_key(L"tuning_key", VK_F3);
+    // Keys: [keys]; post_stall and tuning also from their former [control] names.
+    const Config::Keys d;
+    Config::Keys& k=config.keys;
+    k.post_stall=read_key(L"keys",L"post_stall",read_key(L"control",L"post_stall_key",d.post_stall));
+    k.tuning=read_key(L"keys",L"tuning",read_key(L"control",L"tuning_key",d.tuning));
+    k.toggle=read_key(L"keys",L"toggle",d.toggle);
+    k.recenter=read_key(L"keys",L"recenter",d.recenter);
+    k.free_look=read_key(L"keys",L"free_look",d.free_look);
+    k.hud=read_key(L"keys",L"hud",d.hud);
+    k.trace=read_key(L"keys",L"trace",d.trace);
+    k.reload=read_key(L"keys",L"reload",d.reload);
+    k.perf=read_key(L"keys",L"perf",d.perf);
+    k.camera_probe=read_key(L"keys",L"camera_probe",d.camera_probe);
+    k.hangar_specs=read_key(L"keys",L"hangar_specs",d.hangar_specs);
+    k.hangar_geometry=read_key(L"keys",L"hangar_geometry",d.hangar_geometry);
+    k.tuning_up=read_key(L"keys",L"tuning_up",d.tuning_up);
+    k.tuning_down=read_key(L"keys",L"tuning_down",d.tuning_down);
+    k.tuning_less=read_key(L"keys",L"tuning_less",d.tuning_less);
+    k.tuning_more=read_key(L"keys",L"tuning_more",d.tuning_more);
+    k.tuning_fine=read_key(L"keys",L"tuning_fine",d.tuning_fine);
+    k.tuning_undo=read_key(L"keys",L"tuning_undo",d.tuning_undo);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
         config.pitch_slot = 0;
         config.roll_slot = 2;
@@ -408,8 +445,27 @@ bool prepare_mouse() {
 
 #include "tuning_panel.h"
 
+std::atomic<bool> reload_requested{false};
+// Keys the Lua script carries out (it takes them each frame): 1 camera probe, 2 hangar specs,
+// 4 hangar geometry.
+std::atomic<unsigned> lua_requests{0};
+void toggle_perf() {
+    const bool enabled_now=!perf_enabled.load(); perf_enabled.store(enabled_now);
+    if(!enabled_now) perf_flush.store(true);
+    log_line("PERF capture %s (10-second summaries, no per-frame disk writes)",enabled_now?"ON":"OFF");
+}
+// A key's press (not its hold), with the game in front.
+struct KeyEdge {
+    bool down=false;
+    bool pressed(int vk) {
+        const bool held=vk>0 && (GetAsyncKeyState(vk)&0x8000)!=0;
+        const bool press=held && !down;
+        down=held;
+        return press && foreground_is_game();
+    }
+};
+
 void mouse_loop() {
-    bool f8_down = false, f9_down = false;
     while (running.load()) {
         if (!raw_input_hooked.load()) {
             if (!mouse_device && !prepare_mouse()) {
@@ -427,33 +483,30 @@ void mouse_loop() {
                 }
             }
         }
-        static bool f7_down=false;
-        bool f7=(GetAsyncKeyState(VK_F7)&0x8000)!=0;
-        if(f7 && !f7_down && foreground_is_game()) {
+        const Config::Keys& keys=config.keys;
+        static KeyEdge hud_key,trace_key,toggle_key,recenter_key,reload_key,perf_key,probe_key,specs_key,geometry_key;
+        if(hud_key.pressed(keys.hud)) {
             hud_enabled.store(!hud_enabled.load());
             log_line("HUD only: %s",hud_enabled.load()?"ON":"OFF");
         }
-        f7_down=f7;
         static bool post_stall_down=false;
-        const int psk=config.post_stall_key;
+        const int psk=keys.post_stall;
         const bool post_stall=psk>0 && (GetAsyncKeyState(psk)&0x8000)!=0;
         const bool requested=post_stall && foreground_is_game() && active.load() && enabled.load();
         if(requested!=post_stall_down) log_line("post-stall: %s",requested?"key held":"key released");
         post_stall_armed.store(requested);
         post_stall_down=requested;
-        static bool f4_down=false;
-        const bool f4=(GetAsyncKeyState(VK_F4)&0x8000)!=0;
-        if(f4 && !f4_down && foreground_is_game()) {
+        if(trace_key.pressed(keys.trace)) {
             trace_enabled.store(!trace_enabled.load());
             log_line("flight trace: %s",trace_enabled.load()?"ON (per-frame TRACE lines)":"OFF");
         }
-        f4_down=f4;
-        bool f8 = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-        bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-        if (f8 && !f8_down) enabled.store(!enabled.load());
-        if (f9 && !f9_down) recenter_requested.store(true);
-        f8_down = f8;
-        f9_down = f9;
+        if(toggle_key.pressed(keys.toggle)) enabled.store(!enabled.load());
+        if(recenter_key.pressed(keys.recenter)) recenter_requested.store(true);
+        if(reload_key.pressed(keys.reload)) { reload_requested.store(true); log_line("configuration reload requested"); }
+        if(perf_key.pressed(keys.perf) && running.load()) toggle_perf();
+        if(probe_key.pressed(keys.camera_probe)) lua_requests.fetch_or(1);
+        if(specs_key.pressed(keys.hangar_specs)) lua_requests.fetch_or(2);
+        if(geometry_key.pressed(keys.hangar_geometry)) lua_requests.fetch_or(4);
         panel_poll();
         Sleep(4);
     }
@@ -609,7 +662,7 @@ void update_commands() {
         mouse_dx.store(0); mouse_dy.store(0);
         filtered_pitch_rate=filtered_yaw_rate=filtered_roll_rate=0;
     }
-    const bool looking=!manual && (GetAsyncKeyState('F')&0x8000)!=0;
+    const bool looking=!manual && config.keys.free_look>0 && (GetAsyncKeyState(config.keys.free_look)&0x8000)!=0;
     if(looking && !free_look.held) desired_aim=aim;
     // In a cockpit or nose view the mouse turns the aim by as much less as the view is narrower
     // than the chase view's, so that the ring crosses the screen at the same speed.
@@ -1329,7 +1382,6 @@ bool offline_authorized() {
 }
 bool bridge_verified=false;
 DWORD bridge_thread=0;
-std::atomic<bool> reload_requested{false};
 bool on_bridge_thread() { return bridge_thread && bridge_thread==GetCurrentThreadId(); }
 } // namespace
 
@@ -1365,8 +1417,9 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_start(lua_State* state) {
     std::thread(mouse_loop).detach();
     if(!overlay_frame_event) overlay_frame_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     std::thread(overlay_loop).detach();
-    log_line("ready: F8 toggle, F9 recenter; RMB reserved for game actions");
-    log_line("0.2.30 direct numeric bridge; realtime file/pipe transport removed; F5 performance counters");
+    log_line("ready: %s toggle, %s recenter ([keys] in config.ini); RMB reserved for game actions",
+        key_label(config.keys.toggle).c_str(),key_label(config.keys.recenter).c_str());
+    log_line("0.2.30 direct numeric bridge; realtime file/pipe transport removed; %s performance counters",key_label(config.keys.perf).c_str());
     lua.set_number(30);
     return 1;
 }
@@ -1445,12 +1498,16 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_release(void*) {
 }
 
 extern "C" __declspec(dllexport) int ac8_mouseaim_perf(void*) {
-    if(running.load()) {
-        const bool enabled_now=!perf_enabled.load(); perf_enabled.store(enabled_now);
-        if(!enabled_now) perf_flush.store(true);
-        log_line("PERF capture %s (10-second summaries, no per-frame disk writes)",enabled_now?"ON":"OFF");
-    }
+    if(running.load()) toggle_perf();
     return 0;
+}
+
+// The keys pressed since the last call that the Lua script carries out (lua_requests), cleared.
+extern "C" __declspec(dllexport) int ac8_mouseaim_requests(lua_State* state) {
+    if(!running.load() || !on_bridge_thread()) return 0;
+    LuaView lua(state);
+    lua.set_number(double(lua_requests.exchange(0)));
+    return 1;
 }
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {

@@ -142,7 +142,7 @@ function M.update(pawn,controller,directory)
                 if not checked then write('INSPECT FAILED FocusTargetComponent '..tostring(msg)) end
             end
             capture:flush()
-            print('[AC8MouseAim] Gaze capture started for up to 180 seconds; F6 stops.\n')
+            print('[AC8MouseAim] Gaze capture started for up to 180 seconds; the camera_probe key stops it.\n')
         end
         if not capture then return end
         if pawn:GetAddress()~=pawn_address then stop('aircraft changed'); return end
