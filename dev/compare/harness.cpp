@@ -2005,11 +2005,9 @@ int main() {
     for (size_t i = 0; i < entries.size(); ++i)
         index += std::string(i ? "," : "") + "{\"id\":\"" + entries[i].id + "\",\"label\":\"" + esc(entries[i].label) + "\",\"source\":\"" + esc(entries[i].source) + "\"}";
     index += "],\"plants\":[";
-    for (int p = 0; p < condition_count; ++p) {
-        const auto& b = conditions[p].bars;
-        index += std::string(p ? "," : "") + "{\"id\":\"" + conditions[p].id + "\",\"title\":\"" + esc(conditions[p].title) + "\",\"bars\":[" +
-                 std::to_string(b[0]) + "," + std::to_string(b[1]) + "," + std::to_string(b[2]) + "]}";
-    }
+    // the aircraft by name only: their figures come from the game's tables, which stay off the page
+    for (int p = 0; p < condition_count; ++p)
+        index += std::string(p ? "," : "") + "{\"id\":\"" + conditions[p].id + "\",\"title\":\"" + esc(conditions[p].title) + "\"}";
     index += "],\"scenarios\":[";
     bool first_listed = true;
     for (const Scenario& sc : list) {

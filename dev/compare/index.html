@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>飞控横评</title>
+<title>Flight Bench</title>
 <style>
 /* A side-by-side review of flight controllers: the same decisions against the same enemies.
    First the numbers (every controller on every aircraft, ranked per column), then one shared
@@ -137,7 +137,7 @@ td.total { font-weight: 700; }
 <body>
 <div class="page" id="app">
   <div class="bar">
-    <h1>飞控横评</h1>
+    <h1>Flight Bench</h1>
     <div class="seg" role="group" aria-label="页面">
       <button type="button" id="tabScene" aria-pressed="true">场景</button>
       <button type="button" id="tabOverview" aria-pressed="false">总览</button>
@@ -166,7 +166,7 @@ td.total { font-weight: 700; }
     </section>
     <aside class="side">
       <section class="panel board-panel">
-        <h2 id="boardTitle">横评</h2>
+        <h2 id="boardTitle"></h2>
         <div class="board" id="board"></div>
       </section>
       <div class="gauges" id="gauges"></div>
@@ -262,7 +262,7 @@ const RANK_MARK = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'
 // ---------- board: the numbers for the scene, every controller on every aircraft ----------
 function drawBoard() {
   const sc = scenario(), cols = COLS[sc.kind] || COLS.capture, list = IDX.controllers, conds = IDX.plants.filter(c => c.id === st.cond);
-  document.getElementById('boardTitle').textContent = `横评 · ${sc.title} · ${sc.seconds.toFixed(0)} s`;
+  document.getElementById('boardTitle').textContent = `${sc.title} · ${sc.seconds.toFixed(0)} s`;
   let html = '<table><thead><tr class="cond"><th></th>';
   for (const c of conds) html += `<th class="gap" colspan="${cols.length + 1}">${c.title}</th>`;
   html += '<th class="gap">平均名次</th></tr><tr class="metric"><th>飞控</th>';
