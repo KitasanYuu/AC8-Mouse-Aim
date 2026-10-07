@@ -18,6 +18,9 @@
 #include <mutex>
 #include <array>
 #include <vector>
+#include <unordered_map>
+#include <fstream>
+#include <initializer_list>
 #include "vendor/minhook/include/MinHook.h"
 bool telemetry_send(int port, const char* data, int length);  // telemetry.cpp
 bool gamepad_read(float values[6], unsigned& buttons);        // telemetry.cpp
@@ -94,6 +97,10 @@ struct Config {
             tuning=VK_F3, tuning_up=VK_UP, tuning_down=VK_DOWN, tuning_less=VK_LEFT, tuning_more=VK_RIGHT,
             tuning_fine=VK_SHIFT, tuning_undo=VK_BACK, tuning_bind=VK_RETURN;
     } keys;
+    // The language of the HUD's lines and the tuning panel: auto (the game's) or a file's code
+    // (localization.h); the status line top left (version, state, angles), off by default.
+    std::string language = "auto";
+    int status_line = 0;
 };
 
 struct Pose {
@@ -222,6 +229,7 @@ void init_paths() {
 }
 
 #include "async_diagnostics.h"
+#include "localization.h"
 
 float read_config_float(const wchar_t* key, float fallback) {
     wchar_t value[64]{};
@@ -342,6 +350,15 @@ void load_config() {
         config.pitch_slot = 0;
         config.roll_slot = 2;
     }
+    {
+        wchar_t language[32]{};
+        GetPrivateProfileStringW(L"control", L"language", L"auto", language, 32, config_path);
+        std::string code=wide_to_utf8(language);
+        while(!code.empty() && isspace(static_cast<unsigned char>(code.back()))) code.pop_back();
+        config.language=code.empty() ? "auto" : code;
+    }
+    config.status_line = read_config_int(L"status_line", 0) != 0;
+    choose_language();
 }
 
 struct WindowCandidate {
@@ -875,18 +892,37 @@ RECT draw_ring(uint32_t* pixels,int width,int height,float cx,float cy,float rad
 
 // Draws the HUD and returns the regions drawn (for clearing and dirty-rect presents).
 unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, RECT (&drawn)[8]) {
-        drawn[0]={20,35,1100,85};
-        unsigned count=1;
-        unsigned text_count=1;  // the first regions hold GDI text, which needs its alpha set
+        unsigned count=0;
+        unsigned text_count=0;  // the first regions hold GDI text, which needs its alpha set
         // The DIB was cleared before drawing; a full-screen GDI fill is redundant.
         SetBkMode(dc,TRANSPARENT);
         SetTextColor(dc,RGB(245,245,245));
-        char label[160]{};
-        snprintf(label,sizeof(label),"MouseFlight 0.2.30 POST-CAMERA %s | aim %.1f / %.1f | camera %.1f / %.1f",
-            active.load() && enabled.load()?"ON":"STANDBY",
-            target_pitch.load(),target_yaw.load(),camera_pitch.load(),camera_yaw.load());
-        TextOutA(dc,28,40,label,static_cast<int>(strlen(label)));
         const int width=rect.right-rect.left, height=rect.bottom-rect.top;
+        // the HUD's lines: the language's font, sized with the screen (rebuilt when either changes)
+        static HFONT hud_font{}; static int hud_font_height=0, hud_font_generation=-1;
+        const int hud_height=std::max(13,int(std::lround(15*std::max(0.75f,height/1080.0f))));
+        if(hud_font_height!=hud_height || hud_font_generation!=text_generation.load()) {
+            if(hud_font) DeleteObject(hud_font);
+            hud_font=CreateFontW(-hud_height,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
+                                 ANTIALIASED_QUALITY,DEFAULT_PITCH,text_font().c_str());
+            hud_font_height=hud_height; hud_font_generation=text_generation.load();
+        }
+        HGDIOBJ old_hud_font=SelectObject(dc,hud_font);
+        auto hud_line=[&](int line,const std::wstring& text) {
+            const int top=40+line*int(hud_height*1.4f);
+            TextOutW(dc,28,top,text.c_str(),static_cast<int>(text.size()));
+            SIZE size{}; GetTextExtentPoint32W(dc,text.c_str(),static_cast<int>(text.size()),&size);
+            drawn[count++]={20,top-4,28+size.cx+8,top+size.cy+4};
+            text_count=count;
+        };
+        if(config.status_line) {
+            wchar_t angles[96]{};
+            swprintf_s(angles,L"%.1f / %.1f",target_pitch.load(),target_yaw.load());
+            wchar_t camera[96]{};
+            swprintf_s(camera,L"%.1f / %.1f",camera_pitch.load(),camera_yaw.load());
+            hud_line(0,tr("hud.status",L"MouseFlight 0.2.30 {1} | aim {2} | camera {3}",
+                {active.load() && enabled.load() ? tr("hud.on",L"ON") : tr("hud.standby",L"STANDBY"),angles,camera}));
+        }
         if(width>0 && height>0) view_aspect.store(float(width)/float(height));
         float x{},y{},bx{},by{};
         bool aim_visible=false, nose_visible=false;
@@ -921,13 +957,9 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
                 log_line("overlay paint %dx%d target=%s at=(%.0f,%.0f) visible=%d",
                     width,height,aim_visible?"inside":"outside",x,y,IsWindowVisible(window));
             }
-            if(!aim_visible) {
-                const char* offscreen="TARGET OUTSIDE VIEW";
-                TextOutA(dc,28,62,offscreen,static_cast<int>(strlen(offscreen)));
-                drawn[count++]={20,58,400,85};
-                text_count=count;
-            }
+            if(!aim_visible) hud_line(config.status_line ? 1 : 0,tr("hud.outside",L"TARGET OUTSIDE VIEW"));
         }
+        SelectObject(dc,old_hud_font);
         GdiFlush();
         // GDI produces RGB with zero alpha. Set alpha only in the text regions.
         for(unsigned n=0;n<text_count;++n) {
@@ -1506,6 +1538,21 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_release(void*) {
 
 extern "C" __declspec(dllexport) int ac8_mouseaim_perf(void*) {
     if(running.load()) toggle_perf();
+    return 0;
+}
+
+// The game's language as the engine has it (the Lua script, each mission): "auto" follows it.
+extern "C" __declspec(dllexport) int ac8_mouseaim_language(lua_State* state) {
+    if(!running.load() || !on_bridge_thread()) return 0;
+    LuaView lua(state);
+    if(lua.get_stack_size()<1 || !lua.is_string(1)) return 0;
+    const std::string_view text=lua.get_string(1);
+    const std::string code(text.substr(0,std::min<size_t>(text.size(),32)));
+    if(code!=game_language) {
+        game_language=code;
+        log_line("text: the game's language is %s",code.c_str());
+        choose_language();
+    }
     return 0;
 }
 

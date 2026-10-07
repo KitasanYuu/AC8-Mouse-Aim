@@ -11,6 +11,7 @@ local frame_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll"
 local camera_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_camera"))
 local release_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_release"))
 local requests_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_requests"))
+local language_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_language"))
 -- Optional: other aircraft for the telemetry stream (contacts.lua).
 local send_native = package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_send")
 local contacts = dofile(directory .. "contacts.lua")
@@ -194,13 +195,33 @@ local function carry_out_requests()
     if geometry then pcall(mesh_probe.hangar, directory) end             -- hangar_geometry
 end
 
+-- The game's language, as the engine has it (its culture follows the game's language setting),
+-- for the mod's texts when [control] language is auto: at start and at each mission.
+local function report_language()
+    local function call(name)
+        local ok, value = pcall(function()
+            local library = StaticFindObject('/Script/Engine.Default__KismetInternationalizationLibrary')
+            local result = library[name](library)
+            if type(result) == 'string' then return result end
+            return result:ToString()
+        end)
+        return ok and value or nil
+    end
+    local language, culture = call('GetCurrentLanguage'), call('GetCurrentCulture')
+    print('[AC8MouseAim] Game language ' .. tostring(language) .. ', culture ' .. tostring(culture) .. '\n')
+    local code = (language and language ~= '' and language) or culture
+    if code and code ~= '' then pcall(language_native, code) end
+end
+
 assert(start_native(1729,0.125)==30,'AC8 direct bridge unavailable; control disabled (check native log).')
 
 if EngineTickAvailable == false or type(LoopInGameThreadAfterFrames) ~= "function" then
     notice("Disabled: required game-thread callback unavailable.")
 else
+    local language_reported = false   -- once at the start (the menus), then at each mission
     LoopInGameThreadAfterFrames(1, function()
         begin_native()
+        if not language_reported then language_reported = true; pcall(report_language) end
         pcall(carry_out_requests)
         local ok, err = pcall(function()
             local now = os.time()
@@ -220,6 +241,7 @@ else
             end
             local incoming_address=pawn:GetAddress()
             if startup_address~=incoming_address then
+                report_language()
                 aim_camera.restore()
                 release_native()
                 current_address=nil

@@ -4,70 +4,85 @@
 // 0.5 s (poll_dev_files); config.ini stays the only place values live, and players need not edit
 // it. Keys the panel uses are kept from the game while it is open (its window procedure), so the
 // arrows do not also act in the game; while a key is being recorded, every key is kept from it.
+// Its texts are the language's (localization.h): "item.<key>" a name, "item.<key>.desc" what it
+// does, "group.<id>" a heading.
 struct PanelItem {
-    const char* group;              // a heading before this item, or nullptr
+    const char* group;              // the id of a heading before this item, or nullptr
+    const wchar_t* group_en;
     const wchar_t* section;         // config.ini section
     const char* key;
-    const char* label;
+    const wchar_t* name;            // English
+    const wchar_t* label;           // English: what it does
     float min, max, step;           // Shift: a fifth of the step
     bool integer;
     float fallback;                 // shown when config.ini has no value
     int Config::Keys::* bind;       // a key of [keys] (Keys page), not a value
+    bool language;                  // the language: auto or a language file (the value is its place in that list)
 };
-PanelItem value_item(const char* group,const wchar_t* section,const char* key,const char* label,
-                     float min,float max,float step,bool integer,float fallback) {
-    return {group,section,key,label,min,max,step,integer,fallback,nullptr};
+PanelItem value_item(const char* group,const wchar_t* group_en,const wchar_t* section,const char* key,const wchar_t* name,
+                     const wchar_t* label,float min,float max,float step,bool integer,float fallback) {
+    return {group,group_en,section,key,name,label,min,max,step,integer,fallback,nullptr,false};
 }
-PanelItem key_item(const char* group,const char* key,const char* label,int Config::Keys::* bind) {
-    return {group,L"keys",key,label,0,255,1,true,float(Config::Keys{}.*bind),bind};
+PanelItem key_item(const char* group,const wchar_t* group_en,const char* key,const wchar_t* name,const wchar_t* label,
+                   int Config::Keys::* bind) {
+    return {group,group_en,L"keys",key,name,label,0,255,1,true,float(Config::Keys{}.*bind),bind,false};
 }
 const PanelItem panel_items[]={
-    value_item("Mouse and chase camera",L"control","sensitivity","mouse, deg per count",0.01f,1.0f,0.005f,false,0.10f),
-    value_item(nullptr,L"control","camera_follow","camera turn to the aim, 1/s",1,60,1,false,12),
-    value_item(nullptr,L"control","camera_distance","behind, m (0: the game's own)",0,100,1,false,30),
-    value_item(nullptr,L"control","camera_height","above, m",-20,30,0.5f,false,6),
-    value_item(nullptr,L"control","camera_fov_add","FOV added to the game's, deg",-40,40,1,false,0),
-    value_item("Cockpit and nose views",L"control","near_view_camera","0 fixed, 1 follow, 2 edge, 3 head",0,3,1,true,3),
-    value_item(nullptr,L"control","near_view_follow","head turn toward the ring",0,1,0.05f,false,0.6f),
-    value_item(nullptr,L"control","near_view_hud","head limit past half the view, deg",0,40,1,false,8),
-    value_item(nullptr,L"control","near_view_mouse","mouse scale",0.1f,3,0.05f,false,1),
-    value_item(nullptr,L"control","near_view_expo","ring curve (1 linear)",1,4,0.1f,false,1.5f),
-    value_item(nullptr,L"control","near_view_inertia","view lag behind the aircraft, s",0,0.5f,0.01f,false,0.06f),
-    value_item(nullptr,L"control","near_view_level","roll held toward level",0,1,0.05f,false,0),
-    value_item(nullptr,L"control","near_view_fov_add","FOV added to the game's, deg",-40,40,1,false,0),
+    value_item("mouse_camera",L"Mouse and chase camera",L"control","sensitivity",L"Mouse sensitivity",L"deg per mouse count",0.01f,1.0f,0.005f,false,0.10f),
+    value_item(nullptr,nullptr,L"control","camera_follow",L"Camera follow",L"how fast the camera turns to the aim, 1/s",1,60,1,false,12),
+    value_item(nullptr,nullptr,L"control","camera_distance",L"Camera distance",L"behind the aircraft, m (0: the game's own)",0,100,1,false,30),
+    value_item(nullptr,nullptr,L"control","camera_height",L"Camera height",L"above the aircraft, m",-20,30,0.5f,false,6),
+    value_item(nullptr,nullptr,L"control","camera_fov_add",L"Field of view",L"deg added to the game's own",-40,40,1,false,0),
+    value_item("near_views",L"Cockpit and nose views",L"control","near_view_camera",L"View mode",L"0 fixed, 1 follows the aim, 2 at the edge, 3 head turns",0,3,1,true,3),
+    value_item(nullptr,nullptr,L"control","near_view_follow",L"Head follow",L"how far the head turns toward the ring",0,1,0.05f,false,0.6f),
+    value_item(nullptr,nullptr,L"control","near_view_hud",L"Head limit",L"deg past half the view the head may turn",0,40,1,false,8),
+    value_item(nullptr,nullptr,L"control","near_view_mouse",L"Mouse scale",L"mouse movement in these views",0.1f,3,0.05f,false,1),
+    value_item(nullptr,nullptr,L"control","near_view_expo",L"Ring curve",L"1 linear; higher is finer near the nose",1,4,0.1f,false,1.5f),
+    value_item(nullptr,nullptr,L"control","near_view_inertia",L"View lag",L"how far the view lags the aircraft, s",0,0.5f,0.01f,false,0.06f),
+    value_item(nullptr,nullptr,L"control","near_view_level",L"Level the view",L"how much the view's roll is held level",0,1,0.05f,false,0),
+    value_item(nullptr,nullptr,L"control","near_view_fov_add",L"Field of view",L"deg added to the game's own",-40,40,1,false,0),
     // What sets the turn (closed-loop simulation, measured plant, 2026-10-07): pitch_gain is what limits
     // the pitch (1.5 to 4: up 20 deg reached in 2.4 to 1.4 s; past 4 the stick chatters near the aim;
     // pitch_brake changed nothing at all); roll_brake slows a big roll's stop when lowered (right 30
     // deg 2.8 s at 0.45, 4.1 s at 0.2) and changes little when raised (the roll rate is the limit).
-    value_item("Flight",L"tuning","pitch_gain","pitch response (higher: faster, past 4 jittery)",1,4,0.1f,false,2.5f),
-    value_item(nullptr,L"tuning","roll_brake","roll stop planned (lower: softer, slower)",0.2f,1,0.05f,false,0.45f),
-    value_item(nullptr,L"tuning","level_per_deg","bank kept per deg to go (lower: levels sooner)",2,30,1,false,10),
-    value_item(nullptr,L"tuning","lead_gain","follow a moving aim",0,2,0.05f,false,1.0f),
-    value_item(nullptr,L"tuning","lead_filter","smoothing of that, s",0.05f,1.5f,0.05f,false,0.4f),
-    value_item(nullptr,L"tuning","highg_full_from","high-G full pull beyond, deg",0,45,1,false,8),
-    key_item("Flight","toggle","mouse aim on and off",&Config::Keys::toggle),
-    key_item(nullptr,"recenter","the aim back on the nose",&Config::Keys::recenter),
-    key_item(nullptr,"free_look","held: look around",&Config::Keys::free_look),
-    key_item(nullptr,"hud","the mod's rings on and off",&Config::Keys::hud),
-    key_item(nullptr,"post_stall","held: post-stall with the high-G",&Config::Keys::post_stall),
-    key_item("This panel","tuning","open and close it",&Config::Keys::tuning),
-    key_item(nullptr,"tuning_up","previous item",&Config::Keys::tuning_up),
-    key_item(nullptr,"tuning_down","next item",&Config::Keys::tuning_down),
-    key_item(nullptr,"tuning_less","lower the value",&Config::Keys::tuning_less),
-    key_item(nullptr,"tuning_more","raise the value",&Config::Keys::tuning_more),
-    key_item(nullptr,"tuning_fine","held: finer steps",&Config::Keys::tuning_fine),
-    key_item(nullptr,"tuning_undo","back to the opening value",&Config::Keys::tuning_undo),
-    key_item(nullptr,"tuning_bind","record a new key (this page)",&Config::Keys::tuning_bind),
-    key_item("Diagnostics","reload","read config.ini again",&Config::Keys::reload),
-    key_item(nullptr,"trace","per-frame flight trace in the log",&Config::Keys::trace),
-    key_item(nullptr,"perf","performance counters",&Config::Keys::perf),
-    key_item(nullptr,"camera_probe","camera state capture",&Config::Keys::camera_probe),
-    key_item(nullptr,"hangar_specs","hangar: the aircraft's ratings",&Config::Keys::hangar_specs),
-    key_item(nullptr,"hangar_geometry","hangar: the aircraft's geometry",&Config::Keys::hangar_geometry),
+    value_item("flight",L"Flight (the last degrees of a turn)",L"tuning","pitch_gain",L"Pitch response",L"higher is faster; past 4 the stick jitters",1,4,0.1f,false,2.5f),
+    value_item(nullptr,nullptr,L"tuning","roll_brake",L"Roll stop",L"lower stops a roll softer and later",0.2f,1,0.05f,false,0.45f),
+    value_item(nullptr,nullptr,L"tuning","level_per_deg",L"Wing levelling",L"bank kept per deg to go; lower levels sooner",2,30,1,false,10),
+    value_item(nullptr,nullptr,L"tuning","lead_gain",L"Follow a moving aim",L"how much a moving aim is led",0,2,0.05f,false,1.0f),
+    value_item(nullptr,nullptr,L"tuning","lead_filter",L"Follow smoothing",L"smoothing of the aim's motion, s",0.05f,1.5f,0.05f,false,0.4f),
+    value_item(nullptr,nullptr,L"tuning","highg_full_from",L"High-G full pull",L"beyond this many deg off the aim, deg",0,45,1,false,8),
+    PanelItem{"display",L"Display",L"control","language",L"Language",L"of this panel and the mod's HUD lines",0,1,1,true,0,nullptr,true},
+    value_item(nullptr,nullptr,L"control","status_line",L"Status line",L"version, state and angles top left",0,1,1,true,0),
+    key_item("keys_flight",L"Flight","toggle",L"Mouse aim",L"mouse aim on and off",&Config::Keys::toggle),
+    key_item(nullptr,nullptr,"recenter",L"Recenter",L"the aim back on the nose",&Config::Keys::recenter),
+    key_item(nullptr,nullptr,"free_look",L"Free look",L"held: look around",&Config::Keys::free_look),
+    key_item(nullptr,nullptr,"hud",L"HUD",L"the mod's rings on and off",&Config::Keys::hud),
+    key_item(nullptr,nullptr,"post_stall",L"Post-stall",L"held: post-stall with the high-G",&Config::Keys::post_stall),
+    key_item("keys_panel",L"This panel","tuning",L"Panel",L"open and close it",&Config::Keys::tuning),
+    key_item(nullptr,nullptr,"tuning_up",L"Previous",L"previous item",&Config::Keys::tuning_up),
+    key_item(nullptr,nullptr,"tuning_down",L"Next",L"next item",&Config::Keys::tuning_down),
+    key_item(nullptr,nullptr,"tuning_less",L"Lower",L"lower the value",&Config::Keys::tuning_less),
+    key_item(nullptr,nullptr,"tuning_more",L"Raise",L"raise the value",&Config::Keys::tuning_more),
+    key_item(nullptr,nullptr,"tuning_fine",L"Finer",L"held: finer steps",&Config::Keys::tuning_fine),
+    key_item(nullptr,nullptr,"tuning_undo",L"Undo",L"back to the opening value",&Config::Keys::tuning_undo),
+    key_item(nullptr,nullptr,"tuning_bind",L"New key",L"record a new key (this page)",&Config::Keys::tuning_bind),
+    key_item("keys_diagnostics",L"Diagnostics","reload",L"Reload",L"read config.ini again",&Config::Keys::reload),
+    key_item(nullptr,nullptr,"trace",L"Flight trace",L"per-frame flight trace in the log",&Config::Keys::trace),
+    key_item(nullptr,nullptr,"perf",L"Performance",L"performance counters",&Config::Keys::perf),
+    key_item(nullptr,nullptr,"camera_probe",L"Camera probe",L"camera state capture",&Config::Keys::camera_probe),
+    key_item(nullptr,nullptr,"hangar_specs",L"Hangar specs",L"hangar: the aircraft's ratings",&Config::Keys::hangar_specs),
+    key_item(nullptr,nullptr,"hangar_geometry",L"Hangar geometry",L"hangar: the aircraft's geometry",&Config::Keys::hangar_geometry),
 };
 constexpr int panel_count=int(sizeof(panel_items)/sizeof(panel_items[0]));
 int item_page(int i) { return panel_items[i].bind ? 1 : 0; }
-const char* const page_names[2]={"Settings","Keys"};
+const char* const page_names[2]={"Settings","Keys"};   // for the log
+// The language item's choices: auto, then each language file.
+std::vector<std::string> language_options() {
+    std::vector<std::string> options{"auto"};
+    for(const auto& code:languages_available()) options.push_back(code);
+    return options;
+}
+float item_max(const PanelItem& item) { return item.language ? float(language_options().size()-1) : item.max; }
 struct PanelState {
     int page=0;
     int selected=0;          // an item of the page, or -1: the page row (Left/Right turn the page)
@@ -90,9 +105,14 @@ int step_decimals(float step) {
     for(float s=step;d<4 && std::abs(s-std::round(s))>1e-4f;s*=10) ++d;
     return d;
 }
-// The value as config.ini holds it: no trailing zeros; a key by its name.
+// The value as config.ini holds it: no trailing zeros; a key by its name; the language by its code.
 std::string panel_text(const PanelItem& item,float value) {
     if(item.bind) return key_label(int(std::lround(value)));
+    if(item.language) {
+        const auto options=language_options();
+        const size_t at=size_t(std::clamp(int(std::lround(value)),0,int(options.size())-1));
+        return options[at];
+    }
     char text[32]{};
     if(item.integer) snprintf(text,sizeof(text),"%d",int(std::lround(value)));
     else {
@@ -105,15 +125,38 @@ std::string panel_text(const PanelItem& item,float value) {
     }
     return text;
 }
+// As the panel shows it: an on/off value as such, the language by its name.
+std::wstring panel_shown(const PanelItem& item,float value) {
+    if(item.language) {
+        const std::string code=panel_text(item,value);
+        if(code=="auto") return tr("panel.auto",L"auto (the game's)");
+        if(code=="en") return L"English";
+        if(code=="zh-Hans") return L"\x7b80\x4f53\x4e2d\x6587";
+        return widen(code);
+    }
+    if(!item.bind && item.integer && item.min==0 && item.max==1)
+        return value>0.5f ? tr("panel.on",L"on") : tr("panel.off",L"off");
+    if(item.bind && value<0.5f) return tr("panel.none",L"none");
+    return widen(panel_text(item,value));
+}
 float panel_read(const PanelItem& item) {
     wchar_t key[64]{}, text[64]{};
     MultiByteToWideChar(CP_ACP,0,item.key,-1,key,64);
     if(item.bind) return float(read_key(item.section,key,int(item.fallback)));
     GetPrivateProfileStringW(item.section,key,L"",text,64,config_path);
+    if(item.language) {
+        const auto options=language_options();
+        const std::string code=wide_to_utf8(text);
+        for(size_t i=0;i<options.size();++i) if(_stricmp(options[i].c_str(),code.c_str())==0) return float(i);
+        return 0;
+    }
     wchar_t* end{};
     const float parsed=wcstof(text,&end);
     return end!=text && std::isfinite(parsed) ? parsed : item.fallback;
 }
+std::wstring item_name(const PanelItem& item) { return tr((std::string("item.")+item.key).c_str(),item.name); }
+std::wstring item_label(const PanelItem& item) { return tr((std::string("item.")+item.key+".desc").c_str(),item.label); }
+std::wstring group_name(const PanelItem& item) { return tr((std::string("group.")+item.group).c_str(),item.group_en); }
 
 // Replaces key's value in [section] of config.ini, keeping every other byte (comments, order,
 // line ends); a key not there is added at the end of its section. Written to a copy that then
@@ -297,7 +340,7 @@ void panel_poll() {
     if(less) value-=step;
     if(more) value+=step;
     if(value!=previous) {
-        value=std::clamp(std::round(value/(item.step/5))*(item.step/5),item.min,item.max);
+        value=std::clamp(std::round(value/(item.step/5))*(item.step/5),item.min,item_max(item));
         if(item.integer) value=std::round(value);
         if(value!=previous) { p.pending[p.selected]=true; p.write_at=GetTickCount64()+150; }
     }
@@ -345,75 +388,82 @@ void panel_attach(HWND window) {
     log_line("tuning panel: attached to the game window (toggle key %s)",key_label(config.keys.tuning).c_str());
 }
 
-// draw_overlay: the panel, top left below the status line; returns where it was drawn. Compact:
-// a row is the key and its value (and the opening value once changed); the selected item's
-// description sits at the bottom (each row's own had made the panel half the screen wide).
+// draw_overlay: the panel, top left below the HUD's lines; returns where it was drawn. Compact: a row
+// is a name and its value (and the opening value once changed), in columns; the selected item's
+// description, and its config.ini name, sit at the bottom.
 RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale) {
     if(!panel_open.load()) return RECT{0,0,0,0};
     PanelState state;
     { std::lock_guard<std::mutex> lock(panel_mutex); state=panel; }
-    static HFONT font{}; static int font_height=0;
+    static HFONT font{}; static int font_height=0, font_generation=-1;
     const int text_height=std::max(13,int(std::lround(15*scale)));
-    if(font_height!=text_height) {
+    if(font_height!=text_height || font_generation!=text_generation.load()) {
         if(font) DeleteObject(font);
         font=CreateFontW(-text_height,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
-                         ANTIALIASED_QUALITY,FIXED_PITCH|FF_MODERN,L"Consolas");
-        font_height=text_height;
+                         ANTIALIASED_QUALITY,DEFAULT_PITCH,text_font().c_str());
+        font_height=text_height; font_generation=text_generation.load();
     }
     HGDIOBJ old_font=SelectObject(dc,font);
-    struct Line { std::string text; COLORREF color; bool selected=false; };
+    auto measure=[&](const std::wstring& s) { SIZE size{}; GetTextExtentPoint32W(dc,s.c_str(),int(s.size()),&size); return LONG(size.cx); };
+    // A line: text from its left, or the three columns of an item (name, value, the opening value).
+    struct Line { std::wstring text, value, was; COLORREF color; bool selected=false, item=false; };
     std::vector<Line> lines;
-    char row[200]{};
     const Config::Keys& keys=config.keys;   // as [keys] has them
-    auto name=[](int vk) { return key_label(vk); };
-    snprintf(row,sizeof(row),"MouseFlight tuning  (%s close)",name(keys.tuning).c_str());
-    lines.push_back({row,RGB(255,255,255)});
-    snprintf(row,sizeof(row),"%s %s  %s",state.selected<0?">":" ",
-        state.page==0?"[Settings]  Keys":" Settings  [Keys]",state.selected<0?"(Left/Right: page)":"");
-    lines.push_back({row,state.selected<0?RGB(255,220,120):RGB(200,200,200),state.selected<0});
+    auto key=[](int vk) { return widen(key_label(vk)); };
+    lines.push_back({tr("panel.title",L"MouseFlight tuning ({1} closes)",{key(keys.tuning)}),L"",L"",RGB(255,255,255)});
+    {
+        const std::wstring settings=tr("panel.page.settings",L"Settings"), keys_page=tr("panel.page.keys",L"Keys");
+        std::wstring row=(state.selected<0?L"> ":L"  ")+(state.page==0 ? L"["+settings+L"]   "+keys_page : settings+L"   ["+keys_page+L"]");
+        if(state.selected<0) row+=L"   "+tr("panel.page.hint",L"({1}/{2}: page)",{key(keys.tuning_less),key(keys.tuning_more)});
+        lines.push_back({row,L"",L"",state.selected<0?RGB(255,220,120):RGB(200,200,200),state.selected<0});
+    }
     if(state.page==0)
-        snprintf(row,sizeof(row),"%s/%s  %s/%s (%s fine)  %s undo",name(keys.tuning_up).c_str(),name(keys.tuning_down).c_str(),
-            name(keys.tuning_less).c_str(),name(keys.tuning_more).c_str(),name(keys.tuning_fine).c_str(),name(keys.tuning_undo).c_str());
+        lines.push_back({tr("panel.help.settings",L"{1}/{2} choose   {3}/{4} change ({5} finer)   {6} undo",
+            {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_less),key(keys.tuning_more),key(keys.tuning_fine),key(keys.tuning_undo)}),
+            L"",L"",RGB(150,150,150)});
     else
-        snprintf(row,sizeof(row),"%s/%s  %s new key  %s undo",name(keys.tuning_up).c_str(),name(keys.tuning_down).c_str(),
-            name(keys.tuning_bind).c_str(),name(keys.tuning_undo).c_str());
-    lines.push_back({row,RGB(150,150,150)});
+        lines.push_back({tr("panel.help.keys",L"{1}/{2} choose   {3} new key   {4} undo",
+            {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_bind),key(keys.tuning_undo)}),L"",L"",RGB(150,150,150)});
     for(int i=0;i<panel_count;++i) {
         if(item_page(i)!=state.page) continue;
         const PanelItem& item=panel_items[i];
-        if(item.group) lines.push_back({item.group,RGB(120,200,255)});
+        if(item.group) lines.push_back({group_name(item),L"",L"",RGB(120,200,255)});
         const bool selected=i==state.selected;
-        const std::string now=selected && state.recording ? "..." : panel_text(item,state.value[i]);
-        const std::string was=panel_text(item,state.was[i]);
-        if(now!=was && !(selected && state.recording))
-            snprintf(row,sizeof(row),"%s %-17s %9s  was %s",selected?">":" ",item.key,now.c_str(),was.c_str());
-        else snprintf(row,sizeof(row),"%s %-17s %9s",selected?">":" ",item.key,now.c_str());
-        lines.push_back({row,selected?RGB(255,220,120):RGB(235,235,235),selected});
+        Line row{(selected?L"> ":L"  ")+item_name(item),L"",L"",selected?RGB(255,220,120):RGB(235,235,235),selected,true};
+        row.value=selected && state.recording ? L"..." : panel_shown(item,state.value[i]);
+        if(!(selected && state.recording) && panel_text(item,state.value[i])!=panel_text(item,state.was[i]))
+            row.was=tr("panel.was",L"was {1}",{panel_shown(item,state.was[i])});
+        lines.push_back(row);
     }
-    // the bottom line: the selected item's description, or what a recording waits for
-    std::string footer;
-    if(state.selected>=0) {
+    // the bottom line: the selected item's description and config.ini name, or what a recording waits for
+    std::wstring footer;
+    if(state.recording) footer=tr("panel.recording",L"press the new key (Esc: cancel, Delete: none)");
+    else if(state.selected>=0) {
         const PanelItem& item=panel_items[state.selected];
-        footer=item.label;
-        if(state.recording) footer="press the new key (Esc: cancel, Delete: none)";
-        else if(item.bind && state.value[state.selected]>0) {   // the same key elsewhere
-            std::string also;
+        footer=item_label(item)+L"   ["+widen(item.key)+L"]";
+        if(item.bind && state.value[state.selected]>0) {   // the same key elsewhere
+            std::wstring also;
             for(int i=0;i<panel_count;++i)
                 if(i!=state.selected && panel_items[i].bind && state.value[i]==state.value[state.selected])
-                    also+=(also.empty()?"":", ")+std::string(panel_items[i].key);
-            if(!also.empty()) footer+="  (also: "+also+")";
+                    also+=(also.empty()?L"":L", ")+item_name(panel_items[i]);
+            if(!also.empty()) footer+=L"   "+tr("panel.also",L"also: {1}",{also});
         }
     }
-    lines.push_back({footer,state.recording?RGB(255,220,120):RGB(190,190,190)});
-    const int line=int(text_height*1.25f), pad=int(9*scale), gap=line/2;   // gap: before the description
-    LONG text_width=0;
+    lines.push_back({footer,L"",L"",state.recording?RGB(255,220,120):RGB(190,190,190)});
+    // columns: names, then values right-aligned, then the opening values
+    const LONG column_gap=LONG(text_height*1.5f);
+    LONG name_width=0, value_width=0, was_width=0, text_width=0;
     for(const auto& l:lines) {
-        SIZE size{};
-        GetTextExtentPoint32A(dc,l.text.c_str(),int(l.text.size()),&size);
-        text_width=std::max(text_width,size.cx);
+        if(l.item) {
+            name_width=std::max(name_width,measure(l.text));
+            value_width=std::max(value_width,measure(l.value));
+            was_width=std::max(was_width,measure(l.was));
+        } else text_width=std::max(text_width,measure(l.text));
     }
+    const LONG item_width=name_width+column_gap+value_width+(was_width>0 ? column_gap+was_width : 0);
+    const int line=int(text_height*1.35f), pad=int(9*scale), gap=line/2;   // gap: before the description
     RECT box{LONG(28*scale),LONG(100*scale),0,0};
-    box.right=std::min(LONG(width),box.left+text_width+2*pad);
+    box.right=std::min(LONG(width),box.left+std::max(text_width,item_width)+2*pad);
     box.bottom=std::min(LONG(height),box.top+LONG(lines.size())*line+gap+2*pad);
     if(box.right<=box.left || box.bottom<=box.top) { SelectObject(dc,old_font); return RECT{0,0,0,0}; }
     auto fill=[&](RECT r,uint32_t color) {   // premultiplied
@@ -422,16 +472,21 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
     };
     fill(box,0xC8000000);
     SetBkMode(dc,TRANSPARENT);
+    auto out=[&](LONG x,int y,const std::wstring& s,COLORREF color) { SetTextColor(dc,color); TextOutW(dc,x,y,s.c_str(),int(s.size())); };
     int y=box.top+pad;
+    const LONG left=box.left+pad, value_right=left+name_width+column_gap+value_width;
     for(size_t n=0;n<lines.size();++n) {
         const Line& l=lines[n];
         if(n+1==lines.size()) y+=gap;
         if(l.selected) {
             GdiFlush();
-            fill(RECT{box.left+pad/2,LONG(y-line/10),box.right-pad/2,LONG(y+line-line/10)},0xC8303A46);
+            fill(RECT{box.left+pad/2,LONG(y-line/8),box.right-pad/2,LONG(y+line-line/8)},0xC8303A46);
         }
-        SetTextColor(dc,l.color);
-        TextOutA(dc,box.left+pad,y,l.text.c_str(),int(l.text.size()));
+        out(left,y,l.text,l.color);
+        if(l.item) {
+            out(value_right-measure(l.value),y,l.value,l.color);
+            if(!l.was.empty()) out(value_right+column_gap,y,l.was,RGB(150,150,150));
+        }
         y+=line;
     }
     SelectObject(dc,old_font);
