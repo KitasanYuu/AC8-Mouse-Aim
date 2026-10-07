@@ -44,7 +44,7 @@ item.camera_height = Camera Height
 item.camera_height.desc = Sets the chase camera's height above the aircraft (m). Not used when Camera Distance is 0.
 
 item.free_look_keep = Free Look Keeps Aim
-item.free_look_keep.desc = Sets where the aim goes when free look ends. OFF: back where it was  ON: to where the camera looks (as in War Thunder)
+item.free_look_keep.desc = Sets where the aim goes when free look ends. OFF: back where it was  ON: the ring follows the camera during free look and the aim moves there on release (as in War Thunder)
 
 item.camera_fov_add = Field of View Offset
 item.camera_fov_add.desc = Degrees added to the game's field of view in the chase view. The game's changes with speed are kept.

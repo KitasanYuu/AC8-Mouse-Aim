@@ -172,6 +172,9 @@ std::atomic<unsigned long long> pose_tick{0};
 std::atomic<long> mouse_dx{0}, mouse_dy{0};
 std::atomic<float> command_pitch{0}, command_roll{0}, command_yaw{0};
 std::atomic<float> target_pitch{0}, target_yaw{0};
+// Where the HUD draws the aim ring: the aim, or with free_look_keep while free look is held, where
+// the camera looks (the aim it will take on release).
+std::atomic<float> ring_pitch{0}, ring_yaw{0};
 // Camera destination is independent of the flight target while F is held.
 std::atomic<float> look_pitch{0}, look_yaw{0};
 std::atomic<bool> free_look_held{false};   // F held: the camera on look_pitch/look_yaw, not the aim
@@ -778,6 +781,17 @@ void update_commands() {
     look_pitch.store(flight::pitch(camera_target)); look_yaw.store(flight::yaw(camera_target));
     free_look_held.store(looking);   // (in a cockpit view the head is near_look_yaw/pitch)
     target_pitch.store(flight::pitch(aim)); target_yaw.store(flight::yaw(aim));
+    {
+        V ring=aim;
+        if(looking && config.free_look_keep) {
+            if(cockpit) {   // the head's direction in the aircraft's frame
+                const Basis base=basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load());
+                const float yaw_off=near_look_yaw.load()*rad, pitch_off=near_look_pitch.load()*rad;
+                ring=unit(base.f*(std::cos(pitch_off)*std::cos(yaw_off))+base.r*(std::cos(pitch_off)*std::sin(yaw_off))+base.u*std::sin(pitch_off));
+            } else ring=camera_target;
+        }
+        ring_pitch.store(flight::pitch(ring)); ring_yaw.store(flight::yaw(ring));
+    }
     // Lift-vector maneuver paradigm (docs/maneuver-spec.md), see flight_logic.h.
     flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),aim.x,aim.y,aim.z,
         filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load(),aircraft_serial,
@@ -947,7 +961,7 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
                                     : flight::basis(camera_pitch.load(),camera_yaw.load(),camera_roll.load());
             const flight::V offset=applied ? flight::V{applied_offset_x.load(),applied_offset_y.load(),applied_offset_z.load()}
                                            : flight::V{view_offset_x.load(),view_offset_y.load(),view_offset_z.load()};
-            const auto aim=flight::basis(target_pitch.load(),target_yaw.load(),0).f;
+            const auto aim=flight::basis(ring_pitch.load(),ring_yaw.load(),0).f;
             auto project=[&](flight::V v,float& sx,float& sy) {
                 // MouseFlight HUD projects points 500m ahead of the aircraft.
                 v=v*50000.0f-offset;
