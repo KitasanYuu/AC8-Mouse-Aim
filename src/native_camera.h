@@ -110,12 +110,18 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd,GameView& game_v
         game_view.near_view=game_view.along>-800;
         double result[6]={previous[0],previous[1],previous[2],cmd.p,cmd.y,cmd.r};
         if(game_view.near_view) {
-            near_base_pitch.store(static_cast<float>(previous[3]));
-            near_base_yaw.store(static_cast<float>(previous[4]));
-            near_base_roll.store(static_cast<float>(previous[5]));
             applied_offset_x.store(static_cast<float>(off[0]));
             applied_offset_y.store(static_cast<float>(off[1]));
             applied_offset_z.store(static_cast<float>(off[2]));
+            // The game turning the view itself (the lock key held on a target or a story point):
+            // its camera more than 12 deg off the nose is left alone, head and give reset (turned
+            // further by ours, the view went wrong; reported 2026-10-07)
+            const flight::V nose=flight::basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load()).f;
+            if(flight::dot(game.f,nose)<std::cos(12*flight::rad)) {
+                near_head={}; near_steady.primed=false;
+                for(int i=0;i<3;++i) game_view.rotation[i]=previous[3+i];
+                return true;
+            }
             near_view_head(game,dt,game_view.rotation);
             if(near_head.yaw==0 && near_head.pitch==0 && config.near_view_inertia<=0 && config.near_view_level<=0) {
                 for(int i=0;i<3;++i) game_view.rotation[i]=previous[3+i]; return true;
@@ -168,6 +174,13 @@ bool aircraft_location(uintptr_t pawn,double loc[3]) {
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 // The game's camera of this frame (in the cache) moved from our last view, by the release's progress
+// Two views near enough to ease between: within 60 deg and 50 m (a scene's or a resupply's camera
+// is cut to, not swung through: a view eased toward one facing away turned 180 deg, reported)
+bool views_close(const double a[6],const double b[6]) {
+    const flight::Basis A=flight::basis(float(a[3]),float(a[4]),float(a[5])), B=flight::basis(float(b[3]),float(b[4]),float(b[5]));
+    const double d=std::sqrt((a[0]-b[0])*(a[0]-b[0])+(a[1]-b[1])*(a[1]-b[1])+(a[2]-b[2])*(a[2]-b[2]));
+    return flight::dot(A.f,B.f)>0.5f && d<5000;
+}
 void ease_release(void* manager,float dt) {
     CameraBlend& b=camera_blend;
     if(!b.held || b.release>=1 || reinterpret_cast<uintptr_t>(manager)!=b.manager) { b.held=false; return; }
@@ -181,6 +194,7 @@ void ease_release(void* manager,float dt) {
         b.release=std::min(1.0f,b.release+std::clamp(dt,0.0f,0.1f)/camera_blend_s);
         const float w=b.release*b.release*(3-2*b.release);
         const double ours[6]={loc[0]+b.offset[0],loc[1]+b.offset[1],loc[2]+b.offset[2],b.rotation[0],b.rotation[1],b.rotation[2]};
+        if(!views_close(ours,cache)) { b.held=false; return; }
         double out[6]; mix_pov(ours,cache,w,out);
         memcpy(cache,out,sizeof(out));
         if(b.release>=1) b.held=false;
@@ -190,7 +204,9 @@ void __fastcall update_native_camera(void* manager,float dt) {
     original_camera_update(manager,dt);
     PerfSpan timing(perf_camera);
     if(native_camera_fault || !running.load()) return;
-    if(!active.load() || !enabled.load() || yielding()) { ease_release(manager,dt); camera_blend.resume=0; return; }
+    // not ours this frame: ease it over, and start the head and its give afresh when it comes back
+    // (kept, they swung the view from before a resupply to the aircraft after it)
+    if(!active.load() || !enabled.load() || yielding()) { ease_release(manager,dt); camera_blend.resume=0; near_head={}; near_steady.primed=false; return; }
     CameraCommand cmd;
     {
         std::unique_lock<std::mutex> lock(camera_command_mutex,std::try_to_lock);
@@ -211,7 +227,7 @@ void __fastcall update_native_camera(void* manager,float dt) {
         log_line("native camera ownership: %s",reason?reason:"resumed");
         previous_reason=reason;
     }
-    if(reason) { ease_release(manager,dt); camera_blend.resume=0; return; }
+    if(reason) { ease_release(manager,dt); camera_blend.resume=0; near_head={}; near_steady.primed=false; return; }
     double game_pov[6]{};   // the game's own camera this frame, to ease in from
     memcpy(game_pov,static_cast<unsigned char*>(manager)+0x14A0,sizeof(game_pov));
     GameView game_view;
@@ -226,7 +242,8 @@ void __fastcall update_native_camera(void* manager,float dt) {
         if(b.resume<1) {   // taking the view back: from the game's toward ours
             b.resume=std::min(1.0f,b.resume+std::clamp(dt,0.0f,0.1f)/camera_blend_s);
             bool finite=true; for(double v:game_pov) finite=finite && std::isfinite(v);
-            if(finite) {
+            if(finite && !views_close(game_pov,cache)) b.resume=1;   // too far apart: cut
+            else if(finite) {
                 double out[6]; mix_pov(game_pov,cache,b.resume*b.resume*(3-2*b.resume),out);
                 memcpy(cache,out,sizeof(out));
                 for(int i=0;i<3;++i) game_view.rotation[i]=out[3+i];

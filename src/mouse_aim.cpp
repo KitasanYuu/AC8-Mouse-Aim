@@ -138,7 +138,6 @@ std::atomic<float> view_fov{100};
 std::atomic<bool> near_view_active{false};
 std::atomic<float> chase_fov{0};            // the FOV last seen in a chase view
 std::atomic<float> view_aspect{16.0f/9};    // the game window's width over height
-std::atomic<float> near_base_pitch{0}, near_base_yaw{0}, near_base_roll{0};   // the game's own near view (along the aircraft)
 std::atomic<float> near_look_yaw{0}, near_look_pitch{0};   // F held in a near view: the head, deg off that view
 std::atomic<float> near_stick_x{0}, near_stick_y{0};       // the cockpit stick's ring, deg off that view
 // near_view_camera 3: how far the view may turn (deg): half the view plus the HUD's half size
@@ -630,7 +629,9 @@ void update_commands() {
     };
     if(cockpit) {
         free_look.reset();
-        const Basis base=basis(near_base_pitch.load(),near_base_yaw.load(),near_base_roll.load());
+        // the aircraft's own frame (the game's camera turns away from it to look at a target or a
+        // story point; the stick had turned with it and the aircraft after it)
+        const Basis base=basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load());
         head_look();
         const float half_w=std::clamp(view_fov.load(),20.0f,150.0f)*0.5f*rad;
         const float half_h=std::atan(std::tan(half_w)/std::max(view_aspect.load(),0.5f));
