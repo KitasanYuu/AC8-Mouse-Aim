@@ -921,7 +921,7 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
             wchar_t camera[96]{};
             swprintf_s(camera,L"%.1f / %.1f",camera_pitch.load(),camera_yaw.load());
             hud_line(0,tr("hud.status",L"MouseFlight 0.2.30 {1} | aim {2} | camera {3}",
-                {active.load() && enabled.load() ? tr("hud.on",L"ON") : tr("hud.standby",L"STANDBY"),angles,camera}));
+                {active.load() && enabled.load() ? tr("hud.on",L"ACTIVE") : tr("hud.standby",L"STANDBY"),angles,camera}));
         }
         if(width>0 && height>0) view_aspect.store(float(width)/float(height));
         float x{},y{},bx{},by{};
@@ -957,7 +957,7 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
                 log_line("overlay paint %dx%d target=%s at=(%.0f,%.0f) visible=%d",
                     width,height,aim_visible?"inside":"outside",x,y,IsWindowVisible(window));
             }
-            if(!aim_visible) hud_line(config.status_line ? 1 : 0,tr("hud.outside",L"AIM OUTSIDE THE VIEW"));
+            if(!aim_visible) hud_line(config.status_line ? 1 : 0,tr("hud.outside",L"AIM OUT OF VIEW"));
         }
         SelectObject(dc,old_hud_font);
         GdiFlush();

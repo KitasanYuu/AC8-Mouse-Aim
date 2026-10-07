@@ -28,50 +28,50 @@ PanelItem key_item(const char* group,const wchar_t* group_en,const char* key,con
     return {group,group_en,L"keys",key,name,label,0,255,1,true,float(Config::Keys{}.*bind),bind,false};
 }
 const PanelItem panel_items[]={
-    value_item("mouse_camera",L"Mouse and chase camera",L"control","sensitivity",L"Mouse sensitivity",L"aim degrees per mouse count",0.01f,1.0f,0.005f,false,0.10f),
-    value_item(nullptr,nullptr,L"control","camera_follow",L"Camera follow rate",L"how fast the chase camera turns to the aim (1/s)",1,60,1,false,12),
-    value_item(nullptr,nullptr,L"control","camera_distance",L"Camera distance",L"behind the aircraft (m; 0 = the game default)",0,100,1,false,30),
-    value_item(nullptr,nullptr,L"control","camera_height",L"Camera height",L"above the aircraft (m)",-20,30,0.5f,false,6),
-    value_item(nullptr,nullptr,L"control","camera_fov_add",L"FOV offset",L"degrees added to the game's FOV (chase view)",-40,40,1,false,0),
-    value_item("near_views",L"Cockpit and nose views",L"control","near_view_camera",L"View mode",L"0 fixed ahead; 1 follows the aim; 2 turns at the edge; 3 head turns to the ring",0,3,1,true,3),
-    value_item(nullptr,nullptr,L"control","near_view_follow",L"Head turn ratio",L"share of the ring's offset the view turns (mode 3)",0,1,0.05f,false,0.6f),
-    value_item(nullptr,nullptr,L"control","near_view_hud",L"Head turn limit",L"degrees the view may turn past half its width (mode 3)",0,40,1,false,8),
-    value_item(nullptr,nullptr,L"control","near_view_mouse",L"Mouse multiplier",L"mouse movement in the cockpit and nose views",0.1f,3,0.05f,false,1),
-    value_item(nullptr,nullptr,L"control","near_view_expo",L"Ring non-linearity",L"1 linear; higher is finer near the nose",1,4,0.1f,false,1.5f),
-    value_item(nullptr,nullptr,L"control","near_view_inertia",L"View lag",L"delay of the view behind the aircraft (s; 0 none)",0,0.5f,0.01f,false,0.06f),
-    value_item(nullptr,nullptr,L"control","near_view_level",L"View levelling",L"share of the view's roll corrected to level (0 off, 1 level)",0,1,0.05f,false,0),
-    value_item(nullptr,nullptr,L"control","near_view_fov_add",L"FOV offset",L"degrees added to the game's FOV (cockpit and nose views)",-40,40,1,false,0),
+    value_item("mouse_camera",L"Mouse and Chase Camera",L"control","sensitivity",L"Mouse Sensitivity",L"Sets how far the aim turns per mouse count (deg). Lower in the cockpit and nose views, in proportion to their field of view.",0.01f,1.0f,0.005f,false,0.10f),
+    value_item(nullptr,nullptr,L"control","camera_follow",L"Camera Tracking Speed",L"Sets how fast the chase camera turns toward the aim (1/s). Higher keeps the camera closer to the aim.",1,60,1,false,12),
+    value_item(nullptr,nullptr,L"control","camera_distance",L"Camera Distance",L"Sets the chase camera's distance behind the aircraft (m). 0 uses the game's own distance and height.",0,100,1,false,30),
+    value_item(nullptr,nullptr,L"control","camera_height",L"Camera Height",L"Sets the chase camera's height above the aircraft (m). Not used when Camera Distance is 0.",-20,30,0.5f,false,6),
+    value_item(nullptr,nullptr,L"control","camera_fov_add",L"Field of View Offset",L"Degrees added to the game's field of view in the chase view. The game's changes with speed are kept.",-40,40,1,false,0),
+    value_item("near_views",L"Cockpit and Nose Views",L"control","near_view_camera",L"View Mode",L"Sets the camera in the cockpit and nose views. 0: fixed ahead  1: turns to the aim  2: turns once the aim passes the edge  3: fixed ahead, the head turns toward the ring",0,3,1,true,3),
+    value_item(nullptr,nullptr,L"control","near_view_follow",L"Head Turn Ratio",L"Mode 3 only. Sets how far the view turns toward the ring, as a share of the ring's offset (0-1).",0,1,0.05f,false,0.6f),
+    value_item(nullptr,nullptr,L"control","near_view_hud",L"Head Turn Limit",L"Mode 3 only. The view turns at most half the screen plus this many degrees, so the HUD's edge stays on screen.",0,40,1,false,8),
+    value_item(nullptr,nullptr,L"control","near_view_mouse",L"Mouse Multiplier",L"Modes 0 and 3 only. Sets the mouse movement multiplier for the cockpit mouse stick.",0.1f,3,0.05f,false,1),
+    value_item(nullptr,nullptr,L"control","near_view_expo",L"Ring Curve",L"Modes 0 and 3 only. The ring moves as the stick deflection to this power: 1 is linear, higher is finer near the nose.",1,4,0.1f,false,1.5f),
+    value_item(nullptr,nullptr,L"control","near_view_inertia",L"View Delay",L"Sets how far the view lags the aircraft's attitude (s). 0 is no delay.",0,0.5f,0.01f,false,0.06f),
+    value_item(nullptr,nullptr,L"control","near_view_level",L"View Leveling",L"Sets how much of the view's roll is corrected toward level. 0: rolls with the aircraft  1: stays level",0,1,0.05f,false,0),
+    value_item(nullptr,nullptr,L"control","near_view_fov_add",L"Field of View Offset",L"Degrees added to the game's field of view in the cockpit and nose views.",-40,40,1,false,0),
     // What sets the turn (closed-loop simulation, measured plant, 2026-10-07): pitch_gain is what limits
     // the pitch (1.5 to 4: up 20 deg reached in 2.4 to 1.4 s; past 4 the stick chatters near the aim;
     // pitch_brake changed nothing at all); roll_brake slows a big roll's stop when lowered (right 30
     // deg 2.8 s at 0.45, 4.1 s at 0.2) and changes little when raised (the roll rate is the limit).
-    value_item("flight",L"Flight (only near the aim)",L"tuning","pitch_gain",L"Pitch gain",L"pitch rate near the aim; higher is faster, above 4 the stick jitters",1,4,0.1f,false,2.5f),
-    value_item(nullptr,nullptr,L"tuning","roll_brake",L"Roll braking",L"slowing before a roll arrives; lower starts earlier and softer",0.2f,1,0.05f,false,0.45f),
-    value_item(nullptr,nullptr,L"tuning","level_per_deg",L"Wing levelling",L"bank kept per degree to go; lower levels sooner",2,30,1,false,10),
-    value_item(nullptr,nullptr,L"tuning","lead_gain",L"Moving-aim lead",L"share of a moving aim's motion led (0 off)",0,2,0.05f,false,1.0f),
-    value_item(nullptr,nullptr,L"tuning","lead_filter",L"Lead smoothing",L"smoothing of the aim's motion (s)",0.05f,1.5f,0.05f,false,0.4f),
-    value_item(nullptr,nullptr,L"tuning","highg_full_from",L"High-G full pull",L"with high-G, full stick beyond this angle off the aim (deg; 0 off)",0,45,1,false,8),
-    PanelItem{"display",L"Display",L"control","language",L"Language",L"of the panel and the mod's on-screen text",0,1,1,true,0,nullptr,true},
-    value_item(nullptr,nullptr,L"control","status_line",L"Status line",L"version, state and angles top left",0,1,1,true,0),
-    key_item("keys_flight",L"Flight","toggle",L"Mouse aim on/off",L"turn mouse aim on or off",&Config::Keys::toggle),
-    key_item(nullptr,nullptr,"recenter",L"Recenter aim",L"put the aim back on the nose",&Config::Keys::recenter),
-    key_item(nullptr,nullptr,"free_look",L"Free look",L"held: the mouse turns only the view",&Config::Keys::free_look),
-    key_item(nullptr,nullptr,"hud",L"HUD on/off",L"show or hide the mod's rings",&Config::Keys::hud),
-    key_item(nullptr,nullptr,"post_stall",L"Post-stall",L"held, then high-G below 500 km/h: post-stall maneuver",&Config::Keys::post_stall),
-    key_item("keys_panel",L"This panel","tuning",L"Panel on/off",L"open or close this panel",&Config::Keys::tuning),
-    key_item(nullptr,nullptr,"tuning_up",L"Previous item",L"select the previous item",&Config::Keys::tuning_up),
-    key_item(nullptr,nullptr,"tuning_down",L"Next item",L"select the next item",&Config::Keys::tuning_down),
-    key_item(nullptr,nullptr,"tuning_less",L"Decrease",L"decrease the value",&Config::Keys::tuning_less),
-    key_item(nullptr,nullptr,"tuning_more",L"Increase",L"increase the value",&Config::Keys::tuning_more),
-    key_item(nullptr,nullptr,"tuning_fine",L"Fine step",L"held: a fifth of the step",&Config::Keys::tuning_fine),
-    key_item(nullptr,nullptr,"tuning_undo",L"Undo",L"back to the value when the panel was opened",&Config::Keys::tuning_undo),
-    key_item(nullptr,nullptr,"tuning_bind",L"Rebind",L"record a new key for the selected item (Keys page)",&Config::Keys::tuning_bind),
-    key_item("keys_diagnostics",L"Diagnostics","reload",L"Reload config",L"read config.ini again",&Config::Keys::reload),
-    key_item(nullptr,nullptr,"trace",L"Flight trace",L"per-frame flight data in the log",&Config::Keys::trace),
-    key_item(nullptr,nullptr,"perf",L"Performance counters",L"turn the performance counters on or off",&Config::Keys::perf),
-    key_item(nullptr,nullptr,"camera_probe",L"Camera state capture",L"capture the camera state (troubleshooting)",&Config::Keys::camera_probe),
-    key_item(nullptr,nullptr,"hangar_specs",L"Hangar: aircraft specs",L"in the hangar, read the aircraft's parameter tables",&Config::Keys::hangar_specs),
-    key_item(nullptr,nullptr,"hangar_geometry",L"Hangar: aircraft geometry",L"in the hangar, read the aircraft's geometry",&Config::Keys::hangar_geometry),
+    value_item("flight",L"Flight Control (near the aim only)",L"tuning","pitch_gain",L"Pitch Gain",L"Sets the pitch speed near the aim: wanted pitch rate = this x the angle left (1/s). Higher arrives faster; too high corrects back and forth near the aim.",1,4,0.1f,false,2.5f),
+    value_item(nullptr,nullptr,L"tuning","roll_brake",L"Roll Deceleration",L"Sets the deceleration planned for stopping a roll, as a share of the aircraft's roll acceleration. Lower starts slowing earlier.",0.2f,1,0.05f,false,0.45f),
+    value_item(nullptr,nullptr,L"tuning","level_per_deg",L"Level Recovery",L"Near the aim, bank is limited to this x the angle left. Lower returns the wings to level sooner.",2,30,1,false,10),
+    value_item(nullptr,nullptr,L"tuning","lead_gain",L"Moving Aim Correction",L"Sets the share of a moving aim's angular rate added to the turn. 0 is off.",0,2,0.05f,false,1.0f),
+    value_item(nullptr,nullptr,L"tuning","lead_filter",L"Correction Smoothing",L"Sets the smoothing time used to estimate the aim's angular rate (s).",0.05f,1.5f,0.05f,false,0.4f),
+    value_item(nullptr,nullptr,L"tuning","highg_full_from",L"High-G Full Pull Angle",L"During a High-G Turn with the aim more than this far off, the stick is pulled fully without slowing early (deg). 0 is off.",0,45,1,false,8),
+    PanelItem{"display",L"Display",L"control","language",L"Language",L"Sets the language of this panel and the mod's on-screen text. Auto: the game's UI language.",0,1,1,true,0,nullptr,true},
+    value_item(nullptr,nullptr,L"control","status_line",L"Status Display",L"Sets whether the version, state and angles are shown at the top left of the screen.",0,1,1,true,0),
+    key_item("keys_flight",L"Flight","toggle",L"Mouse Aim ON/OFF",L"Sets the key that turns mouse aim on and off. When off, the game's own controls fly the aircraft.",&Config::Keys::toggle),
+    key_item(nullptr,nullptr,"recenter",L"Reset Aim",L"Sets the key that returns the aim to where the nose points.",&Config::Keys::recenter),
+    key_item(nullptr,nullptr,"free_look",L"Free Look",L"Sets the key that, while held, lets the mouse move only the camera. The aim is kept.",&Config::Keys::free_look),
+    key_item(nullptr,nullptr,"hud",L"Mod HUD ON/OFF",L"Sets the key that shows or hides the mod's rings. Flight control is unaffected.",&Config::Keys::hud),
+    key_item(nullptr,nullptr,"post_stall",L"Post-Stall Assist",L"Sets the key for post-stall assist. While it is held, a High-G Turn below 500 km/h holds the pitch neutral for about 0.04 s, then pulls fully, meeting the game's post-stall condition.",&Config::Keys::post_stall),
+    key_item("keys_panel",L"Settings Panel","tuning",L"Settings Panel",L"Sets the key that opens and closes this panel.",&Config::Keys::tuning),
+    key_item(nullptr,nullptr,"tuning_up",L"Previous Item",L"Sets the key that selects the previous item.",&Config::Keys::tuning_up),
+    key_item(nullptr,nullptr,"tuning_down",L"Next Item",L"Sets the key that selects the next item.",&Config::Keys::tuning_down),
+    key_item(nullptr,nullptr,"tuning_less",L"Decrease",L"Sets the key that decreases the value.",&Config::Keys::tuning_less),
+    key_item(nullptr,nullptr,"tuning_more",L"Increase",L"Sets the key that increases the value.",&Config::Keys::tuning_more),
+    key_item(nullptr,nullptr,"tuning_fine",L"Fine Adjustment",L"Sets the key that, while held, adjusts in steps of 1/5.",&Config::Keys::tuning_fine),
+    key_item(nullptr,nullptr,"tuning_undo",L"Restore",L"Sets the key that restores the value from when the panel was opened.",&Config::Keys::tuning_undo),
+    key_item(nullptr,nullptr,"tuning_bind",L"Change Key",L"Sets the key that records a new key for the selected item on the Key Config page.",&Config::Keys::tuning_bind),
+    key_item("keys_diagnostics",L"Diagnostics","reload",L"Reload Settings",L"Sets the key that reads config.ini again.",&Config::Keys::reload),
+    key_item(nullptr,nullptr,"trace",L"Flight Log",L"Sets the key that turns the per-frame flight log on and off.",&Config::Keys::trace),
+    key_item(nullptr,nullptr,"perf",L"Performance Statistics",L"Sets the key that turns performance statistics on and off (written to the log every 10 s).",&Config::Keys::perf),
+    key_item(nullptr,nullptr,"camera_probe",L"Camera State Capture",L"Sets the key that starts or stops capturing the camera state (up to 180 s).",&Config::Keys::camera_probe),
+    key_item(nullptr,nullptr,"hangar_specs",L"Hangar: Aircraft Data",L"Sets the key that, in the hangar, writes the aircraft's parameter tables to a file.",&Config::Keys::hangar_specs),
+    key_item(nullptr,nullptr,"hangar_geometry",L"Hangar: Aircraft Geometry",L"Sets the key that, in the hangar, writes the aircraft's geometry to a file.",&Config::Keys::hangar_geometry),
 };
 constexpr int panel_count=int(sizeof(panel_items)/sizeof(panel_items[0]));
 int item_page(int i) { return panel_items[i].bind ? 1 : 0; }
@@ -129,13 +129,13 @@ std::string panel_text(const PanelItem& item,float value) {
 std::wstring panel_shown(const PanelItem& item,float value) {
     if(item.language) {
         const std::string code=panel_text(item,value);
-        if(code=="auto") return tr("panel.auto",L"auto (follow the game)");
+        if(code=="auto") return tr("panel.auto",L"Auto (game)");
         if(code=="en") return L"English";
         if(code=="zh-Hans") return L"\x7b80\x4f53\x4e2d\x6587";
         return widen(code);
     }
     if(!item.bind && item.integer && item.min==0 && item.max==1)
-        return value>0.5f ? tr("panel.on",L"on") : tr("panel.off",L"off");
+        return value>0.5f ? tr("panel.on",L"ON") : tr("panel.off",L"OFF");
     if(item.bind && value<0.5f) return tr("panel.none",L"none");
     return widen(panel_text(item,value));
 }
@@ -413,22 +413,22 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
     struct Line { std::wstring text, value, was; COLORREF color; bool selected=false, item=false; };
     const Config::Keys& keys=config.keys;   // as [keys] has them
     auto key=[](int vk) { return widen(key_label(vk)); };
-    const std::wstring settings=tr("panel.page.settings",L"Settings"), keys_page=tr("panel.page.keys",L"Keys");
-    const std::wstring page_hint=tr("panel.page.hint",L"({1}/{2}: switch page)",{key(keys.tuning_less),key(keys.tuning_more)});
+    const std::wstring settings=tr("panel.page.settings",L"Settings"), keys_page=tr("panel.page.keys",L"Key Config");
+    const std::wstring page_hint=tr("panel.page.hint",L"({1}/{2}: change page)",{key(keys.tuning_less),key(keys.tuning_more)});
     auto page_row=[&](int page,bool selected) {
         std::wstring row=(selected?L"> ":L"  ")+(page==0 ? L"["+settings+L"]   "+keys_page : settings+L"   ["+keys_page+L"]");
         if(selected) row+=L"   "+page_hint;
         return row;
     };
     auto help=[&](int page) {
-        return page==0 ? tr("panel.help.settings",L"{1}/{2} select   {3}/{4} adjust (hold {5}: fine)   {6} undo",
+        return page==0 ? tr("panel.help.settings",L"{1}/{2} Select   {3}/{4} Adjust (hold {5}: fine)   {6} Restore",
                             {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_less),key(keys.tuning_more),key(keys.tuning_fine),key(keys.tuning_undo)})
-                       : tr("panel.help.keys",L"{1}/{2} select   {3} rebind   {4} undo",
+                       : tr("panel.help.keys",L"{1}/{2} Select   {3} Change Key   {4} Restore",
                             {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_bind),key(keys.tuning_undo)});
     };
     auto lines_for=[&](int page) {
         std::vector<Line> lines;
-        lines.push_back({tr("panel.title",L"MouseFlight settings ({1} closes)",{key(keys.tuning)}),L"",L"",RGB(255,255,255)});
+        lines.push_back({tr("panel.title",L"MouseFlight Settings ({1}: close)",{key(keys.tuning)}),L"",L"",RGB(255,255,255)});
         const bool on_row=page==state.page && state.selected<0;
         lines.push_back({page_row(page,on_row),L"",L"",on_row?RGB(255,220,120):RGB(200,200,200),on_row});
         lines.push_back({help(page),L"",L"",RGB(150,150,150)});
@@ -440,34 +440,18 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
             Line row{(selected?L"> ":L"  ")+item_name(item),L"",L"",selected?RGB(255,220,120):RGB(235,235,235),selected,true};
             row.value=selected && state.recording ? L"..." : panel_shown(item,state.value[i]);
             if(!(selected && state.recording) && panel_text(item,state.value[i])!=panel_text(item,state.was[i]))
-                row.was=tr("panel.was",L"was {1}",{panel_shown(item,state.was[i])});
+                row.was=tr("panel.was",L"was: {1}",{panel_shown(item,state.was[i])});
             lines.push_back(row);
         }
         return lines;
     };
     std::vector<Line> lines=lines_for(state.page);
     const size_t most_lines=std::max(lines_for(0).size(),lines_for(1).size());
-    // the widest of everything either page may show
-    LONG name_width=0, value_width=0, text_width=0;
-    for(int page=0;page<2;++page) {
-        for(const auto& l:lines_for(page)) {
-            if(l.item) { name_width=std::max(name_width,measure(L"> "+l.text.substr(2))); value_width=std::max(value_width,measure(l.value)); }
-            else text_width=std::max(text_width,measure(l.text));
-        }
-        text_width=std::max(text_width,measure(page_row(page,true)));
-    }
-    for(const wchar_t* longest:{L"Backspace",L"PageDown",L"XButton2",L"CapsLock",L"Numpad0"}) value_width=std::max(value_width,measure(longest));
-    {
-        PanelItem language{}; language.language=true;
-        const size_t options=language_options().size();
-        for(size_t n=0;n<options;++n) value_width=std::max(value_width,measure(panel_shown(language,float(n))));
-    }
-    const LONG column_gap=LONG(text_height*1.5f);
-    const LONG was_width=measure(tr("panel.was",L"was {1}",{L""}))+value_width;
-    const LONG item_width=name_width+column_gap+value_width+column_gap+was_width;
-    // the width: the rows' (the description below wraps to it, in at most two lines)
-    const std::wstring prompt=tr("panel.recording",L"press the new key (Esc cancels, Delete clears)");
-    const LONG inner=std::max({text_width,item_width,measure(prompt)});
+    // Fixed columns and width, in units of the font's height: the same whatever is selected, on
+    // either page and in every language (fitted to the rows, it grew and shrank with each; reported
+    // 2026-10-07). A text too long for its column is cut short; the description wraps.
+    const LONG h=text_height, inner=38*h, value_x=15*h, was_x=25*h, column_gap=h;
+    const std::wstring prompt=tr("panel.recording",L"Press the new key (Esc: cancel  Delete: clear)");
     std::wstring footer;
     if(state.recording) footer=prompt;
     else if(state.selected>=0) {
@@ -478,7 +462,7 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
             for(int i=0;i<panel_count;++i)
                 if(i!=state.selected && panel_items[i].bind && state.value[i]==state.value[state.selected])
                     also+=(also.empty()?L"":L", ")+item_name(panel_items[i]);
-            if(!also.empty()) footer+=L"   "+tr("panel.also",L"same key as: {1}",{also});
+            if(!also.empty()) footer+=L"   "+tr("panel.also",L"Same key as: {1}",{also});
         }
     }
     // wrapped to the width: at a space or after punctuation where there is one, else anywhere (CJK);
@@ -515,7 +499,12 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
     fill(box,0xC8000000);
     SetBkMode(dc,TRANSPARENT);
     auto out=[&](LONG x,int y,const std::wstring& s,COLORREF color) { SetTextColor(dc,color); TextOutW(dc,x,y,s.c_str(),int(s.size())); };
-    const LONG left=box.left+pad, value_right=left+name_width+column_gap+value_width;
+    auto fit=[&](std::wstring s,LONG room) {
+        if(measure(s)<=room) return s;
+        while(s.size()>1 && measure(s+L"\x2026")>room) s.pop_back();
+        return s+L"\x2026";
+    };
+    const LONG left=box.left+pad;
     int y=box.top+pad;
     for(size_t n=0;n<lines.size();++n) {
         const Line& l=lines[n];
@@ -524,10 +513,10 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
             GdiFlush();
             fill(RECT{box.left+pad/2,LONG(y-line/8),box.right-pad/2,LONG(y+line-line/8)},0xC8303A46);
         }
-        out(left,y,l.text,l.color);
-        if(l.item) {
-            out(value_right-measure(l.value),y,l.value,l.color);
-            if(!l.was.empty()) out(value_right+column_gap,y,l.was,RGB(150,150,150));
+        out(left,y,fit(l.text,l.item ? value_x-column_gap : inner),l.color);
+        if(l.item) {   // values left-aligned in their column
+            out(left+value_x,y,fit(l.value,was_x-value_x-column_gap),l.color);
+            if(!l.was.empty()) out(left+was_x,y,fit(l.was,inner-was_x),RGB(150,150,150));
         }
         y+=line;
     }

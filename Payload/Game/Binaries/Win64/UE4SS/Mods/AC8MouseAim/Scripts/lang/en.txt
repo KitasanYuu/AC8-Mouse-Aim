@@ -4,148 +4,148 @@
 # font: one that has every character of the language (Chinese, Japanese and Korean need their own).
 
 hud.status = MouseFlight 0.2.30 {1} | aim {2} | camera {3}
-hud.on = ON
+hud.on = ACTIVE
 hud.standby = STANDBY
-hud.outside = AIM OUTSIDE THE VIEW
-panel.auto = auto (follow the game)
-panel.on = on
-panel.off = off
+hud.outside = AIM OUT OF VIEW
+panel.auto = Auto (game)
+panel.on = ON
+panel.off = OFF
 panel.none = none
 panel.page.settings = Settings
-panel.page.keys = Keys
-panel.page.hint = ({1}/{2}: switch page)
-panel.help.settings = {1}/{2} select   {3}/{4} adjust (hold {5}: fine)   {6} undo
-panel.help.keys = {1}/{2} select   {3} rebind   {4} undo
-panel.title = MouseFlight settings ({1} closes)
-panel.was = was {1}
-panel.recording = press the new key (Esc cancels, Delete clears)
-panel.also = same key as: {1}
+panel.page.keys = Key Config
+panel.page.hint = ({1}/{2}: change page)
+panel.help.settings = {1}/{2} Select   {3}/{4} Adjust (hold {5}: fine)   {6} Restore
+panel.help.keys = {1}/{2} Select   {3} Change Key   {4} Restore
+panel.title = MouseFlight Settings ({1}: close)
+panel.was = was: {1}
+panel.recording = Press the new key (Esc: cancel  Delete: clear)
+panel.also = Same key as: {1}
 font = Segoe UI
 
-group.mouse_camera = Mouse and chase camera
-group.near_views = Cockpit and nose views
-group.flight = Flight (only near the aim)
+group.mouse_camera = Mouse and Chase Camera
+group.near_views = Cockpit and Nose Views
+group.flight = Flight Control (near the aim only)
 group.display = Display
 group.keys_flight = Flight
-group.keys_panel = This panel
+group.keys_panel = Settings Panel
 group.keys_diagnostics = Diagnostics
 
-item.sensitivity = Mouse sensitivity
-item.sensitivity.desc = aim degrees per mouse count
+item.sensitivity = Mouse Sensitivity
+item.sensitivity.desc = Sets how far the aim turns per mouse count (deg). Lower in the cockpit and nose views, in proportion to their field of view.
 
-item.camera_follow = Camera follow rate
-item.camera_follow.desc = how fast the chase camera turns to the aim (1/s)
+item.camera_follow = Camera Tracking Speed
+item.camera_follow.desc = Sets how fast the chase camera turns toward the aim (1/s). Higher keeps the camera closer to the aim.
 
-item.camera_distance = Camera distance
-item.camera_distance.desc = behind the aircraft (m; 0 = the game default)
+item.camera_distance = Camera Distance
+item.camera_distance.desc = Sets the chase camera's distance behind the aircraft (m). 0 uses the game's own distance and height.
 
-item.camera_height = Camera height
-item.camera_height.desc = above the aircraft (m)
+item.camera_height = Camera Height
+item.camera_height.desc = Sets the chase camera's height above the aircraft (m). Not used when Camera Distance is 0.
 
-item.camera_fov_add = FOV offset
-item.camera_fov_add.desc = degrees added to the game's FOV (chase view)
+item.camera_fov_add = Field of View Offset
+item.camera_fov_add.desc = Degrees added to the game's field of view in the chase view. The game's changes with speed are kept.
 
-item.near_view_camera = View mode
-item.near_view_camera.desc = 0 fixed ahead; 1 follows the aim; 2 turns at the edge; 3 head turns to the ring
+item.near_view_camera = View Mode
+item.near_view_camera.desc = Sets the camera in the cockpit and nose views. 0: fixed ahead  1: turns to the aim  2: turns once the aim passes the edge  3: fixed ahead, the head turns toward the ring
 
-item.near_view_follow = Head turn ratio
-item.near_view_follow.desc = share of the ring's offset the view turns (mode 3)
+item.near_view_follow = Head Turn Ratio
+item.near_view_follow.desc = Mode 3 only. Sets how far the view turns toward the ring, as a share of the ring's offset (0-1).
 
-item.near_view_hud = Head turn limit
-item.near_view_hud.desc = degrees the view may turn past half its width (mode 3)
+item.near_view_hud = Head Turn Limit
+item.near_view_hud.desc = Mode 3 only. The view turns at most half the screen plus this many degrees, so the HUD's edge stays on screen.
 
-item.near_view_mouse = Mouse multiplier
-item.near_view_mouse.desc = mouse movement in the cockpit and nose views
+item.near_view_mouse = Mouse Multiplier
+item.near_view_mouse.desc = Modes 0 and 3 only. Sets the mouse movement multiplier for the cockpit mouse stick.
 
-item.near_view_expo = Ring non-linearity
-item.near_view_expo.desc = 1 linear; higher is finer near the nose
+item.near_view_expo = Ring Curve
+item.near_view_expo.desc = Modes 0 and 3 only. The ring moves as the stick deflection to this power: 1 is linear, higher is finer near the nose.
 
-item.near_view_inertia = View lag
-item.near_view_inertia.desc = delay of the view behind the aircraft (s; 0 none)
+item.near_view_inertia = View Delay
+item.near_view_inertia.desc = Sets how far the view lags the aircraft's attitude (s). 0 is no delay.
 
-item.near_view_level = View levelling
-item.near_view_level.desc = share of the view's roll corrected to level (0 off, 1 level)
+item.near_view_level = View Leveling
+item.near_view_level.desc = Sets how much of the view's roll is corrected toward level. 0: rolls with the aircraft  1: stays level
 
-item.near_view_fov_add = FOV offset
-item.near_view_fov_add.desc = degrees added to the game's FOV (cockpit and nose views)
+item.near_view_fov_add = Field of View Offset
+item.near_view_fov_add.desc = Degrees added to the game's field of view in the cockpit and nose views.
 
-item.pitch_gain = Pitch gain
-item.pitch_gain.desc = pitch rate near the aim; higher is faster, above 4 the stick jitters
+item.pitch_gain = Pitch Gain
+item.pitch_gain.desc = Sets the pitch speed near the aim: wanted pitch rate = this x the angle left (1/s). Higher arrives faster; too high corrects back and forth near the aim.
 
-item.roll_brake = Roll braking
-item.roll_brake.desc = slowing before a roll arrives; lower starts earlier and softer
+item.roll_brake = Roll Deceleration
+item.roll_brake.desc = Sets the deceleration planned for stopping a roll, as a share of the aircraft's roll acceleration. Lower starts slowing earlier.
 
-item.level_per_deg = Wing levelling
-item.level_per_deg.desc = bank kept per degree to go; lower levels sooner
+item.level_per_deg = Level Recovery
+item.level_per_deg.desc = Near the aim, bank is limited to this x the angle left. Lower returns the wings to level sooner.
 
-item.lead_gain = Moving-aim lead
-item.lead_gain.desc = share of a moving aim's motion led (0 off)
+item.lead_gain = Moving Aim Correction
+item.lead_gain.desc = Sets the share of a moving aim's angular rate added to the turn. 0 is off.
 
-item.lead_filter = Lead smoothing
-item.lead_filter.desc = smoothing of the aim's motion (s)
+item.lead_filter = Correction Smoothing
+item.lead_filter.desc = Sets the smoothing time used to estimate the aim's angular rate (s).
 
-item.highg_full_from = High-G full pull
-item.highg_full_from.desc = with high-G, full stick beyond this angle off the aim (deg; 0 off)
+item.highg_full_from = High-G Full Pull Angle
+item.highg_full_from.desc = During a High-G Turn with the aim more than this far off, the stick is pulled fully without slowing early (deg). 0 is off.
 
-item.status_line = Status line
-item.status_line.desc = version, state and angles top left
+item.status_line = Status Display
+item.status_line.desc = Sets whether the version, state and angles are shown at the top left of the screen.
 
 item.language = Language
-item.language.desc = of the panel and the mod's on-screen text
+item.language.desc = Sets the language of this panel and the mod's on-screen text. Auto: the game's UI language.
 
-item.toggle = Mouse aim on/off
-item.toggle.desc = turn mouse aim on or off
+item.toggle = Mouse Aim ON/OFF
+item.toggle.desc = Sets the key that turns mouse aim on and off. When off, the game's own controls fly the aircraft.
 
-item.recenter = Recenter aim
-item.recenter.desc = put the aim back on the nose
+item.recenter = Reset Aim
+item.recenter.desc = Sets the key that returns the aim to where the nose points.
 
-item.free_look = Free look
-item.free_look.desc = held: the mouse turns only the view
+item.free_look = Free Look
+item.free_look.desc = Sets the key that, while held, lets the mouse move only the camera. The aim is kept.
 
-item.hud = HUD on/off
-item.hud.desc = show or hide the mod's rings
+item.hud = Mod HUD ON/OFF
+item.hud.desc = Sets the key that shows or hides the mod's rings. Flight control is unaffected.
 
-item.post_stall = Post-stall
-item.post_stall.desc = held, then high-G below 500 km/h: post-stall maneuver
+item.post_stall = Post-Stall Assist
+item.post_stall.desc = Sets the key for post-stall assist. While it is held, a High-G Turn below 500 km/h holds the pitch neutral for about 0.04 s, then pulls fully, meeting the game's post-stall condition.
 
-item.tuning = Panel on/off
-item.tuning.desc = open or close this panel
+item.tuning = Settings Panel
+item.tuning.desc = Sets the key that opens and closes this panel.
 
-item.tuning_up = Previous item
-item.tuning_up.desc = select the previous item
+item.tuning_up = Previous Item
+item.tuning_up.desc = Sets the key that selects the previous item.
 
-item.tuning_down = Next item
-item.tuning_down.desc = select the next item
+item.tuning_down = Next Item
+item.tuning_down.desc = Sets the key that selects the next item.
 
 item.tuning_less = Decrease
-item.tuning_less.desc = decrease the value
+item.tuning_less.desc = Sets the key that decreases the value.
 
 item.tuning_more = Increase
-item.tuning_more.desc = increase the value
+item.tuning_more.desc = Sets the key that increases the value.
 
-item.tuning_fine = Fine step
-item.tuning_fine.desc = held: a fifth of the step
+item.tuning_fine = Fine Adjustment
+item.tuning_fine.desc = Sets the key that, while held, adjusts in steps of 1/5.
 
-item.tuning_undo = Undo
-item.tuning_undo.desc = back to the value when the panel was opened
+item.tuning_undo = Restore
+item.tuning_undo.desc = Sets the key that restores the value from when the panel was opened.
 
-item.tuning_bind = Rebind
-item.tuning_bind.desc = record a new key for the selected item (Keys page)
+item.tuning_bind = Change Key
+item.tuning_bind.desc = Sets the key that records a new key for the selected item on the Key Config page.
 
-item.reload = Reload config
-item.reload.desc = read config.ini again
+item.reload = Reload Settings
+item.reload.desc = Sets the key that reads config.ini again.
 
-item.trace = Flight trace
-item.trace.desc = per-frame flight data in the log
+item.trace = Flight Log
+item.trace.desc = Sets the key that turns the per-frame flight log on and off.
 
-item.perf = Performance counters
-item.perf.desc = turn the performance counters on or off
+item.perf = Performance Statistics
+item.perf.desc = Sets the key that turns performance statistics on and off (written to the log every 10 s).
 
-item.camera_probe = Camera state capture
-item.camera_probe.desc = capture the camera state (troubleshooting)
+item.camera_probe = Camera State Capture
+item.camera_probe.desc = Sets the key that starts or stops capturing the camera state (up to 180 s).
 
-item.hangar_specs = Hangar: aircraft specs
-item.hangar_specs.desc = in the hangar, read the aircraft's parameter tables
+item.hangar_specs = Hangar: Aircraft Data
+item.hangar_specs.desc = Sets the key that, in the hangar, writes the aircraft's parameter tables to a file.
 
-item.hangar_geometry = Hangar: aircraft geometry
-item.hangar_geometry.desc = in the hangar, read the aircraft's geometry
+item.hangar_geometry = Hangar: Aircraft Geometry
+item.hangar_geometry.desc = Sets the key that, in the hangar, writes the aircraft's geometry to a file.

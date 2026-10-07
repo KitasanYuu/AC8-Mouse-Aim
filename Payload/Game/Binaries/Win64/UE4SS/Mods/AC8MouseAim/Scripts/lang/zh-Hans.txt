@@ -1,148 +1,148 @@
 # MouseFlight 文字，简体中文（UTF-8；"编号 = 文字"；{1}、{2}… 由 mod 填入，必须保留）。
 
-hud.status = MouseFlight 0.2.30 {1} | 瞄准 {2} | 镜头 {3}
-hud.on = 运行
+hud.status = MouseFlight 0.2.30 {1} | 瞄准点 {2} | 镜头 {3}
+hud.on = 运作中
 hud.standby = 待机
 hud.outside = 瞄准点在画面外
 panel.auto = 自动（跟随游戏）
-panel.on = 开
-panel.off = 关
+panel.on = ON
+panel.off = OFF
 panel.none = 无
 panel.page.settings = 设置
-panel.page.keys = 按键
-panel.page.hint = （{1}/{2} 翻页）
-panel.help.settings = {1}/{2} 选择   {3}/{4} 调整（按住 {5} 微调）   {6} 撤销
-panel.help.keys = {1}/{2} 选择   {3} 改键   {4} 撤销
-panel.title = MouseFlight 设置（{1} 关闭）
-panel.was = 原值 {1}
-panel.recording = 按下新按键（Esc 取消，Delete 清除）
-panel.also = 与以下按键重复：{1}
+panel.page.keys = 按键配置
+panel.page.hint = （{1}／{2}：切换页面）
+panel.help.settings = {1}／{2} 选择　{3}／{4} 调整（按住 {5} 微调）　{6} 还原
+panel.help.keys = {1}／{2} 选择　{3} 变更按键　{4} 还原
+panel.title = MouseFlight 设置（{1}：关闭）
+panel.was = 原：{1}
+panel.recording = 请按下新的按键（Esc：取消　Delete：清除）
+panel.also = 与以下项目的按键相同：{1}
 font = Microsoft YaHei UI
 
-group.mouse_camera = 鼠标与尾追视角
-group.near_views = 座舱与机头视角
-group.flight = 飞控（只影响接近瞄准点的阶段）
+group.mouse_camera = 鼠标与追尾镜头
+group.near_views = 座舱／机首视角
+group.flight = 飞行控制（仅影响接近瞄准点的阶段）
 group.display = 显示
 group.keys_flight = 飞行
 group.keys_panel = 设置面板
 group.keys_diagnostics = 诊断
 
 item.sensitivity = 鼠标灵敏度
-item.sensitivity.desc = 每个鼠标计数对应的瞄准角度（度）
+item.sensitivity.desc = 指定以鼠标操作瞄准点时的灵敏度（每个鼠标计数转动的角度）。座舱／机首视角下按视野角度的比例降低。
 
-item.camera_follow = 镜头跟随速度
-item.camera_follow.desc = 尾追镜头转向瞄准方向的速度（1/秒，越大越快）
+item.camera_follow = 镜头追踪速度
+item.camera_follow.desc = 设置追尾镜头转向瞄准点的速度（1/秒）。数值越大，镜头越贴近瞄准点。
 
 item.camera_distance = 镜头距离
-item.camera_distance.desc = 镜头在飞机后方的距离（米，0 为游戏默认）
+item.camera_distance.desc = 设置追尾镜头与机体的距离（m）。设为 0 时使用游戏本身的距离与高度。
 
 item.camera_height = 镜头高度
-item.camera_height.desc = 镜头在飞机上方的高度（米）
+item.camera_height.desc = 设置追尾镜头在机体上方的高度（m）。镜头距离为 0 时无效。
 
-item.camera_fov_add = 视场角增减
-item.camera_fov_add.desc = 在游戏视场角上增减的度数（尾追视角）
+item.camera_fov_add = 视野角度修正
+item.camera_fov_add.desc = 在游戏的视野角度上增减的度数（追尾镜头）。保留游戏随速度产生的变化。
 
 item.near_view_camera = 视角模式
-item.near_view_camera.desc = 0 固定朝前；1 跟随瞄准点；2 瞄准点到边缘才转；3 朝瞄准圈转头
+item.near_view_camera.desc = 设置座舱／机首视角的镜头动作。0：固定朝前　1：朝向瞄准点　2：瞄准点到达画面边缘才转动　3：固定朝前并朝瞄准圈转头
 
 item.near_view_follow = 转头比例
-item.near_view_follow.desc = 视角朝瞄准圈转动的比例（0–1，仅模式 3）
+item.near_view_follow.desc = 模式 3 专用。设置视角朝瞄准圈方向转动的比例（0～1）。
 
 item.near_view_hud = 转头上限
-item.near_view_hud.desc = 超出半个画面宽度后还能再转的角度（度，仅模式 3）
+item.near_view_hud.desc = 模式 3 专用。视角最多转到半个画面再加上该角度，使 HUD 边缘保留在画面内。
 
 item.near_view_mouse = 鼠标倍率
-item.near_view_mouse.desc = 座舱和机头视角下的鼠标移动倍率
+item.near_view_mouse.desc = 模式 0／3 专用。设置座舱鼠标摇杆的鼠标移动倍率。
 
-item.near_view_expo = 瞄准圈非线性
-item.near_view_expo.desc = 1 为线性；越大，机头附近鼠标越细
+item.near_view_expo = 瞄准圈曲线
+item.near_view_expo.desc = 模式 0／3 专用。瞄准圈的位置为摇杆量的该次方。1 为线性，数值越大，机首附近越精细。
 
-item.near_view_inertia = 视角滞后
-item.near_view_inertia.desc = 视角跟随飞机姿态的延迟（秒，0 为无延迟）
+item.near_view_inertia = 视角延迟
+item.near_view_inertia.desc = 设置视角跟随机体姿态的延迟（秒）。0 为无延迟。
 
 item.near_view_level = 视角水平修正
-item.near_view_level.desc = 视角滚转向水平修正的比例（0 关，1 完全水平）
+item.near_view_level.desc = 设置视角的翻滚向水平修正的比例。0：随机体翻滚　1：保持水平
 
-item.near_view_fov_add = 视场角增减
-item.near_view_fov_add.desc = 在游戏视场角上增减的度数（座舱和机头视角）
+item.near_view_fov_add = 视野角度修正
+item.near_view_fov_add.desc = 在游戏的视野角度上增减的度数（座舱／机首视角）。
 
 item.pitch_gain = 俯仰增益
-item.pitch_gain.desc = 接近瞄准点时的俯仰速度；越大越快，超过 4 会抖杆
+item.pitch_gain.desc = 设置接近瞄准点时的俯仰速度：目标俯仰角速度＝该值×剩余角度（1/秒）。数值越大越快到位，过大会在瞄准点附近反复修正。
 
-item.roll_brake = 滚转制动
-item.roll_brake.desc = 滚转到位前的减速量；越小，减速越早越柔和
+item.roll_brake = 翻滚减速
+item.roll_brake.desc = 设置翻滚停止时预计使用的减速度（占机体翻滚加速度的比例）。数值越小，越早开始减速。
 
-item.level_per_deg = 改平速度
-item.level_per_deg.desc = 每剩 1° 允许保持的坡度；越小越早改平机翼
+item.level_per_deg = 水平恢复
+item.level_per_deg.desc = 接近瞄准点时，坡度上限＝该值×剩余角度。数值越小，机体越早回到水平。
 
-item.lead_gain = 移动瞄准点提前量
-item.lead_gain.desc = 跟随移动瞄准点时的提前比例（0 关）
+item.lead_gain = 移动瞄准点补正
+item.lead_gain.desc = 设置追随移动中的瞄准点时，追加其角速度的比例。0 为关闭。
 
-item.lead_filter = 提前量平滑
-item.lead_filter.desc = 计算瞄准点移动速度时的平滑时间（秒）
+item.lead_filter = 补正平滑
+item.lead_filter.desc = 设置估算瞄准点角速度时的平滑时间（秒）。
 
-item.highg_full_from = 高G满拉角度
-item.highg_full_from.desc = 高G时离瞄准点超过此角度即满拉杆（度，0 关）
+item.highg_full_from = 高G力满拉角度
+item.highg_full_from.desc = 进行高G力回转且瞄准点偏离超过该角度时，直接将操纵杆拉满，不提前减速（度）。0 为关闭。
 
-item.status_line = 状态行
-item.status_line.desc = 左上角显示版本、状态和角度
+item.status_line = 状态显示
+item.status_line.desc = 设置是否在画面左上角显示版本、状态与角度。
 
 item.language = 语言
-item.language.desc = 本面板和 mod 画面文字的语言
+item.language.desc = 设置本面板与 MOD 画面文字的语言。自动：跟随游戏的 UI 语言。
 
-item.toggle = 鼠标辅助开关
-item.toggle.desc = 开启或关闭鼠标辅助
+item.toggle = 鼠标辅助 ON/OFF
+item.toggle.desc = 设置用于切换鼠标辅助的按键。OFF 时由游戏原本的操作控制机体。
 
-item.recenter = 瞄准点归位
-item.recenter.desc = 瞄准点回到机头
+item.recenter = 瞄准点复位
+item.recenter.desc = 设置使瞄准点回到机首方向的按键。
 
-item.free_look = 自由观察
-item.free_look.desc = 按住时鼠标只转动视角
+item.free_look = 自由视角
+item.free_look.desc = 设置按住时只以鼠标操作镜头的按键。瞄准点保持不变。
 
-item.hud = 指示层开关
-item.hud.desc = 显示或隐藏 mod 的瞄准圈
+item.hud = MOD 指示 ON/OFF
+item.hud.desc = 设置切换 MOD 瞄准圈显示的按键。飞行控制不受影响。
 
-item.post_stall = 失速机动
-item.post_stall.desc = 按住后在 500 km/h 以下按高G：进入失速机动
+item.post_stall = 失速机动辅助
+item.post_stall.desc = 设置失速机动辅助的按键。按住期间在 500km/h 以下进行高G力回转时，俯仰先回中约 0.04 秒再拉满，以符合游戏进入失速机动的条件。
 
-item.tuning = 面板开关
-item.tuning.desc = 打开或关闭本面板
+item.tuning = 设置面板
+item.tuning.desc = 设置用于打开或关闭本面板的按键。
 
 item.tuning_up = 上一项
-item.tuning_up.desc = 选择上一项
+item.tuning_up.desc = 设置用于选择上一项的按键。
 
 item.tuning_down = 下一项
-item.tuning_down.desc = 选择下一项
+item.tuning_down.desc = 设置用于选择下一项的按键。
 
-item.tuning_less = 减小
-item.tuning_less.desc = 减小当前值
+item.tuning_less = 减少
+item.tuning_less.desc = 设置用于减少数值的按键。
 
-item.tuning_more = 增大
-item.tuning_more.desc = 增大当前值
+item.tuning_more = 增加
+item.tuning_more.desc = 设置用于增加数值的按键。
 
 item.tuning_fine = 微调
-item.tuning_fine.desc = 按住时步长为 1/5
+item.tuning_fine.desc = 设置按住时以 1/5 步长调整的按键。
 
-item.tuning_undo = 撤销
-item.tuning_undo.desc = 恢复为打开面板时的值
+item.tuning_undo = 还原
+item.tuning_undo.desc = 设置用于还原为打开面板时数值的按键。
 
-item.tuning_bind = 改键
-item.tuning_bind.desc = 为选中项录制新按键（按键页）
+item.tuning_bind = 变更按键
+item.tuning_bind.desc = 设置在按键配置页为所选项目录入新按键的按键。
 
-item.reload = 重新读取配置
-item.reload.desc = 重新读取 config.ini
+item.reload = 重新读取设置
+item.reload.desc = 设置用于重新读取 config.ini 的按键。
 
 item.trace = 飞行记录
-item.trace.desc = 在日志中逐帧记录飞行数据
+item.trace.desc = 设置切换逐帧飞行记录（写入日志）的按键。
 
 item.perf = 性能统计
-item.perf.desc = 开启或关闭性能计数
+item.perf.desc = 设置切换性能统计（每 10 秒写入日志）的按键。
 
 item.camera_probe = 镜头状态采集
-item.camera_probe.desc = 采集镜头状态（排查用）
+item.camera_probe.desc = 设置开始或停止采集镜头状态（最长 180 秒）的按键。
 
-item.hangar_specs = 机库：飞机参数
-item.hangar_specs.desc = 在机库读取当前飞机的参数表
+item.hangar_specs = 机库：机体参数
+item.hangar_specs.desc = 设置在机库读取当前机体参数表并写入文件的按键。
 
-item.hangar_geometry = 机库：飞机几何
-item.hangar_geometry.desc = 在机库读取当前飞机的几何数据
+item.hangar_geometry = 机库：机体几何
+item.hangar_geometry.desc = 设置在机库读取当前机体几何数据并写入文件的按键。
