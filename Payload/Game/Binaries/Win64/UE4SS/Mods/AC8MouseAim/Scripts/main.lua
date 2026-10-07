@@ -106,6 +106,41 @@ local function player_plane()
     return nil, nil
 end
 
+-- The player model's detail (issue #7, a lower-detail model reported with the mod's camera):
+-- every 3 s the body mesh's predicted LOD and the camera's distance from the aircraft, into
+-- UE4SS.log. Read-only; the component is looked up once per aircraft.
+local lod_watch = { pawn = nil, mesh = nil, next = 0, last = nil }
+local function watch_lod(pawn, ox, oy, oz)
+    local now = os.clock()
+    if now < lod_watch.next then return end
+    lod_watch.next = now + 3
+    local address = pawn:GetAddress()
+    if lod_watch.pawn ~= address then
+        lod_watch.pawn = address; lod_watch.mesh = nil
+        -- a TArray, not a table (as mesh_probe.lua walks it): ForEach, each element by get()
+        local cls = StaticFindObject('/Script/Engine.SkeletalMeshComponent')
+        local ok, list = pcall(function() return pawn:K2_GetComponentsByClass(cls) end)
+        if ok and list then
+            pcall(function()
+                list:ForEach(function(_, element)
+                    local okc, c = pcall(function() return element:get() end)
+                    if not okc or not c then c = element end
+                    local okn, name = pcall(function() return c:GetFullName() end)
+                    if okn and name and name:find('PlaneBodyMesh', 1, true) then lod_watch.mesh = c; return true end
+                end)
+            end)
+        end
+        if not lod_watch.mesh then print('[AC8MouseAim] LOD watch: no PlaneBodyMesh found\n') end
+    end
+    local mesh = lod_watch.mesh
+    if not mesh or not mesh:IsValid() then return end
+    local ok, lod = pcall(function() return mesh:GetPredictedLODLevel() end)
+    if not ok then print('[AC8MouseAim] LOD watch: ' .. tostring(lod) .. '\n'); lod_watch.next = now + 60; return end
+    if type(lod) ~= 'number' then local okv, v = pcall(function() return lod:get() end); if okv then lod = v end end
+    local line = string.format('LOD body=%s camera %.1f m from the aircraft', tostring(lod), math.sqrt(ox * ox + oy * oy + oz * oz) / 100)
+    if line ~= lod_watch.last then print('[AC8MouseAim] ' .. line .. '\n'); lod_watch.last = line end
+end
+
 local function camera_rotation(manager, fallback)
     local ok_camera, rotation = pcall(function() return manager:GetCameraRotation() end)
     if ok_camera and rotation then return rotation end
@@ -212,6 +247,7 @@ else
                 assert(rotation_component(position,"Z")),game_time)
             assert(on~=nil,'Native frame rejected')
             pcall(contacts.update,pawn,game_time)
+            pcall(watch_lod,pawn,ox,oy,oz)
             local desired_camera
             if gazing then
                 aim_camera.seed(camera,rotation_component)
