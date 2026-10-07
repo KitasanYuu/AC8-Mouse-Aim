@@ -120,12 +120,12 @@ flight::V path_velocity{}, path_raw_velocity{}, path_accel{};
 int aircraft_serial=0;  // game thread only
 std::atomic<bool> game_paused{false};
 std::atomic<bool> gaze_active{false};
-// AC8 AutoPilot is engaged by pressing both yaw keys together. While it flies, the
-// mod leaves controls and camera to the game; Q+E again or a deliberate mouse move
-// takes back control with the target re-anchored to the nose.
+// AC8's autopilot flies while both yaw inputs are held (Q+E, or the autopilot key C, which the
+// game turns into both yaw inputs), read from the aircraft each frame. While it flies, the mod
+// leaves controls and camera to the game, the mouse included; released, the mod takes over with
+// the target on the nose. (A Q+E toggle and a mouse takeover had been guessed: the autopilot is
+// held, not toggled, and C went unseen, its input overwritten by the mod; logged 2026-10-07.)
 std::atomic<bool> autopilot_active{false};
-std::atomic<long> autopilot_travel{0};
-constexpr float autopilot_takeover_degrees=6.0f;
 bool yielding() { return gaze_active.load() || autopilot_active.load(); }
 std::atomic<bool> resume_center_requested{false};
 std::atomic<ULONGLONG> camera_released_since{0};   // the game's camera has the view (Lua release) since this tick
@@ -354,9 +354,7 @@ UINT WINAPI capture_get_raw_input_data(HRAWINPUT input, UINT command, LPVOID dat
         if (raw->header.dwType == RIM_TYPEMOUSE &&
             !(raw->data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) &&
             foreground_is_game() && active.load() && enabled.load()) {
-            if(autopilot_active.load()) {
-                autopilot_travel.fetch_add(std::abs(raw->data.mouse.lLastX)+std::abs(raw->data.mouse.lLastY));
-            } else if(!game_paused.load() && !gaze_active.load()) {
+            if(!game_paused.load() && !yielding()) {
                 mouse_dx.fetch_add(raw->data.mouse.lLastX);
                 mouse_dy.fetch_add(raw->data.mouse.lLastY);
             }
@@ -423,9 +421,7 @@ void mouse_loop() {
             if (FAILED(result)) {
                 mouse_device->Acquire();
             } else if (foreground_is_game() && active.load()) {
-                if(autopilot_active.load()) {
-                    autopilot_travel.fetch_add(std::abs(state.lX)+std::abs(state.lY));
-                } else if(!game_paused.load() && !gaze_active.load()) {
+                if(!game_paused.load() && !yielding()) {
                     mouse_dx.fetch_add(state.lX);
                     mouse_dy.fetch_add(state.lY);
                 }
@@ -438,24 +434,6 @@ void mouse_loop() {
             log_line("HUD only: %s",hud_enabled.load()?"ON":"OFF");
         }
         f7_down=f7;
-        static bool chord_down=false;
-        const bool chord=foreground_is_game() && active.load() &&
-            (GetAsyncKeyState('Q')&0x8000) && (GetAsyncKeyState('E')&0x8000);
-        if(chord && !chord_down) {
-            const bool engaged=!autopilot_active.load();
-            autopilot_travel.store(0);
-            autopilot_active.store(engaged);
-            if(!engaged) recenter_requested.store(true);
-            log_line("autopilot: %s",engaged?"Q+E engaged; controls and camera left to the game (Q+E or mouse takes back)"
-                                            :"Q+E released to mouse aim; target re-anchored to nose");
-        }
-        chord_down=chord;
-        if(autopilot_active.load() && autopilot_travel.load()*config.sensitivity>autopilot_takeover_degrees) {
-            autopilot_active.store(false);
-            autopilot_travel.store(0);
-            recenter_requested.store(true);
-            log_line("autopilot: mouse takeover; target re-anchored to nose");
-        }
         static bool post_stall_down=false;
         const int psk=config.post_stall_key;
         const bool post_stall=psk>0 && (GetAsyncKeyState(psk)&0x8000)!=0;
@@ -739,7 +717,7 @@ void release_controls() {
 
 // Called synchronously on the game thread. Fixed numeric arguments replace
 // the pipe queue, sscanf and the camera-target disk snapshot entirely.
-void receive_pose(const double (&v)[19]) {
+void receive_pose(const double (&v)[20]) {
     const uintptr_t address=static_cast<uintptr_t>(v[0]);
     const float pitch=float(v[1]),yaw=float(v[2]),roll=float(v[3]);
     const float view_pitch=float(v[4]),view_yaw=float(v[5]),view_roll=float(v[6]);
@@ -749,6 +727,13 @@ void receive_pose(const double (&v)[19]) {
     input_brake.store(float(std::clamp(v[14],-2.0,2.0)));
     actor_x=v[15]; actor_y=v[16]; actor_z=v[17];
     game_time=v[18];
+    const bool autopilot=v[19]!=0;
+    if(autopilot_active.exchange(autopilot)!=autopilot) {
+        mouse_dx.store(0); mouse_dy.store(0);
+        if(!autopilot) recenter_requested.store(true);
+        log_line("autopilot: %s",autopilot?"held in the game; controls and camera left to it"
+                                         :"released; target re-anchored to nose");
+    }
     if(gaze_active.exchange(gazing)!=gazing) {
         mouse_dx.store(0); mouse_dy.store(0);
         command_pitch.store(0); command_yaw.store(0); command_roll.store(0);
@@ -1409,10 +1394,10 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_begin(void*) {
 extern "C" __declspec(dllexport) int ac8_mouseaim_frame(lua_State* state) {
     if(!running.load() || !on_bridge_thread()) return 0;
     PerfSpan timing(perf_bridge);
-    LuaView lua(state); double v[19]{};
+    LuaView lua(state); double v[20]{};
     if(!read_numbers(lua,v) || !live_pointer_number(v[0])) { release_controls(); return 0; }
     for(size_t i=1;i<11;++i) if(std::abs(v[i])>1e12) { release_controls(); return 0; }
-    if((v[11]!=0 && v[11]!=1) || (v[12]!=0 && v[12]!=1)) { release_controls(); return 0; }
+    if((v[11]!=0 && v[11]!=1) || (v[12]!=0 && v[12]!=1) || (v[19]!=0 && v[19]!=1)) { release_controls(); return 0; }
     receive_pose(v);
     const bool on=enabled.load() && !game_paused.load() && !yielding() && foreground_is_game();
     lua.set_number(on?1:0); lua.set_number(look_pitch.load()); lua.set_number(look_yaw.load());
