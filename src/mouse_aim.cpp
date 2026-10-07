@@ -84,6 +84,8 @@ struct Config {
     // Post-stall request key (virtual-key code; 0 = none): held, a high-G pressed below
     // 500 km/h enters the game's post-stall maneuver (see post_stall_override).
     int post_stall_key = VK_XBUTTON1;
+    // Opens and closes the in-game tuning panel (tuning_panel.h); 0 = none.
+    int tuning_key = VK_F3;
 };
 
 struct Pose {
@@ -288,6 +290,7 @@ void load_config() {
     config.near_view_box_y = std::clamp(read_config_float(L"near_view_box_y", config.near_view_box_y), 0.1f, 0.95f);
     config.telemetry_port = std::clamp(read_config_int(L"telemetry_port", 0), 0, 65535);
     config.post_stall_key = read_config_key(L"post_stall_key", VK_XBUTTON1);
+    config.tuning_key = read_config_key(L"tuning_key", VK_F3);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
         config.pitch_slot = 0;
         config.roll_slot = 2;
@@ -400,6 +403,8 @@ bool prepare_mouse() {
     return SUCCEEDED(mouse_device->Acquire()) || GetLastError() == ERROR_SUCCESS;
 }
 
+#include "tuning_panel.h"
+
 void mouse_loop() {
     bool f8_down = false, f9_down = false;
     while (running.load()) {
@@ -466,6 +471,7 @@ void mouse_loop() {
         if (f9 && !f9_down) recenter_requested.store(true);
         f8_down = f8;
         f9_down = f9;
+        panel_poll();
         Sleep(4);
     }
 }
@@ -813,7 +819,7 @@ RECT draw_ring(uint32_t* pixels,int width,int height,float cx,float cy,float rad
 }
 
 // Draws the HUD and returns the regions drawn (for clearing and dirty-rect presents).
-unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, RECT (&drawn)[5]) {
+unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, RECT (&drawn)[8]) {
         drawn[0]={20,35,1100,85};
         unsigned count=1;
         unsigned text_count=1;  // the first regions hold GDI text, which needs its alpha set
@@ -879,6 +885,8 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
         }
         // Sizes at 1080p (scaled with height): ring 50 px across, nose ring 14 px.
         const float scale=std::max(0.75f,height/1080.0f);
+        const RECT panel_box=draw_tuning_panel(dc,pixels,width,height,scale);
+        if(panel_box.right>panel_box.left) drawn[count++]=panel_box;
         if(aim_visible) drawn[count++]=draw_ring(pixels,width,height,x,y,25*scale,2.0f*scale,2.5f*scale,0.8f,0.35f);
         // Post-stall key held: a second ring outside the aim ring, amber (white blended into
         // the sky and the HUD; reported).
@@ -923,7 +931,7 @@ void overlay_loop() {
     bool window_reported = false;
     ULONGLONG window_check=0;
     MSG message{};
-    RECT drawn[5]{}; unsigned drawn_count=0;   // regions drawn last time (to clear)
+    RECT drawn[8]{}; unsigned drawn_count=0;   // regions drawn last time (to clear)
     POINT last_origin{-1,-1}; SIZE last_size{};
     bool full_clear=true;
     while (running.load()) {
@@ -947,6 +955,7 @@ void overlay_loop() {
             if (owner_window!=game_window) {
                 SetWindowLongPtrW(overlay_window,GWLP_HWNDPARENT,reinterpret_cast<LONG_PTR>(game_window));
                 owner_window=game_window;
+                panel_attach(game_window);
             }
             SIZE size{client.right-client.left,client.bottom-client.top};
             if (size.cx>0 && size.cy>0 && surface &&
