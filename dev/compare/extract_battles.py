@@ -111,6 +111,46 @@ for path in args.files:
             fine = [(p["gt"] - t0, *b[2:8], b[9], b[10]) for p in boss_packets if t0 <= p["gt"] <= t1
                     for b in p["b"] if b[0] == k and abs(b[2]) + abs(b[3]) + abs(b[4]) > 1]
             if len(fine) > len(e["samples"]): e["samples"] = fine
+        # The game reuses an actor's address for a new aircraft (a Tu-95 shot down at 108 s, its
+        # address back at 168 s 73 km away), and a new aircraft first comes in on a straight rail
+        # from beyond the map at 1400-1900 m/s, level (logged in the M28 battle, 2026-10-06; the
+        # bench drew both as one aircraft gliding across the map, alive all the while). Samples
+        # faster than any aircraft flies (1100 m/s; not a boss's) are dropped, and a track is cut
+        # where it stops for over 3 s and comes back further than 600 m/s carries, or after 20 s:
+        # each piece is an enemy of its own; all but the last went down or were removed.
+        # Also dropped: samples with the attitude exactly level (0/0/0: a new aircraft before its
+        # AI takes it, still on its rail, slower than 1100 m/s by then: the F04E formation's first
+        # 20 s), and pieces under 3 s.
+        def pieces(smp, is_boss):
+            def speed(k):   # over 0.25 s at least: 30 Hz samples jitter by tens of metres
+                j = next((j for j in range(k + 1, len(smp)) if smp[j][0] - smp[k][0] >= 0.25), None)
+                return 0 if j is None else math.dist(smp[k][1:4], smp[j][1:4]) / (smp[j][0] - smp[k][0])
+            keep = [x for k, x in enumerate(smp) if is_boss or (speed(k) <= 1100 and tuple(x[4:7]) != (0, 0, 0))]
+            out = []
+            for x in keep:
+                if out and x[0] - out[-1][-1][0] > 3 and (x[0] - out[-1][-1][0] > 20 or
+                        math.dist(x[1:4], out[-1][-1][1:4]) / (x[0] - out[-1][-1][0]) > 600):
+                    out.append([])
+                if not out: out.append([])
+                out[-1].append(x)
+            return out
+        split, pieces_of = {}, {}
+        for k, e in enemies.items():
+            # a boss and its escort drones (Moon 11's uavn dash at 1400-1700 m/s) kept whole
+            fast = boss(e["cls"]) or "uavn" in e["cls"]
+            parts = [ps for ps in pieces(e["samples"], fast) if len(ps) >= 5 and ps[-1][0] - ps[0][0] >= 3 and moving({"samples": ps})]
+            for n, ps in enumerate(parts):
+                key = (k, n)
+                last = n == len(parts) - 1
+                split[key] = {"cls": e["cls"], "samples": ps, "gone": e.get("gone", False) if last else True,
+                              "last_range": math.dist(ps[-1][1:4], frame_at(t0 + ps[-1][0])["pos"])}
+                pieces_of.setdefault(k, []).append((ps[0][0], ps[-1][0], key))
+        enemies = split
+        if not enemies: continue
+        def piece_at(addr, tr):   # the piece of that actor's track at that time (relative), if any
+            for a, b, key in pieces_of.get(addr, []):
+                if a - 0.5 <= tr <= b + 0.5: return key
+            return None
         # A boss's lockable parts are separate actors at its position: a selected object at a
         # boss's position (within 300 m) counts as selecting the boss. Judged by position at
         # each moment, not by class or address: the game reuses addresses, and parts were
@@ -121,16 +161,17 @@ for path in args.files:
         # selected): the selected part counts as its aircraft, the enemy within 100 m of it in
         # the same sample.
         def selection(s):
-            sid = s.get("selected")
-            if sid in enemies: return sid
+            sid = s.get("selected"); tr = s["gt"] - t0
+            key = piece_at(sid, tr)
+            if key: return key
             c = next((c for c in s["c"] if c[0] == sid), None)
-            if c is None: return sid
+            if c is None: return None
             if boss_ids:
                 key = round(s["gt"] - t0, 1)
                 near = [(math.dist(c[2:5], at[b][key]), b) for b in boss_ids if key in at[b]]
                 if near and min(near)[0] < 300: return min(near)[1]
-            near = [(math.dist(c[2:5], o[2:5]), o[0]) for o in s["c"] if o[0] in enemies and o[0] != sid]
-            return min(near)[1] if near and min(near)[0] < 100 else sid
+            near = [(math.dist(c[2:5], o[2:5]), piece_at(o[0], tr)) for o in s["c"] if o[0] != sid and piece_at(o[0], tr)]
+            return min(near)[1] if near and min(near)[0] < 100 else None
         ids = list(enemies)
         span = t1 - t0
         # When the player had each enemy selected (relative to the window).
