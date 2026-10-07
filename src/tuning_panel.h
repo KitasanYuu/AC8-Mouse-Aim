@@ -26,11 +26,12 @@ const PanelItem panel_items[]={
     {nullptr,L"control","near_view_inertia","view lag behind the aircraft, s",0,0.5f,0.01f,false,0.06f},
     {nullptr,L"control","near_view_level","roll held toward level",0,1,0.05f,false,0},
     {nullptr,L"control","near_view_fov_add","FOV added to the game's, deg",-40,40,1,false,0},
-    // What sets the turn: the rate wanted is the least of the aircraft's top rate, the rate it can
-    // still stop from (pitch_brake, roll_brake) and a gain times the angle left; with the measured
-    // model the stop is the least (the gains of 2.5 and 2 were not: raised to 6, nothing changed).
-    {"Flight",L"tuning","pitch_brake","pitch stop planned (lower: arrives softer)",0.1f,1,0.05f,false,0.45f},
-    {nullptr,L"tuning","roll_brake","roll stop planned (lower: arrives softer)",0.1f,1,0.05f,false,0.45f},
+    // What sets the turn (closed-loop simulation, measured plant, 2026-10-07): pitch_gain is what limits
+    // the pitch (1.5 to 4: up 20 deg reached in 2.4 to 1.4 s; past 4 the stick chatters near the aim;
+    // pitch_brake changed nothing at all); roll_brake slows a big roll's stop when lowered (right 30
+    // deg 2.8 s at 0.45, 4.1 s at 0.2) and changes little when raised (the roll rate is the limit).
+    {"Flight",L"tuning","pitch_gain","pitch response (higher: faster, past 4 jittery)",1,4,0.1f,false,2.5f},
+    {nullptr,L"tuning","roll_brake","roll stop planned (lower: softer, slower)",0.2f,1,0.05f,false,0.45f},
     {nullptr,L"tuning","level_per_deg","bank kept per deg to go (lower: levels sooner)",2,30,1,false,10},
     {nullptr,L"tuning","lead_gain","follow a moving aim",0,2,0.05f,false,1.0f},
     {nullptr,L"tuning","lead_filter","smoothing of that, s",0.05f,1.5f,0.05f,false,0.4f},
