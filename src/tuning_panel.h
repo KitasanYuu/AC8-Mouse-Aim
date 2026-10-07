@@ -389,12 +389,13 @@ void panel_attach(HWND window) {
     log_line("tuning panel: attached to the game window (toggle key %s)",key_label(config.keys.tuning).c_str());
 }
 
-// draw_overlay: the panel, top left below the HUD's lines; returns where it was drawn. A row is a name
-// and its value (and the opening value once changed), in columns; the selected item's description
-// and config.ini name sit at the bottom. Its size is that of the most either page could show (every
-// description, the longest key and language names), so that it stays put whatever is selected, on
-// either page (it had grown and shrunk with the selection, reported 2026-10-07); only a language's
-// own font changes it.
+// draw_overlay: the panel, top left below the HUD's lines; returns where it was drawn. Under the title
+// the two pages are tabs (the open one lit, the page keys beside them: a page row of plain text was
+// missed, reported 2026-10-07); a row is a name and its value (and the opening value once changed),
+// in columns, values left-aligned; the selected item's description and config.ini name sit at the
+// bottom, wrapped to three lines. Columns, rows and size are fixed in units of the font size, the
+// same whatever is selected, on either page and in every language; text is centred in its row by
+// the font's own height (Segoe UI sat low in a row sized for the text height).
 RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale) {
     if(!panel_open.load()) return RECT{0,0,0,0};
     PanelState state;
@@ -408,52 +409,48 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
         font_height=text_height; font_generation=text_generation.load();
     }
     HGDIOBJ old_font=SelectObject(dc,font);
+    TEXTMETRICW metrics{};
+    GetTextMetricsW(dc,&metrics);
     auto measure=[&](const std::wstring& s) { SIZE size{}; GetTextExtentPoint32W(dc,s.c_str(),int(s.size()),&size); return LONG(size.cx); };
-    // A line: text from its left, or the three columns of an item (name, value, the opening value).
-    struct Line { std::wstring text, value, was; COLORREF color; bool selected=false, item=false; };
+    const LONG h=text_height, inner=38*h, value_x=15*h, was_x=25*h, column_gap=h;
+    const int line=int(h*1.55f), pad=int(10*scale), text_offset=std::max(0,(line-int(metrics.tmHeight))/2);
     const Config::Keys& keys=config.keys;   // as [keys] has them
     auto key=[](int vk) { return widen(key_label(vk)); };
-    const std::wstring settings=tr("panel.page.settings",L"Settings"), keys_page=tr("panel.page.keys",L"Key Config");
-    const std::wstring page_hint=tr("panel.page.hint",L"({1}/{2}: change page)",{key(keys.tuning_less),key(keys.tuning_more)});
-    auto page_row=[&](int page,bool selected) {
-        std::wstring row=(selected?L"> ":L"  ")+(page==0 ? L"["+settings+L"]   "+keys_page : settings+L"   ["+keys_page+L"]");
-        if(selected) row+=L"   "+page_hint;
-        return row;
+    auto fit=[&](std::wstring s,LONG room) {
+        if(measure(s)<=room) return s;
+        while(s.size()>1 && measure(s+L"\x2026")>room) s.pop_back();
+        return s+L"\x2026";
     };
-    auto help=[&](int page) {
-        return page==0 ? tr("panel.help.settings",L"{1}/{2} Select   {3}/{4} Adjust (hold {5}: fine)   {6} Restore",
-                            {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_less),key(keys.tuning_more),key(keys.tuning_fine),key(keys.tuning_undo)})
-                       : tr("panel.help.keys",L"{1}/{2} Select   {3} Change Key   {4} Restore",
-                            {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_bind),key(keys.tuning_undo)});
-    };
-    auto lines_for=[&](int page) {
-        std::vector<Line> lines;
-        lines.push_back({tr("panel.title",L"MouseFlight Settings ({1}: close)",{key(keys.tuning)}),L"",L"",RGB(255,255,255)});
-        const bool on_row=page==state.page && state.selected<0;
-        lines.push_back({page_row(page,on_row),L"",L"",on_row?RGB(255,220,120):RGB(200,200,200),on_row});
-        lines.push_back({help(page),L"",L"",RGB(150,150,150)});
+    // rows: title, tabs, help, then each item of the page (and its group's heading)
+    enum Kind { Title, Tabs, Help, Group, Item };
+    struct Row { Kind kind; std::wstring text, value, was; bool selected=false; };
+    auto rows_for=[&](int page) {
+        std::vector<Row> rows;
+        rows.push_back({Title,tr("panel.title",L"MouseFlight Settings ({1}: close)",{key(keys.tuning)})});
+        rows.push_back({Tabs,L"",L"",L"",page==state.page && state.selected<0});
+        rows.push_back({Help,page==0
+            ? tr("panel.help.settings",L"{1}/{2} Select   {3}/{4} Adjust (hold {5}: fine)   {6} Restore",
+                 {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_less),key(keys.tuning_more),key(keys.tuning_fine),key(keys.tuning_undo)})
+            : tr("panel.help.keys",L"{1}/{2} Select   {3} Change Key   {4} Restore",
+                 {key(keys.tuning_up),key(keys.tuning_down),key(keys.tuning_bind),key(keys.tuning_undo)})});
         for(int i=0;i<panel_count;++i) {
             if(item_page(i)!=page) continue;
             const PanelItem& item=panel_items[i];
-            if(item.group) lines.push_back({group_name(item),L"",L"",RGB(120,200,255)});
+            if(item.group) rows.push_back({Group,group_name(item)});
             const bool selected=page==state.page && i==state.selected;
-            Line row{(selected?L"> ":L"  ")+item_name(item),L"",L"",selected?RGB(255,220,120):RGB(235,235,235),selected,true};
+            Row row{Item,item_name(item),L"",L"",selected};
             row.value=selected && state.recording ? L"..." : panel_shown(item,state.value[i]);
             if(!(selected && state.recording) && panel_text(item,state.value[i])!=panel_text(item,state.was[i]))
                 row.was=tr("panel.was",L"was: {1}",{panel_shown(item,state.was[i])});
-            lines.push_back(row);
+            rows.push_back(row);
         }
-        return lines;
+        return rows;
     };
-    std::vector<Line> lines=lines_for(state.page);
-    const size_t most_lines=std::max(lines_for(0).size(),lines_for(1).size());
-    // Fixed columns and width, in units of the font's height: the same whatever is selected, on
-    // either page and in every language (fitted to the rows, it grew and shrank with each; reported
-    // 2026-10-07). A text too long for its column is cut short; the description wraps.
-    const LONG h=text_height, inner=38*h, value_x=15*h, was_x=25*h, column_gap=h;
-    const std::wstring prompt=tr("panel.recording",L"Press the new key (Esc: cancel  Delete: clear)");
+    const std::vector<Row> rows=rows_for(state.page);
+    const size_t most_rows=std::max(rows_for(0).size(),rows_for(1).size());
+    // the description: the selected item's (and its config.ini name), or the recording's prompt
     std::wstring footer;
-    if(state.recording) footer=prompt;
+    if(state.recording) footer=tr("panel.recording",L"Press the new key (Esc: cancel  Delete: clear)");
     else if(state.selected>=0) {
         const PanelItem& item=panel_items[state.selected];
         footer=item_label(item)+L"   ["+widen(item.key)+L"]";
@@ -465,61 +462,80 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
             if(!also.empty()) footer+=L"   "+tr("panel.also",L"Same key as: {1}",{also});
         }
     }
-    // wrapped to the width: at a space or after punctuation where there is one, else anywhere (CJK);
-    // what a third line would hold is cut short
+    else footer=tr("panel.tabs.help",L"Use {1}/{2} to change the page.",{key(keys.tuning_less),key(keys.tuning_more)});
+    // wrapped to the width: at a space or after punctuation where there is one, else anywhere (CJK)
+    constexpr size_t footer_rows=3;
     std::vector<std::wstring> footer_lines;
-    for(size_t start=0;start<footer.size() && footer_lines.size()<2;) {
+    for(size_t start=0;start<footer.size() && footer_lines.size()<footer_rows;) {
         size_t end=start, last_break=std::wstring::npos;
         while(end<footer.size() && measure(footer.substr(start,end-start+1))<=inner) {
             const wchar_t c=footer[end];
-            if(c==L' ' || c==L',' || c==L';' || c==L'\xFF0C' || c==L'\xFF1B' || c==L'\x3001') last_break=end+1;
+            if(c==L' ' || c==L',' || c==L';' || c==L'.' || c==L'\xFF0C' || c==L'\xFF1B' || c==L'\x3002' || c==L'\x3001' || c==L'\xFF09') last_break=end+1;
             ++end;
         }
         if(end<footer.size() && last_break!=std::wstring::npos && last_break>start) end=last_break;
         std::wstring part=footer.substr(start,std::max<size_t>(end-start,1));
         start+=part.size();
         while(start<footer.size() && footer[start]==L' ') ++start;
-        if(footer_lines.size()==1 && start<footer.size()) {
-            while(part.size()>1 && measure(part+L"\x2026")>inner) part.pop_back();
-            part+=L"\x2026";
-        }
+        if(footer_lines.size()+1==footer_rows && start<footer.size()) part=fit(part+L"\x2026",inner);
         footer_lines.push_back(part);
     }
-    while(footer_lines.size()<2) footer_lines.push_back(L"");
-    for(const auto& part:footer_lines) lines.push_back({part,L"",L"",state.recording?RGB(255,220,120):RGB(190,190,190)});
-    const int line=int(text_height*1.35f), pad=int(9*scale), gap=line/2;   // gap: before the description
+    const int gap=line/2;   // before the description
     RECT box{LONG(28*scale),LONG(100*scale),0,0};
     box.right=std::min(LONG(width),box.left+inner+2*pad);
-    box.bottom=std::min(LONG(height),box.top+LONG(most_lines+2)*line+gap+2*pad);
+    box.bottom=std::min(LONG(height),box.top+LONG(most_rows+footer_rows)*line+gap+2*pad);
     if(box.right<=box.left || box.bottom<=box.top) { SelectObject(dc,old_font); return RECT{0,0,0,0}; }
     auto fill=[&](RECT r,uint32_t color) {   // premultiplied
         for(LONG y=std::max(0L,r.top);y<std::min(LONG(height),r.bottom);++y)
             for(LONG x=std::max(0L,r.left);x<std::min(LONG(width),r.right);++x) pixels[size_t(y)*width+x]=color;
     };
+    auto frame=[&](RECT r,uint32_t color,LONG t) {
+        fill(RECT{r.left,r.top,r.right,r.top+t},color); fill(RECT{r.left,r.bottom-t,r.right,r.bottom},color);
+        fill(RECT{r.left,r.top,r.left+t,r.bottom},color); fill(RECT{r.right-t,r.top,r.right,r.bottom},color);
+    };
     fill(box,0xC8000000);
     SetBkMode(dc,TRANSPARENT);
-    auto out=[&](LONG x,int y,const std::wstring& s,COLORREF color) { SetTextColor(dc,color); TextOutW(dc,x,y,s.c_str(),int(s.size())); };
-    auto fit=[&](std::wstring s,LONG room) {
-        if(measure(s)<=room) return s;
-        while(s.size()>1 && measure(s+L"\x2026")>room) s.pop_back();
-        return s+L"\x2026";
+    auto out=[&](LONG x,int top,const std::wstring& s,COLORREF color) {   // in a row starting at top, centred
+        SetTextColor(dc,color); TextOutW(dc,x,top+text_offset,s.c_str(),int(s.size()));
     };
+    const COLORREF white=RGB(240,240,240), dim=RGB(150,150,150), lit=RGB(255,220,120), heading=RGB(120,200,255);
     const LONG left=box.left+pad;
-    int y=box.top+pad;
-    for(size_t n=0;n<lines.size();++n) {
-        const Line& l=lines[n];
-        if(n+2==lines.size()) y=box.bottom-pad-2*line;   // the description at the bottom, where it always is
-        if(l.selected) {
-            GdiFlush();
-            fill(RECT{box.left+pad/2,LONG(y-line/8),box.right-pad/2,LONG(y+line-line/8)},0xC8303A46);
+    int top=box.top+pad;
+    for(const Row& row:rows) {
+        switch(row.kind) {
+        case Title: out(left,top,fit(row.text,inner),RGB(255,255,255)); break;
+        case Tabs: {
+            // the two pages as tabs: the open one lit; a frame on them while the cursor is on this row
+            LONG x=left;
+            const LONG tab_pad=h/2, border=std::max(1L,h/10);
+            for(int page=0;page<2;++page) {
+                const std::wstring name=page==0 ? tr("panel.page.settings",L"Settings") : tr("panel.page.keys",L"Key Config");
+                RECT tab{x,LONG(top+line/12),x+measure(name)+2*tab_pad,LONG(top+line-line/12)};
+                GdiFlush();
+                fill(tab,page==state.page ? 0xE0305A88u : 0xC8262626u);
+                if(page==state.page && row.selected) frame(tab,0xFFFFDC78u,border);
+                out(x+tab_pad,top,name,page==state.page ? (row.selected ? lit : RGB(255,255,255)) : dim);
+                x=tab.right+h/3;
+            }
+            out(x+h/2,top,fit(tr("panel.page.hint",L"({1}/{2}: change page)",{key(keys.tuning_less),key(keys.tuning_more)}),inner-(x+h/2-left)),
+                row.selected ? lit : dim);
+            break;
         }
-        out(left,y,fit(l.text,l.item ? value_x-column_gap : inner),l.color);
-        if(l.item) {   // values left-aligned in their column
-            out(left+value_x,y,fit(l.value,was_x-value_x-column_gap),l.color);
-            if(!l.was.empty()) out(left+was_x,y,fit(l.was,inner-was_x),RGB(150,150,150));
+        case Help: out(left,top,fit(row.text,inner),dim); break;
+        case Group: out(left,top,fit(row.text,inner),heading); break;
+        case Item: {
+            if(row.selected) { GdiFlush(); fill(RECT{box.left+pad/2,LONG(top),box.right-pad/2,LONG(top+line)},0xC8303A46); }
+            const COLORREF color=row.selected ? lit : white;
+            out(left,top,fit((row.selected?L"> ":L"  ")+row.text,value_x-column_gap),color);
+            out(left+value_x,top,fit(row.value,was_x-value_x-column_gap),color);   // values left-aligned in their column
+            if(!row.was.empty()) out(left+was_x,top,fit(row.was,inner-was_x),dim);
+            break;
         }
-        y+=line;
+        }
+        top+=line;
     }
+    top=box.bottom-pad-int(footer_rows)*line;   // the description at the bottom, where it always is
+    for(const auto& part:footer_lines) { out(left,top,part,state.recording ? lit : RGB(190,190,190)); top+=line; }
     SelectObject(dc,old_font);
     GdiFlush();
     // GDI writes its pixels with zero alpha: make them opaque; the background keeps its own.
