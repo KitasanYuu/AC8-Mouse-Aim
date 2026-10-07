@@ -32,7 +32,7 @@
 
 ### 开发
 
-- 飞行重建（遥测与录像）、飞控对比台。
+- 飞行重建（遥测与录像）、飞控对比台（[Flight Bench](https://kitasanyuu.github.io/AC8-Mouse-Aim/)）。
 - 文档按主题分区，见 [docs](docs/README.md)。
 
 ### 已知限制

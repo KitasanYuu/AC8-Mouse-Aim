@@ -22,6 +22,10 @@ The mod replaces only the player's control inputs and corrects the camera; it do
 - Target: Windows x64, ACE COMBAT 8 Steam build 25201480. The native module checks the game's and the loader's signatures and refuses to run on a mismatch.
 - In-game testing has been done on the developer's machine only. See the [current status](docs/00-overview/current-status.md) and the [capability matrix](docs/01-capabilities/capability-matrix.md) (in Chinese).
 
+## Flight control comparison
+
+[Flight Bench](https://kitasanyuu.github.io/AC8-Mouse-Aim/): this project's flight control, upstream FletcherMiya 0.2.30 and xsd467 pw.11, each flying the same scenes (general maneuvers, landings, a multi-aircraft fight, boss fights) on the same aircraft model with the same simulated pilot, compared scene by scene (aim error, kills, overall cost) with a 3D replay. These are simulation results, not the in-game experience; the method and its limits are in the [flight bench](docs/04-development/flight-bench.md) document (in Chinese). The page is in Chinese.
+
 ## Quick start
 
 1. Quit the game completely, then download (or `git clone`) this repository.

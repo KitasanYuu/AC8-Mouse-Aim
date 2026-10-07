@@ -22,6 +22,10 @@
 - 目标环境：Windows x64，ACE COMBAT 8 Steam Build 25201480。原生模块校验游戏与加载器签名，不匹配时拒绝启用。
 - 游戏内验证只在开发者本机完成。权威状态见[当前状态](docs/00-overview/current-status.md)与[能力矩阵](docs/01-capabilities/capability-matrix.md)。
 
+## 飞控对比
+
+[Flight Bench](https://kitasanyuu.github.io/AC8-Mouse-Aim/)：本项目、上游 FletcherMiya 0.2.30 与 xsd467 pw.11 的飞控在同一个机体模型上，由同一个模拟飞行员飞同一组场景（通用机动、降落、多机缠斗、头目战），逐场景比较偏差、击落与综合代价，可回放三维画面。这是模拟结果，不等于游戏内体验；方法与局限见[飞控对比台](docs/04-development/flight-bench.md)。
+
 ## 快速开始
 
 1. 完全退出游戏，下载（或 `git clone`）本仓库。
