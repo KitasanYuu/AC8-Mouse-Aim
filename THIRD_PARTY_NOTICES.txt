@@ -12,3 +12,14 @@ Copyright 2022 Narknon and contributors. MIT License. The loader binaries in
 the distribution retain their upstream license. Version:
 UE4SS_v3.0.1-1152-ge3ba1016 (experimental-latest), downloaded from the official
 UE4SS-RE/RE-UE4SS GitHub release.
+
+AC8 Mouse Aim (upstream)
+This project is a fork of https://github.com/FletcherMiya/AC8-Mouse-Aim by Fletcher Gong,
+dedicated to the public domain under CC0 1.0. The flight bench also keeps its flight
+control at commit 052cd6a (src/flight_math.h, both the 0.2.30 and 0.2.35 modes) unchanged
+(namespace only) in dev/compare/controllers/upstream/.
+
+xsd467/AC8-Mouse-Aim
+The pw.11 (commit 05d7f48) and pw5 flight controls from https://github.com/xsd467/AC8-Mouse-Aim,
+CC0 1.0, are kept unchanged (namespaces only) in dev/compare/controllers/pw11/ and pw5/ as
+reference controllers for the flight bench.

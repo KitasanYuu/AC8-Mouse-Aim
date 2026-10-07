@@ -50,8 +50,10 @@ The documentation is in Chinese: start from the [documentation index](docs/READM
 
 ## Credits and license
 
+This project is a fork of [FletcherMiya/AC8-Mouse-Aim](https://github.com/FletcherMiya/AC8-Mouse-Aim) by Fletcher Gong (CC0 1.0). The original repository laid the mod's foundation: the UE4SS loading and offline launch, the native input hook, the camera correction and the overlay. This project rewrote the flight control on top of it and added the cockpit and nose views, the settings panel and localization, among others.
+
+- [xsd467/AC8-Mouse-Aim](https://github.com/xsd467/AC8-Mouse-Aim): the pw.11 (05d7f48) and pw5 flight controls, CC0 1.0, included as reference controllers in the flight bench.
 - [RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS): mod loader, Lua runtime and interfaces, MIT license.
 - [MinHook](https://github.com/TsudaKageyu/minhook): native function hooks, BSD 2-Clause license.
-- Reference flight controls in the flight bench keep their own licenses; see `dev/compare/controllers/`.
 
 The project's own code is licensed as stated in `LICENSE.txt`; third-party components in `THIRD_PARTY_NOTICES.txt`. The project contains no game assets or game executables.

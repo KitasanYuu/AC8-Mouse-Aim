@@ -69,8 +69,10 @@ docs/                文档
 
 ## 致谢与许可
 
+本项目分支自 [FletcherMiya/AC8-Mouse-Aim](https://github.com/FletcherMiya/AC8-Mouse-Aim)（原作者 Fletcher Gong，CC0 1.0）。原仓库提供了模组的基础：UE4SS 加载与离线启动方式、原生输入挂接、镜头修正与指示层；本项目在此之上重写了飞控，并加入了座舱／机首视角、调参面板、多语言等功能。
+
+- [xsd467/AC8-Mouse-Aim](https://github.com/xsd467/AC8-Mouse-Aim)：pw.11（05d7f48）与 pw5 飞控，CC0 1.0，作为参考飞控收录于飞控对比台。
 - [RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS)：模组加载、Lua 运行环境与接口，MIT 许可。
 - [MinHook](https://github.com/TsudaKageyu/minhook)：原生函数挂接，BSD 2-Clause 许可。
-- 飞控对比台收录的参考飞控保留各自许可，见 `dev/compare/controllers/`。
 
 项目原创代码的许可见 `LICENSE.txt`，第三方组件见 `THIRD_PARTY_NOTICES.txt`。本项目不包含游戏资产或游戏可执行文件。
