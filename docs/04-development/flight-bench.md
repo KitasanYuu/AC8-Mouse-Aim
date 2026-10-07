@@ -13,6 +13,16 @@
 
 `dev/compare/scorecard.txt` 随仓库提交；改飞控后重跑，用 `git diff` 看各场景分数的变化。每次运行都会比对仓库与游戏中 `config.ini` 的 `[tuning]`，有差异时在输出和计分表顶部列出。
 
+### 发布到 GitHub Pages
+
+`dev\compare\Publish-Pages.cmd` 把页面（`index.html`、机体模型）与最近一次运行的 `results/` 生成为本地分支 `gh-pages` 的唯一一个提交。每次运行替换这个提交而不是追加，结果（数百 MB）不会在历史中累积。脚本不推送；确认后手动推送：
+
+```bat
+git push -f origin gh-pages
+```
+
+首次需在仓库 Settings → Pages 选择 “Deploy from a branch”、`gh-pages`、`/ (root)`。页面地址为 `https://kitasanyuu.github.io/AC8-Mouse-Aim/`。更新时先运行完整的 `compare.cmd`，再运行发布脚本并推送。
+
 ## 参评飞控
 
 | 名称 | 来源 |
