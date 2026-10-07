@@ -18,7 +18,7 @@ The mod replaces only the player's control inputs and corrects the camera; it do
 
 ## Status
 
-- Based on 0.2.30; later changes are on a development branch, not yet released under a new version.
+- Current version: `0.2.30+Alf.1.0.0`. Before the `+` is the upstream release this fork is based on; after `Alf.` is this project's own version. See the [changelog](CHANGELOG.md) (in Chinese).
 - Target: Windows x64, ACE COMBAT 8 Steam build 25201480. The native module checks the game's and the loader's signatures and refuses to run on a mismatch.
 - In-game testing has been done on the developer's machine only. See the [current status](docs/00-overview/current-status.md) and the [capability matrix](docs/01-capabilities/capability-matrix.md) (in Chinese).
 

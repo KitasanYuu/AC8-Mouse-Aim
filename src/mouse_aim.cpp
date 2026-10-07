@@ -24,6 +24,7 @@
 #include "vendor/minhook/include/MinHook.h"
 bool telemetry_send(int port, const char* data, int length);  // telemetry.cpp
 bool gamepad_read(float values[6], unsigned& buttons);        // telemetry.cpp
+#include "version.h"
 #include "yaw_signature.h"
 #include "flight_math.h"
 #include "free_look.h"
@@ -960,8 +961,8 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
             swprintf_s(angles,L"%.1f / %.1f",target_pitch.load(),target_yaw.load());
             wchar_t camera[96]{};
             swprintf_s(camera,L"%.1f / %.1f",camera_pitch.load(),camera_yaw.load());
-            hud_line(0,tr("hud.status",L"MouseFlight 0.2.30 {1} | aim {2} | camera {3}",
-                {active.load() && enabled.load() ? tr("hud.on",L"ACTIVE") : tr("hud.standby",L"STANDBY"),angles,camera}));
+            hud_line(0,tr("hud.status",L"MouseFlight {1} {2} | aim {3} | camera {4}",
+                {MOUSEFLIGHT_VERSION_W,active.load() && enabled.load() ? tr("hud.on",L"ACTIVE") : tr("hud.standby",L"STANDBY"),angles,camera}));
         }
         if(width>0 && height>0) view_aspect.store(float(width)/float(height));
         float x{},y{},bx{},by{};
@@ -1503,7 +1504,7 @@ extern "C" __declspec(dllexport) int ac8_mouseaim_start(lua_State* state) {
     std::thread(overlay_loop).detach();
     log_line("ready: %s toggle, %s recenter ([keys] in config.ini); RMB reserved for game actions",
         key_label(config.keys.toggle).c_str(),key_label(config.keys.recenter).c_str());
-    log_line("0.2.30 direct numeric bridge; realtime file/pipe transport removed; %s performance counters",key_label(config.keys.perf).c_str());
+    log_line("MouseFlight %s; %s performance counters",MOUSEFLIGHT_VERSION,key_label(config.keys.perf).c_str());
     lua.set_number(30);
     return 1;
 }

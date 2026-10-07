@@ -3,7 +3,7 @@
 # UTF-8; "id = text"; {1}, {2}... are put in by the mod and must stay. A missing text falls back to English.
 # font: one that has every character of the language (Chinese, Japanese and Korean need their own).
 
-hud.status = MouseFlight 0.2.30 {1} | aim {2} | camera {3}
+hud.status = MouseFlight {1} {2} | aim {3} | camera {4}
 hud.on = ACTIVE
 hud.standby = STANDBY
 hud.outside = AIM OUT OF VIEW

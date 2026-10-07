@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-- 基于 0.2.30；之后的改动在开发分支上，尚未发布新版本号。
+- 当前版本：`0.2.30+Alf.1.0.0`。`+` 前是分支所基于的上游版本，`Alf.` 后是本项目自己的版本号；变更见 [CHANGELOG](CHANGELOG.md)。
 - 目标环境：Windows x64，ACE COMBAT 8 Steam Build 25201480。原生模块校验游戏与加载器签名，不匹配时拒绝启用。
 - 游戏内验证只在开发者本机完成。权威状态见[当前状态](docs/00-overview/current-status.md)与[能力矩阵](docs/01-capabilities/capability-matrix.md)。
 

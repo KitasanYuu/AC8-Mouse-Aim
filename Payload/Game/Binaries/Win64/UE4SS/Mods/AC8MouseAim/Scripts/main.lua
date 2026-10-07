@@ -1,4 +1,4 @@
--- 0.2.30: game-thread numeric bridge; no realtime files or named pipes.
+-- MouseFlight: game-thread numeric bridge to the native module; no realtime files or named pipes.
 local directory = assert(debug.getinfo(1, "S").source:sub(2):match("^(.*[/\\])"))
 local aim_camera = dofile(directory .. "camera.lua")
 local gaze_probe = dofile(directory .. "gaze_probe.lua")

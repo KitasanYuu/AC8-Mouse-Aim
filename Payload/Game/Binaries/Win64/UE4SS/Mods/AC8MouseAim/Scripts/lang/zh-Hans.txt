@@ -1,6 +1,6 @@
 # MouseFlight 文字，简体中文（UTF-8；"编号 = 文字"；{1}、{2}… 由 mod 填入，必须保留）。
 
-hud.status = MouseFlight 0.2.30 {1} | 瞄准点 {2} | 镜头 {3}
+hud.status = MouseFlight {1} {2} | 瞄准点 {3} | 镜头 {4}
 hud.on = 运作中
 hud.standby = 待机
 hud.outside = 瞄准点在画面外
