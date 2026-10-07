@@ -129,6 +129,9 @@ std::atomic<int> keyboard_axes{0};
 // rolls in a mouse-only flight, the stick then left to a player not touching it: a dive not pulled
 // out of; 2026-10-07), so pitch and roll take over by the keys in [keys].
 std::atomic<float> player_pitch{0}, player_roll{0}, player_yaw{0};
+// What the mod last wrote into the game's pitch and roll axes (NaN: not written), for telemetry:
+// whether InputPitch/InputRoll carry it exactly, so that the player's own input could be told apart.
+std::atomic<float> written_pitch{NAN}, written_roll{NAN};
 std::atomic<float> input_throttle{0}, input_brake{0};  // the game's InputThrottle / InputBrake
 // Post-stall requested: the key held (a toggle that a later high-G used up could be spent by
 // an unintended one, or one over 500 km/h, reported).
@@ -571,6 +574,14 @@ void send_telemetry(long long clock,float dt,const flight::LogicOutput& output,b
     const int button_keys[]={VK_LBUTTON,VK_RBUTTON,VK_MBUTTON,VK_XBUTTON1,VK_XBUTTON2,VK_SPACE};
     for(int i=0;i<6;++i) if(GetAsyncKeyState(button_keys[i])&0x8000) mouse_buttons|=1u<<i;
     if(n>0) n+=std::snprintf(packet+n,sizeof(packet)-n,"\"mb\":%u,\"psm\":%d,",mouse_buttons,post_stall_armed.load()?1:0);
+    // the game's InputPitch/InputRoll (as the Lua script read them) and what the mod last wrote, exact
+    {
+        auto number=[](float v,char* out,size_t size) { if(std::isfinite(v)) snprintf(out,size,"%.7g",v); else snprintf(out,size,"null"); };
+        char ip[24],ir[24],wp[24],wr[24];
+        number(player_pitch.load(),ip,sizeof ip); number(player_roll.load(),ir,sizeof ir);
+        number(written_pitch.load(),wp,sizeof wp); number(written_roll.load(),wr,sizeof wr);
+        if(n>0) n+=std::snprintf(packet+n,sizeof(packet)-n,"\"pin\":[%s,%s],\"wr\":[%s,%s],",ip,ir,wp,wr);
+    }
     float pad[6]{}; unsigned buttons=0;
     if(n>0 && gamepad_read(pad,buttons))
         n+=std::snprintf(packet+n,sizeof(packet)-n,"\"pad\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u],",
@@ -1295,7 +1306,10 @@ uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context)
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     if(!active.load() || GetTickCount64()-pose_tick.load()>1000 || !enabled.load() ||
-       game_paused.load() || yielding() || !foreground_is_game()) return original(state,context);
+       game_paused.load() || yielding() || !foreground_is_game()) {
+        written_pitch.store(NAN); written_roll.store(NAN);
+        return original(state,context);
+    }
     // The player's own input on an axis takes it over: pitch and roll by the game's keys as set in
     // [keys] (the game's InputPitch/InputRoll also carry the mod's stick), yaw by the game's own yaw
     // input, whatever its binding. Manual pitch also suspends automatic roll, matching MouseFlight
@@ -1320,6 +1334,8 @@ uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context)
     if (override_input && reinterpret_cast<uintptr_t>(state) == pawn + 0x22a0) {
         __try {
             float* axes = reinterpret_cast<float*>(pawn + 0x2268);
+            written_pitch.store(keyboard_pitch ? NAN : command_pitch.load());
+            written_roll.store(keyboard_roll ? NAN : command_roll.load());
             if(!keyboard_pitch) axes[config.pitch_slot] = command_pitch.load();
             if(!keyboard_yaw) axes[1] = command_yaw.load();
             if(!keyboard_roll) axes[config.roll_slot] = command_roll.load();
