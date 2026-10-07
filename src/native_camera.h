@@ -142,10 +142,55 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd,GameView& game_v
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+// Handing the view over (autopilot, gaze, F8, a scene) and taking it back are eased over
+// camera_blend_s instead of cut (a jump to the game's camera and back, reported 2026-10-07): the
+// last view of ours, held as an offset from the aircraft so that it moves with it, mixed into the
+// game's own; and back, the game's mixed into ours.
+constexpr float camera_blend_s=0.5f;
+struct CameraBlend { bool held=false; double offset[3]{}, rotation[3]{}; uintptr_t manager=0; float release=1, resume=0; } camera_blend;
+// a and b: UE POVs (location; pitch, yaw, roll); w 0 is a, 1 b
+void mix_pov(const double a[6],const double b[6],float w,double out[6]) {
+    using namespace flight;
+    for(int i=0;i<3;++i) out[i]=a[i]+(b[i]-a[i])*w;
+    const Basis A=basis(float(a[3]),float(a[4]),float(a[5])), B=basis(float(b[3]),float(b[4]),float(b[5]));
+    V f=A.f*(1-w)+B.f*w; f=dot(f,f)>1e-6f ? unit(f) : B.f;
+    V u=A.u*(1-w)+B.u*w; u=u-f*dot(u,f); u=dot(u,u)>1e-6f ? unit(u) : B.u;
+    view_rotation(f,u,out+3);
+}
+bool aircraft_location(uintptr_t pawn,double loc[3]) {
+    __try {
+        if(!pawn) return false;
+        auto root=*reinterpret_cast<uintptr_t*>(pawn+0x1A0);
+        if(!root) return false;
+        const double* position=reinterpret_cast<const double*>(root+0x220);
+        for(int i=0;i<3;++i) { loc[i]=position[i]; if(!std::isfinite(loc[i])||std::abs(loc[i])>1e12) return false; }
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+// The game's camera of this frame (in the cache) moved from our last view, by the release's progress
+void ease_release(void* manager,float dt) {
+    CameraBlend& b=camera_blend;
+    if(!b.held || b.release>=1 || reinterpret_cast<uintptr_t>(manager)!=b.manager) { b.held=false; return; }
+    __try {
+        auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        if(*reinterpret_cast<uintptr_t*>(manager)!=base+0xC9D3160) { b.held=false; return; }
+        double loc[3];
+        if(!aircraft_location(aircraft.load(),loc)) { b.held=false; return; }
+        double* cache=reinterpret_cast<double*>(static_cast<unsigned char*>(manager)+0x14A0);
+        for(int i=0;i<6;++i) if(!std::isfinite(cache[i])) { b.held=false; return; }
+        b.release=std::min(1.0f,b.release+std::clamp(dt,0.0f,0.1f)/camera_blend_s);
+        const float w=b.release*b.release*(3-2*b.release);
+        const double ours[6]={loc[0]+b.offset[0],loc[1]+b.offset[1],loc[2]+b.offset[2],b.rotation[0],b.rotation[1],b.rotation[2]};
+        double out[6]; mix_pov(ours,cache,w,out);
+        memcpy(cache,out,sizeof(out));
+        if(b.release>=1) b.held=false;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { b.held=false; }
+}
 void __fastcall update_native_camera(void* manager,float dt) {
     original_camera_update(manager,dt);
     PerfSpan timing(perf_camera);
-    if(native_camera_fault || !running.load() || !active.load() || !enabled.load() || yielding()) return;
+    if(native_camera_fault || !running.load()) return;
+    if(!active.load() || !enabled.load() || yielding()) { ease_release(manager,dt); camera_blend.resume=0; return; }
     CameraCommand cmd;
     {
         std::unique_lock<std::mutex> lock(camera_command_mutex,std::try_to_lock);
@@ -166,12 +211,32 @@ void __fastcall update_native_camera(void* manager,float dt) {
         log_line("native camera ownership: %s",reason?reason:"resumed");
         previous_reason=reason;
     }
-    if(reason) return;
+    if(reason) { ease_release(manager,dt); camera_blend.resume=0; return; }
+    double game_pov[6]{};   // the game's own camera this frame, to ease in from
+    memcpy(game_pov,static_cast<unsigned char*>(manager)+0x14A0,sizeof(game_pov));
     GameView game_view;
     if(!apply_native_camera(manager,cmd,game_view,dt)) {
         native_camera_fault=true;
         log_line("native camera disabled: invalid live camera/aircraft data");
         return;
+    }
+    {
+        CameraBlend& b=camera_blend;
+        double* cache=reinterpret_cast<double*>(static_cast<unsigned char*>(manager)+0x14A0);
+        if(b.resume<1) {   // taking the view back: from the game's toward ours
+            b.resume=std::min(1.0f,b.resume+std::clamp(dt,0.0f,0.1f)/camera_blend_s);
+            bool finite=true; for(double v:game_pov) finite=finite && std::isfinite(v);
+            if(finite) {
+                double out[6]; mix_pov(game_pov,cache,b.resume*b.resume*(3-2*b.resume),out);
+                memcpy(cache,out,sizeof(out));
+                for(int i=0;i<3;++i) game_view.rotation[i]=out[3+i];
+            }
+        }
+        double loc[3];   // ours, held as an offset from the aircraft for a release
+        if(aircraft_location(cmd.pawn,loc)) {
+            for(int i=0;i<3;++i) { b.offset[i]=cache[i]-loc[i]; b.rotation[i]=cache[3+i]; }
+            b.held=true; b.release=0; b.manager=reinterpret_cast<uintptr_t>(manager);
+        }
     }
     // the game's view, logged when it changes and every 30 s (its chase distance, for the
     // player model's detail: issue #7)
