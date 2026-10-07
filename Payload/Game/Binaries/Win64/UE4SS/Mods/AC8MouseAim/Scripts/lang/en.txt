@@ -28,6 +28,7 @@ group.near_views = Cockpit and Nose Views
 group.flight = Flight Control (near the aim only)
 group.display = Display
 group.keys_flight = Flight
+group.keys_manual = Manual Override (match the game's keys)
 group.keys_panel = Settings Panel
 group.keys_diagnostics = Diagnostics
 
@@ -111,6 +112,18 @@ item.hud.desc = Sets the key that shows or hides the mod's rings. Flight control
 
 item.post_stall = Post-Stall Assist
 item.post_stall.desc = Sets the key for post-stall assist. While it is held, a High-G Turn below 500 km/h holds the pitch neutral for about 0.04 s, then pulls fully, meeting the game's post-stall condition.
+
+item.manual_pitch_up = Pitch Up
+item.manual_pitch_up.desc = Sets the game's pitch-up key. While it is held, pitch (and roll) are yours.
+
+item.manual_pitch_down = Pitch Down
+item.manual_pitch_down.desc = Sets the game's pitch-down key. While it is held, pitch (and roll) are yours.
+
+item.manual_roll_left = Roll Left
+item.manual_roll_left.desc = Sets the game's roll-left key. While it is held, roll is yours.
+
+item.manual_roll_right = Roll Right
+item.manual_roll_right.desc = Sets the game's roll-right key. While it is held, roll is yours.
 
 item.tuning = Settings Panel
 item.tuning.desc = Sets the key that opens and closes this panel.

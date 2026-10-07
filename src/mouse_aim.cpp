@@ -97,7 +97,9 @@ struct Config {
         int toggle=VK_F8, recenter=VK_F9, free_look='F', hud=VK_F7, post_stall=VK_XBUTTON1, trace=VK_F4,
             reload=VK_F10, perf=VK_F5, camera_probe=VK_F6, hangar_specs=VK_F7, hangar_geometry=VK_F8,
             tuning=VK_F3, tuning_up=VK_UP, tuning_down=VK_DOWN, tuning_less=VK_LEFT, tuning_more=VK_RIGHT,
-            tuning_fine=VK_SHIFT, tuning_undo=VK_BACK, tuning_bind=VK_RETURN;
+            tuning_fine=VK_SHIFT, tuning_undo=VK_BACK, tuning_bind=VK_RETURN,
+            // the game's own pitch and roll keys (the same as its key config): held, they take over that axis
+            manual_pitch_up='W', manual_pitch_down='S', manual_roll_left='A', manual_roll_right='D';
     } keys;
     // The language of the HUD's lines and the tuning panel: auto (the game's) or a file's code
     // (localization.h); the status line top left (version, state, angles), off by default.
@@ -121,9 +123,11 @@ std::atomic<bool> hud_enabled{true};
 std::atomic<bool> trace_enabled{false};
 // Axes the player is flying by keyboard (1 pitch, 2 roll, 4 yaw), for trace analysis.
 std::atomic<int> keyboard_axes{0};
-// The player's own flight input as the game has it from its bindings (keyboard or gamepad):
-// the aircraft's InputPitch, InputRoll and right minus left yaw, read each frame by the Lua script
-// (the mod's own stick goes elsewhere: these stayed 0 while it flew; logged 2026-10-07).
+// The aircraft's InputPitch, InputRoll and right minus left yaw, read each frame by the Lua script.
+// The yaw is the player's own (the mod's yaw goes elsewhere: never set while it flew), the pitch and
+// roll are not: they follow the mod's own stick too (flagged on 23% of full pulls and up to 58% of
+// rolls in a mouse-only flight, the stick then left to a player not touching it: a dive not pulled
+// out of; 2026-10-07), so pitch and roll take over by the keys in [keys].
 std::atomic<float> player_pitch{0}, player_roll{0}, player_yaw{0};
 std::atomic<float> input_throttle{0}, input_brake{0};  // the game's InputThrottle / InputBrake
 // Post-stall requested: the key held (a toggle that a later high-G used up could be spent by
@@ -352,6 +356,10 @@ void load_config() {
     k.tuning_fine=read_key(L"keys",L"tuning_fine",d.tuning_fine);
     k.tuning_undo=read_key(L"keys",L"tuning_undo",d.tuning_undo);
     k.tuning_bind=read_key(L"keys",L"tuning_bind",d.tuning_bind);
+    k.manual_pitch_up=read_key(L"keys",L"manual_pitch_up",d.manual_pitch_up);
+    k.manual_pitch_down=read_key(L"keys",L"manual_pitch_down",d.manual_pitch_down);
+    k.manual_roll_left=read_key(L"keys",L"manual_roll_left",d.manual_roll_left);
+    k.manual_roll_right=read_key(L"keys",L"manual_roll_right",d.manual_roll_right);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
         config.pitch_slot = 0;
         config.roll_slot = 2;
@@ -1288,11 +1296,14 @@ uintptr_t __fastcall process_input(unsigned char* state, unsigned char* context)
     }
     if(!active.load() || GetTickCount64()-pose_tick.load()>1000 || !enabled.load() ||
        game_paused.load() || yielding() || !foreground_is_game()) return original(state,context);
-    // The player's own input on an axis takes it over, whatever the binding (it had been W/S, A/D
-    // and Q/E held, wrong for other bindings and a gamepad). Manual pitch also suspends automatic
-    // roll, matching MouseFlight maneuvers. AC's native values are kept, opposing keys included.
-    const bool keyboard_pitch=std::abs(player_pitch.load())>0.05f;
-    const bool keyboard_roll=keyboard_pitch || std::abs(player_roll.load())>0.05f;
+    // The player's own input on an axis takes it over: pitch and roll by the game's keys as set in
+    // [keys] (the game's InputPitch/InputRoll also carry the mod's stick), yaw by the game's own yaw
+    // input, whatever its binding. Manual pitch also suspends automatic roll, matching MouseFlight
+    // maneuvers. AC's native values are kept, opposing keys included.
+    const Config::Keys& manual=config.keys;
+    auto held=[](int key) { return key>0 && (GetAsyncKeyState(key)&0x8000)!=0; };
+    const bool keyboard_pitch=held(manual.manual_pitch_up) || held(manual.manual_pitch_down);
+    const bool keyboard_roll=keyboard_pitch || held(manual.manual_roll_left) || held(manual.manual_roll_right);
     const bool keyboard_yaw=std::abs(player_yaw.load())>0.05f;
     keyboard_axes.store((keyboard_pitch?1:0)|(keyboard_roll?2:0)|(keyboard_yaw?4:0));
     bool override_input = true; // Lifecycle/foreground already checked above.
