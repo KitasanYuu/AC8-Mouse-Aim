@@ -154,6 +154,7 @@ $files = @(
     'Scripts\gaze.lua',
     'Scripts\gaze_probe.lua',
     'Scripts\mesh_probe.lua',
+    'Scripts\spec_probe.lua',
     'Scripts\rig_math.lua',
     'Scripts\contacts.lua'
 )

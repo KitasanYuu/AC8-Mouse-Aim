@@ -323,4 +323,42 @@ function M.update(pawn, directory, auto)
     if not ok then print('[AC8MouseAim] Mesh probe failed: ' .. tostring(err) .. '\n') end
 end
 
+-- Hangar (F8): the player aircraft on display, which is not a pawn. Found through its skeletal
+-- mesh (an asset under /Vehicles/Aircraft/PP/, the player planes) on a live component; the
+-- owning actors are snapshot as in a mission. One file per press: switch aircraft, press again.
+function M.hangar(directory)
+    local ok, err = pcall(function()
+        local actor_component = StaticFindObject('/Script/Engine.ActorComponent')
+        assert(valid(actor_component), 'ActorComponent class unavailable')
+        local owners, seen = {}, {}
+        each(FindAllOf('SkeletalMeshComponent'), 20000, function(component)
+            local name = full_name(component)
+            if not name or name:find('Default__', 1, true) or not valid(component) then return end
+            local mesh = get(component, 'SkeletalMeshAsset') or get(component, 'SkeletalMesh') or get(component, 'SkinnedAsset')
+            local mesh_name = full_name(mesh)
+            if not mesh_name or not mesh_name:find('/Vehicles/Aircraft/PP/', 1, true) then return end
+            local owner = call(component, 'GetOwner')
+            local owner_name = full_name(owner)
+            if owner_name and not seen[owner_name] then seen[owner_name] = true; owners[#owners + 1] = owner end
+        end)
+        assert(#owners > 0, 'no player aircraft on display')
+        local snapshot = actor_snapshot(owners[1], actor_component)
+        snapshot.version = 2
+        snapshot.captured_at = os.date('!%Y-%m-%dT%H:%M:%SZ')
+        snapshot.source = 'hangar'
+        snapshot.aircraft = snapshot.actor
+        snapshot.targets = new_array()
+        for i = 2, math.min(#owners, 4) do
+            local item_ok, item = pcall(actor_snapshot, owners[i], actor_component)
+            snapshot.targets[#snapshot.targets + 1] = item_ok and item or { actor = full_name(owners[i]), error = tostring(item) }
+        end
+        local path = directory .. 'mesh-probe-hangar-' .. os.date('%Y%m%d-%H%M%S') .. '.json'
+        local file = assert(io.open(path, 'w'))
+        file:write(json(snapshot), '\n')
+        file:close()
+        print('[AC8MouseAim] Hangar mesh probe saved: ' .. path .. '\n')
+    end)
+    if not ok then print('[AC8MouseAim] Hangar mesh probe failed: ' .. tostring(err) .. '\n') end
+end
+
 return M

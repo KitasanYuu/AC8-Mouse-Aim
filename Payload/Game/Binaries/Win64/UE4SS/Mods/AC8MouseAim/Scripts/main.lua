@@ -3,6 +3,7 @@ local directory = assert(debug.getinfo(1, "S").source:sub(2):match("^(.*[/\\])")
 local aim_camera = dofile(directory .. "camera.lua")
 local gaze_probe = dofile(directory .. "gaze_probe.lua")
 local mesh_probe = dofile(directory .. "mesh_probe.lua")
+local spec_probe = dofile(directory .. "spec_probe.lua")
 local gaze = dofile(directory .. "gaze.lua")
 local start_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_start"))
 local reload_native = assert(package.loadlib(directory .. "ac8_mouse_aim_010.dll", "ac8_mouseaim_reload"))
@@ -118,6 +119,8 @@ RegisterKeyBind(Key.F10, function()
     notice(ok and "Configuration reload queued for next game frame." or ("Reload failed: " .. tostring(err)))
 end)
 RegisterKeyBind(Key.F6, function() gaze_probe.request() end)
+RegisterKeyBind(Key.F7, function() spec_probe.run(directory, notice) end)   -- hangar ratings snapshot
+RegisterKeyBind(Key.F8, function() ExecuteInGameThread(function() mesh_probe.hangar(directory) end) end)   -- hangar aircraft geometry
 RegisterKeyBind(Key.F5, function() perf_native() end)
 
 assert(start_native(1729,0.125)==30,'AC8 direct bridge unavailable; control disabled (check native log).')
