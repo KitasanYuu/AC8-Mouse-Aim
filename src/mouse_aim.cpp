@@ -60,6 +60,8 @@ struct Config {
     // over ~0.6 s; War Thunder's camera follows the mouse closely and the ring stays put.
     float camera_follow = 12.0f;
     float camera_distance = 30.0f, camera_height = 6.0f;   // chase camera, m; distance 0 = the game's own
+    // Degrees added to the game's own FOV (which it changes with speed): chase, cockpit and nose views.
+    float camera_fov_add = 0.0f, near_view_fov_add = 0.0f;
     // Cockpit and nose views: 0 the view fixed ahead (the mouse ring moves across it), 1 turned to
     // the mouse aim (War Thunder's mouse aim in its cockpit), 2 fixed until the aim is near_view_edge
     // deg off the view's centre, then turned just enough to keep it there. F free look in all three.
@@ -277,6 +279,8 @@ void load_config() {
     config.camera_follow = std::clamp(read_config_float(L"camera_follow", config.camera_follow), 1.0f, 60.0f);
     config.camera_distance = std::clamp(read_config_float(L"camera_distance", config.camera_distance), 0.0f, 200.0f);
     config.camera_height = std::clamp(read_config_float(L"camera_height", config.camera_height), -50.0f, 50.0f);
+    config.camera_fov_add = std::clamp(read_config_float(L"camera_fov_add", 0.0f), -40.0f, 40.0f);
+    config.near_view_fov_add = std::clamp(read_config_float(L"near_view_fov_add", 0.0f), -40.0f, 40.0f);
     config.near_view_camera = std::clamp(read_config_int(L"near_view_camera", config.near_view_camera), 0, 3);
     config.near_view_hud = std::clamp(read_config_float(L"near_view_hud", config.near_view_hud), 0.0f, 40.0f);
     config.near_view_follow = std::clamp(read_config_float(L"near_view_follow", config.near_view_follow), 0.0f, 1.0f);

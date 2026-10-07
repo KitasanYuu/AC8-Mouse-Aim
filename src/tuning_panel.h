@@ -17,6 +17,7 @@ const PanelItem panel_items[]={
     {nullptr,L"control","camera_follow","camera turn to the aim, 1/s",1,60,1,false,12},
     {nullptr,L"control","camera_distance","behind, m (0: the game's own)",0,100,1,false,30},
     {nullptr,L"control","camera_height","above, m",-20,30,0.5f,false,6},
+    {nullptr,L"control","camera_fov_add","FOV added to the game's, deg",-40,40,1,false,0},
     {"Cockpit and nose views",L"control","near_view_camera","0 fixed, 1 follow, 2 edge, 3 head",0,3,1,true,3},
     {nullptr,L"control","near_view_follow","head turn toward the ring",0,1,0.05f,false,0.6f},
     {nullptr,L"control","near_view_hud","head limit past half the view, deg",0,40,1,false,8},
@@ -24,12 +25,15 @@ const PanelItem panel_items[]={
     {nullptr,L"control","near_view_expo","ring curve (1 linear)",1,4,0.1f,false,1.5f},
     {nullptr,L"control","near_view_inertia","view lag behind the aircraft, s",0,0.5f,0.01f,false,0.06f},
     {nullptr,L"control","near_view_level","roll held toward level",0,1,0.05f,false,0},
-    {"Flight",L"tuning","pitch_gain","pitch response",0.5f,6,0.1f,false,2.5f},
-    {nullptr,L"tuning","roll_gain","roll response",0.5f,6,0.1f,false,2.0f},
-    {nullptr,L"tuning","pitch_kd","pitch rate braking",0,1,0.02f,false,0.1f},
+    {nullptr,L"control","near_view_fov_add","FOV added to the game's, deg",-40,40,1,false,0},
+    // What sets the turn: the rate wanted is the least of the aircraft's top rate, the rate it can
+    // still stop from (pitch_brake, roll_brake) and a gain times the angle left; with the measured
+    // model the stop is the least (the gains of 2.5 and 2 were not: raised to 6, nothing changed).
+    {"Flight",L"tuning","pitch_brake","pitch stop planned (lower: arrives softer)",0.1f,1,0.05f,false,0.45f},
+    {nullptr,L"tuning","roll_brake","roll stop planned (lower: arrives softer)",0.1f,1,0.05f,false,0.45f},
+    {nullptr,L"tuning","level_per_deg","bank kept per deg to go (lower: levels sooner)",2,30,1,false,10},
     {nullptr,L"tuning","lead_gain","follow a moving aim",0,2,0.05f,false,1.0f},
     {nullptr,L"tuning","lead_filter","smoothing of that, s",0.05f,1.5f,0.05f,false,0.4f},
-    {nullptr,L"tuning","highg_pull","high-G pull",1,2.5f,0.05f,false,1.4f},
     {nullptr,L"tuning","highg_full_from","high-G full pull beyond, deg",0,45,1,false,8},
 };
 constexpr int panel_count=int(sizeof(panel_items)/sizeof(panel_items[0]));
@@ -259,7 +263,7 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
     if(config.tuning_key>=VK_F1 && config.tuning_key<=VK_F24) snprintf(key_name,sizeof(key_name),"F%d",config.tuning_key-VK_F1+1);
     else snprintf(key_name,sizeof(key_name),"key 0x%02X",config.tuning_key);
     RECT box{int(28*scale),int(100*scale),0,0};
-    box.right=std::min(LONG(width),box.left+LONG(text_height*0.56f*88)+2*pad);
+    box.right=std::min(LONG(width),box.left+LONG(text_height*0.56f*95)+2*pad);
     box.bottom=std::min(LONG(height),box.top+LONG(lines*line+2*pad));
     if(box.right<=box.left || box.bottom<=box.top) return RECT{0,0,0,0};
     auto fill=[&](RECT r,uint32_t color) {   // premultiplied
@@ -291,7 +295,7 @@ RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale)
         text(x,selected?RGB(255,220,120):RGB(235,235,235),row);
         if(changed) {
             snprintf(row,sizeof(row),"(was %s)",panel_text(item,state.was[i]).c_str());
-            text(x+int(text_height*0.55f*70),RGB(150,150,150),row);
+            text(x+int(text_height*0.55f*79),RGB(150,150,150),row);
         }
         y+=line;
     }

@@ -10,7 +10,25 @@ bool native_camera_fault=false;
 std::atomic<float> applied_offset_x{0},applied_offset_y{0},applied_offset_z{0};
 // What the game's own camera did this frame, for the log: its view (cockpit or nose: at the
 // aircraft; chase: behind it) and its place along and above its own view, cm.
-struct GameView { bool near_view=false; double along=0,rise=0; double rotation[3]{}; };   // rotation: the view on screen
+struct GameView { bool near_view=false, game_turned=false; double along=0,rise=0; double rotation[3]{}; };   // rotation: the view on screen
+// The final view's FOV (float, deg), after its place and rotation in the same cache: the engine's
+// CameraCacheEntry has POV at +0x10 and MinimalViewInfo has FOV at +0x30 (object dump, this build).
+constexpr size_t pov_fov_offset=0x14A0+0x30;
+inline float* pov_fov(void* manager) { return reinterpret_cast<float*>(static_cast<unsigned char*>(manager)+pov_fov_offset); }
+inline bool plausible_fov(float fov) { return std::isfinite(fov) && fov>5 && fov<170; }
+// The game's own FOV this frame: what its update left in the cache, unless that is still the value
+// written last frame (a camera that eased from the cache would carry the addition on and grow it).
+struct FovWrite { float base=0, written=0; } fov_write;
+float game_fov_of(float cached) {
+    if(fov_write.written!=0 && std::abs(cached-fov_write.written)<1e-3f) return fov_write.base;
+    return cached;
+}
+void write_fov(void* manager,float base,float add) {
+    if(add==0) { fov_write={}; return; }
+    const float fov=std::clamp(base+add,20.0f,150.0f);
+    *pov_fov(manager)=fov;
+    fov_write={base,fov};
+}
 // Single game-thread publisher; try-lock also makes an unexpected concurrent
 // callback nonblocking. Old commands still expire at the original 250ms limit.
 bool receive_camera(uintptr_t manager,uintptr_t pawn,double p,double y,double r) {
@@ -118,7 +136,7 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd,GameView& game_v
             // further by ours, the view went wrong; reported 2026-10-07)
             const flight::V nose=flight::basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load()).f;
             if(flight::dot(game.f,nose)<std::cos(12*flight::rad)) {
-                near_head={}; near_steady.primed=false;
+                near_head={}; near_steady.primed=false; game_view.game_turned=true;
                 for(int i=0;i<3;++i) game_view.rotation[i]=previous[3+i];
                 return true;
             }
@@ -157,7 +175,7 @@ constexpr float camera_blend_s=0.5f;
 // f and u the view's axes), so it turns with the aircraft: held still in the world while the aircraft
 // pitched, it sank down the canopy and came back as the lock key's view took over (reported 2026-10-07).
 struct CameraBlend { bool held=false, body=false; double offset[3]{}, rotation[3]{}; flight::V f{1,0,0}, u{0,0,1};
-    uintptr_t manager=0; float release=1, resume=0; } camera_blend;
+    uintptr_t manager=0; float release=1, resume=0; float fov_add=0; } camera_blend;   // fov_add: last added (camera_fov_add)
 // a and b: UE POVs (location; pitch, yaw, roll); w 0 is a, 1 b
 void mix_pov(const double a[6],const double b[6],float w,double out[6]) {
     using namespace flight;
@@ -207,6 +225,8 @@ void ease_release(void* manager,float dt) {
         if(!views_close(ours,cache)) { b.held=false; return; }
         double out[6]; mix_pov(ours,cache,w,out);
         memcpy(cache,out,sizeof(out));
+        const float game_fov=game_fov_of(*pov_fov(manager));   // the FOV added fades with the view
+        if(plausible_fov(game_fov)) write_fov(manager,game_fov,b.fov_add*(1-w));
         if(b.release>=1) b.held=false;
     } __except(EXCEPTION_EXECUTE_HANDLER) { b.held=false; }
 }
@@ -242,6 +262,7 @@ void __fastcall update_native_camera(void* manager,float dt) {
     if(reason) { ease_release(manager,dt); camera_blend.resume=0; near_head={}; near_steady.primed=false; return; }
     double game_pov[6]{};   // the game's own camera this frame, to ease in from
     memcpy(game_pov,static_cast<unsigned char*>(manager)+0x14A0,sizeof(game_pov));
+    const float game_fov=game_fov_of(*pov_fov(manager));
     GameView game_view;
     if(!apply_native_camera(manager,cmd,game_view,dt)) {
         native_camera_fault=true;
@@ -275,6 +296,15 @@ void __fastcall update_native_camera(void* manager,float dt) {
             }
             b.held=true; b.release=0; b.manager=reinterpret_cast<uintptr_t>(manager);
         }
+    }
+    // The FOV: the game's own (it widens with speed and afterburner) plus camera_fov_add in a chase
+    // view or near_view_fov_add in a cockpit or nose view, eased in with the view; none while the
+    // game turns a near view itself (the lock key held).
+    if(plausible_fov(game_fov)) {
+        const float add=game_view.game_turned ? 0.0f : game_view.near_view ? config.near_view_fov_add : config.camera_fov_add;
+        const float r=camera_blend.resume, w=r>=1 ? 1.0f : r*r*(3-2*r);
+        camera_blend.fov_add=add;
+        write_fov(manager,game_fov,add*w);
     }
     // the game's view, logged when it changes and every 30 s (its chase distance, for the
     // player model's detail: issue #7)
