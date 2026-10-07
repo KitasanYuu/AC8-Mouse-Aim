@@ -12,7 +12,7 @@
 | 移动瞄准点补正 | `Implemented` | 瞄准点自身的角速度作为前馈 |
 | 按机型在线辨识 | `Implemented` | 默认关闭（`ident_memory=0`），按标定模型飞行 |
 | 低空下沉时的拉起方式 | `Implemented` | 只改变到达方式，不改变瞄准点 |
-| 失速机动辅助 | `Implemented` | 按住专用键时，高G力回转开始的约 0.04 秒俯仰回中再拉满；是否能进入取决于机型 |
+| 失速机动辅助 | `Implemented` | 按住专用键时，调整高G力回转期间的俯仰杆量以达成失速机动的条件；是否能进入取决于机型 |
 | 防撞地、防失速、过载限制 | `Out-of-Scope` | 见[原则与边界](../00-overview/principles-and-boundaries.md) |
 | 修改飞行模型、推力、伤害 | `Out-of-Scope` | 只写入玩家操纵输入 |
 
