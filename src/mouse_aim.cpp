@@ -587,8 +587,11 @@ void update_commands() {
     // a scene), the ring cannot be seen to be aimed: hold it on the nose, so the view comes back ahead.
     const ULONGLONG released=camera_released_since.load();
     const bool game_view_held=released && GetTickCount64()-released>1000;
+    // Recentred (F9, autopilot released, aircraft placed, ...): the cockpit's mouse joystick too, below.
+    bool recentred=false;
     if (recenter_requested.exchange(false) || manual || game_view_held) {
         desired_aim=aim=b.f;
+        recentred=true;
         logic_reset();
         mouse_dx.store(0); mouse_dy.store(0);
     }
@@ -601,6 +604,7 @@ void update_commands() {
         desired_aim=aim=unit(offset+view.f*t);
         // a view still far off the nose (not yet ours again) would fly the aircraft round to it
         if(dot(view.f,b.f)<std::cos(45*rad)) desired_aim=aim=b.f;
+        recentred=true;
         logic_reset();
         mouse_dx.store(0); mouse_dy.store(0);
         filtered_pitch_rate=filtered_yaw_rate=filtered_roll_rate=0;
@@ -655,7 +659,9 @@ void update_commands() {
         // through the limits: a box let a corner reach further than either axis)
         const float expo=attached ? config.near_view_expo : 1.0f;
         auto reach_of=[&](float x,float y) { return std::hypot(x/std::max(lim_x,1e-3f),y/std::max(lim_y,1e-3f)); };
-        if(!was_cockpit || (attached && !was_attached)) {   // from the aim as it was: the stick that gives that ring
+        // from the aim as it is: the stick that gives that ring (kept after a recentre, the stick put
+        // the ring back where it had been before the autopilot, reported 2026-10-07)
+        if(!was_cockpit || (attached && !was_attached) || recentred) {
             offsets(desired_aim,stick_x,stick_y);
             const float r=std::min(reach_of(stick_x,stick_y),1.0f);
             if(r>1e-4f) { const float k=std::pow(r,1/expo-1); stick_x*=k; stick_y*=k; }
