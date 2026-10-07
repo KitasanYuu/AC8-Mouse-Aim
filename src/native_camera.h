@@ -153,7 +153,11 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd,GameView& game_v
 // last view of ours, held as an offset from the aircraft so that it moves with it, mixed into the
 // game's own; and back, the game's mixed into ours.
 constexpr float camera_blend_s=0.5f;
-struct CameraBlend { bool held=false; double offset[3]{}, rotation[3]{}; uintptr_t manager=0; float release=1, resume=0; } camera_blend;
+// A cockpit or nose view is held in the aircraft's frame (body: offset along nose, right wing, up;
+// f and u the view's axes), so it turns with the aircraft: held still in the world while the aircraft
+// pitched, it sank down the canopy and came back as the lock key's view took over (reported 2026-10-07).
+struct CameraBlend { bool held=false, body=false; double offset[3]{}, rotation[3]{}; flight::V f{1,0,0}, u{0,0,1};
+    uintptr_t manager=0; float release=1, resume=0; } camera_blend;
 // a and b: UE POVs (location; pitch, yaw, roll); w 0 is a, 1 b
 void mix_pov(const double a[6],const double b[6],float w,double out[6]) {
     using namespace flight;
@@ -193,7 +197,13 @@ void ease_release(void* manager,float dt) {
         for(int i=0;i<6;++i) if(!std::isfinite(cache[i])) { b.held=false; return; }
         b.release=std::min(1.0f,b.release+std::clamp(dt,0.0f,0.1f)/camera_blend_s);
         const float w=b.release*b.release*(3-2*b.release);
-        const double ours[6]={loc[0]+b.offset[0],loc[1]+b.offset[1],loc[2]+b.offset[2],b.rotation[0],b.rotation[1],b.rotation[2]};
+        double ours[6]={loc[0]+b.offset[0],loc[1]+b.offset[1],loc[2]+b.offset[2],b.rotation[0],b.rotation[1],b.rotation[2]};
+        if(b.body) {
+            const flight::Basis B=flight::basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load());
+            const flight::V o=B.f*float(b.offset[0])+B.r*float(b.offset[1])+B.u*float(b.offset[2]);
+            ours[0]=loc[0]+o.x; ours[1]=loc[1]+o.y; ours[2]=loc[2]+o.z;
+            view_rotation(B.f*b.f.x+B.r*b.f.y+B.u*b.f.z,B.u*b.u.z+B.f*b.u.x+B.r*b.u.y,ours+3);
+        }
         if(!views_close(ours,cache)) { b.held=false; return; }
         double out[6]; mix_pov(ours,cache,w,out);
         memcpy(cache,out,sizeof(out));
@@ -254,6 +264,15 @@ void __fastcall update_native_camera(void* manager,float dt) {
         double loc[3];   // ours, held as an offset from the aircraft for a release
         if(aircraft_location(cmd.pawn,loc)) {
             for(int i=0;i<3;++i) { b.offset[i]=cache[i]-loc[i]; b.rotation[i]=cache[3+i]; }
+            b.body=game_view.near_view;
+            if(b.body) {
+                using namespace flight;
+                const Basis B=basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load());
+                const Basis A=basis(float(cache[3]),float(cache[4]),float(cache[5]));
+                const V o{float(b.offset[0]),float(b.offset[1]),float(b.offset[2])};
+                b.offset[0]=dot(o,B.f); b.offset[1]=dot(o,B.r); b.offset[2]=dot(o,B.u);
+                b.f={dot(A.f,B.f),dot(A.f,B.r),dot(A.f,B.u)}; b.u={dot(A.u,B.f),dot(A.u,B.r),dot(A.u,B.u)};
+            }
             b.held=true; b.release=0; b.manager=reinterpret_cast<uintptr_t>(manager);
         }
     }
