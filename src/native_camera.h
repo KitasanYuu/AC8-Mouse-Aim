@@ -52,6 +52,18 @@ inline void near_view_head_limit(float& cap_x,float& cap_y) {
     const float half_h=std::atan(std::tan(half_w*flight::rad)/std::max(view_aspect.load(),0.5f))/flight::rad;
     cap_x=half_w+config.near_view_hud; cap_y=half_h+config.near_view_hud;
 }
+// Settings changed in flight (the tuning panel, or config.ini saved) ease in over about a second
+// instead of jumping: the FOV added and the cockpit's level are eased themselves; the chase
+// distance and height keep the change as a remainder that fades (so 0, the game's own distance
+// that moves with its camera, eases too, and the game's own motion is not slowed).
+constexpr float setting_ease_s=0.35f;
+struct SettingEase {
+    bool primed=false;
+    float distance=0, height=0;      // the chase settings the remainder was taken against
+    double back_rest=0, up_rest=0;   // cm still to go to the new chase place
+    float fov_add=0, level=0;        // eased FOV added (deg) and near_view_level
+} setting_ease;
+inline float setting_ease_k(float dt) { return 1-std::exp(-std::clamp(dt,0.0f,0.1f)/setting_ease_s); }
 // The near view's head for this frame: F free look, or the mouse aim by near_view_camera
 struct NearSteady { bool primed=false; flight::V f{1,0,0}, u{0,0,1}; } near_steady;   // the view's give (near_view_inertia)
 void near_view_head(const flight::Basis& game_view,float dt,double out[3]) {
@@ -66,10 +78,13 @@ void near_view_head(const flight::Basis& game_view,float dt,double out[3]) {
         const V u=n.u+(game_view.u-n.u)*k; n.u=unit(u-n.f*dot(u,n.f));
     }
     Basis game{n.f,cross(n.u,n.f),n.u};
-    if(config.near_view_level>0) {
+    float& level=setting_ease.level;
+    level+=(config.near_view_level-level)*setting_ease_k(dt);
+    if(std::abs(level-config.near_view_level)<1e-3f) level=config.near_view_level;
+    if(level>0) {
         const float y=yaw(game.f)*rad;
         const V level_up=cross(game.f,V{-std::sin(y),std::cos(y),0});
-        V u=game.u+(level_up-game.u)*config.near_view_level; u=u-game.f*dot(u,game.f);
+        V u=game.u+(level_up-game.u)*level; u=u-game.f*dot(u,game.f);
         if(dot(u,u)>1e-6f) { game.u=unit(u); game.r=cross(game.u,game.f); }
     }
     auto offsets=[&](const V& d,float& y,float& p) {
@@ -127,6 +142,11 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd,GameView& game_v
         // turned with the mouse, a free look all round, reported 2026-10-07.)
         game_view.near_view=game_view.along>-800;
         double result[6]={previous[0],previous[1],previous[2],cmd.p,cmd.y,cmd.r};
+        SettingEase& ease=setting_ease;
+        if(!ease.primed || game_view.near_view) {   // the chase place is eased only while it is seen
+            ease.primed=true; ease.distance=config.camera_distance; ease.height=config.camera_height;
+            ease.back_rest=ease.up_rest=0;
+        }
         if(game_view.near_view) {
             applied_offset_x.store(static_cast<float>(off[0]));
             applied_offset_y.store(static_cast<float>(off[1]));
@@ -141,7 +161,7 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd,GameView& game_v
                 return true;
             }
             near_view_head(game,dt,game_view.rotation);
-            if(near_head.yaw==0 && near_head.pitch==0 && config.near_view_inertia<=0 && config.near_view_level<=0) {
+            if(near_head.yaw==0 && near_head.pitch==0 && config.near_view_inertia<=0 && setting_ease.level<=0) {
                 for(int i=0;i<3;++i) game_view.rotation[i]=previous[3+i]; return true;
             }
             for(int i=0;i<3;++i) result[3+i]=game_view.rotation[i];
@@ -152,8 +172,21 @@ bool apply_native_camera(void* manager,const CameraCommand& cmd,GameView& game_v
         for(int i=0;i<3;++i) game_view.rotation[i]=result[3+i];
         {
             // camera_distance 0: the game's own distance behind and height, along this view
-            const double back=config.camera_distance>0 ? config.camera_distance*100.0 : -game_view.along;
-            const double up=config.camera_distance>0 ? config.camera_height*100.0 : game_view.rise;
+            auto place=[&](float distance,float height,double& back,double& up) {
+                back=distance>0 ? distance*100.0 : -game_view.along;
+                up=distance>0 ? height*100.0 : game_view.rise;
+            };
+            double back=0, up=0;
+            place(config.camera_distance,config.camera_height,back,up);
+            if(config.camera_distance!=ease.distance || config.camera_height!=ease.height) {
+                double old_back=0, old_up=0;   // where the old setting has it now: the change starts from there
+                place(ease.distance,ease.height,old_back,old_up);
+                ease.back_rest+=old_back-back; ease.up_rest+=old_up-up;
+                ease.distance=config.camera_distance; ease.height=config.camera_height;
+            }
+            const float k=setting_ease_k(dt);
+            ease.back_rest*=1-k; ease.up_rest*=1-k;
+            back+=ease.back_rest; up+=ease.up_rest;
             result[0]=loc[0]-back*axes.f.x+up*axes.u.x;
             result[1]=loc[1]-back*axes.f.y+up*axes.u.y;
             result[2]=loc[2]-back*axes.f.z+up*axes.u.z;
@@ -301,7 +334,10 @@ void __fastcall update_native_camera(void* manager,float dt) {
     // view or near_view_fov_add in a cockpit or nose view, eased in with the view; none while the
     // game turns a near view itself (the lock key held).
     if(plausible_fov(game_fov)) {
-        const float add=game_view.game_turned ? 0.0f : game_view.near_view ? config.near_view_fov_add : config.camera_fov_add;
+        const float target=game_view.game_turned ? 0.0f : game_view.near_view ? config.near_view_fov_add : config.camera_fov_add;
+        float& add=setting_ease.fov_add;   // eased: a setting changed, or the view switched between the two
+        add+=(target-add)*setting_ease_k(dt);
+        if(std::abs(add-target)<0.01f) add=target;
         const float r=camera_blend.resume, w=r>=1 ? 1.0f : r*r*(3-2*r);
         camera_blend.fov_add=add;
         write_fov(manager,game_fov,add*w);
