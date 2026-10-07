@@ -980,7 +980,7 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
     }
     // Automatic maneuver trace: starts when the nose is more than 4 deg off target and
     // stops after 2 s within 1 deg, so every maneuver is recorded without pressing F4.
-    // Compact enough for the event line; fields documented in docs/maneuver-spec.md.
+    // Compact enough for the event line; fields documented in docs/02-architecture/flight-control.md.
     if(t.auto_trace>0) {
         // auto_trace=2 records every frame (a whole mission), 1 only maneuvers.
         if(g.angle>4 || t.auto_trace>=2) { s.recording=true; s.settled_for=0; }

@@ -806,7 +806,7 @@ void update_commands() {
         }
         ring_pitch.store(flight::pitch(ring)); ring_yaw.store(flight::yaw(ring));
     }
-    // Lift-vector maneuver paradigm (docs/maneuver-spec.md), see flight_logic.h.
+    // Lift-vector maneuver paradigm (docs/02-architecture/flight-control.md), see flight_logic.h.
     flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),aim.x,aim.y,aim.z,
         filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load(),aircraft_serial,
         input_throttle.load(),input_brake.load(),

@@ -1,6 +1,6 @@
 #pragma once
 #include "flight_math.h"
-// Maneuver paradigm; see docs/maneuver-spec.md. War Thunder style mouse aim: bring
+// Maneuver paradigm; see docs/02-architecture/flight-control.md. War Thunder style mouse aim: bring
 // the nose to the target by the quickest roll/pitch combination the aircraft can fly.
 // No protective limits: the player's aim is executed as given.
 namespace flight {
@@ -76,7 +76,7 @@ struct Guidance {
     bool pushing=false;   // aligning the floor, not the canopy, with the target
 };
 // Thresholds in degrees (choice_margin in seconds); documented in
-// docs/maneuver-spec.md and tunable via config.ini.
+// docs/02-architecture/flight-control.md and tunable via config.ini.
 struct ManeuverTuning {
     // Pitch and rudder: from far_start the pull follows the lift (along it, in proportion
     // to how well the roll has aligned it); inside near_end, the target's offset along
