@@ -25,7 +25,6 @@ group.near_views = 座舱／机首视角
 group.flight = 飞行控制（仅影响接近瞄准点的阶段）
 group.display = 显示
 group.keys_flight = 飞行
-group.keys_manual = 手动操控（与游戏键位一致）
 group.keys_panel = 设置面板
 group.keys_diagnostics = 诊断
 
@@ -109,18 +108,6 @@ item.hud.desc = 设置切换 MOD 瞄准圈显示的按键。飞行控制不受�
 
 item.post_stall = 失速机动辅助
 item.post_stall.desc = 设置失速机动辅助的按键。按住期间在 500km/h 以下进行高G力回转时，俯仰先回中约 0.04 秒再拉满，以符合游戏进入失速机动的条件。
-
-item.manual_pitch_up = 机首上仰
-item.manual_pitch_up.desc = 设置游戏中用于机首上仰的按键（与游戏键位一致）。按住期间由你直接操控俯仰（及翻滚）。
-
-item.manual_pitch_down = 机首下俯
-item.manual_pitch_down.desc = 设置游戏中用于机首下俯的按键（与游戏键位一致）。按住期间由你直接操控俯仰（及翻滚）。
-
-item.manual_roll_left = 左翻滚
-item.manual_roll_left.desc = 设置游戏中用于左翻滚的按键（与游戏键位一致）。按住期间由你直接操控翻滚。
-
-item.manual_roll_right = 右翻滚
-item.manual_roll_right.desc = 设置游戏中用于右翻滚的按键（与游戏键位一致）。按住期间由你直接操控翻滚。
 
 item.tuning = 设置面板
 item.tuning.desc = 设置用于打开或关闭本面板的按键。
