@@ -6,146 +6,146 @@
 hud.status = MouseFlight 0.2.30 {1} | aim {2} | camera {3}
 hud.on = ON
 hud.standby = STANDBY
-hud.outside = TARGET OUTSIDE VIEW
-panel.auto = auto (the game's)
+hud.outside = AIM OUTSIDE THE VIEW
+panel.auto = auto (follow the game)
 panel.on = on
 panel.off = off
 panel.none = none
-panel.title = MouseFlight tuning ({1} closes)
 panel.page.settings = Settings
 panel.page.keys = Keys
-panel.page.hint = ({1}/{2}: page)
-panel.help.settings = {1}/{2} choose   {3}/{4} change ({5} finer)   {6} undo
-panel.help.keys = {1}/{2} choose   {3} new key   {4} undo
+panel.page.hint = ({1}/{2}: switch page)
+panel.help.settings = {1}/{2} select   {3}/{4} adjust (hold {5}: fine)   {6} undo
+panel.help.keys = {1}/{2} select   {3} rebind   {4} undo
+panel.title = MouseFlight settings ({1} closes)
 panel.was = was {1}
-panel.recording = press the new key (Esc: cancel, Delete: none)
-panel.also = also: {1}
+panel.recording = press the new key (Esc cancels, Delete clears)
+panel.also = same key as: {1}
 font = Segoe UI
 
 group.mouse_camera = Mouse and chase camera
 group.near_views = Cockpit and nose views
-group.flight = Flight (the last degrees of a turn)
+group.flight = Flight (only near the aim)
 group.display = Display
 group.keys_flight = Flight
 group.keys_panel = This panel
 group.keys_diagnostics = Diagnostics
 
 item.sensitivity = Mouse sensitivity
-item.sensitivity.desc = deg per mouse count
+item.sensitivity.desc = aim degrees per mouse count
 
-item.camera_follow = Camera follow
-item.camera_follow.desc = how fast the camera turns to the aim, 1/s
+item.camera_follow = Camera follow rate
+item.camera_follow.desc = how fast the chase camera turns to the aim (1/s)
 
 item.camera_distance = Camera distance
-item.camera_distance.desc = behind the aircraft, m (0: the game's own)
+item.camera_distance.desc = behind the aircraft (m; 0 = the game default)
 
 item.camera_height = Camera height
-item.camera_height.desc = above the aircraft, m
+item.camera_height.desc = above the aircraft (m)
 
-item.camera_fov_add = Field of view
-item.camera_fov_add.desc = deg added to the game's own
+item.camera_fov_add = FOV offset
+item.camera_fov_add.desc = degrees added to the game's FOV (chase view)
 
 item.near_view_camera = View mode
-item.near_view_camera.desc = 0 fixed, 1 follows the aim, 2 at the edge, 3 head turns
+item.near_view_camera.desc = 0 fixed ahead; 1 follows the aim; 2 turns at the edge; 3 head turns to the ring
 
-item.near_view_follow = Head follow
-item.near_view_follow.desc = how far the head turns toward the ring
+item.near_view_follow = Head turn ratio
+item.near_view_follow.desc = share of the ring's offset the view turns (mode 3)
 
-item.near_view_hud = Head limit
-item.near_view_hud.desc = deg past half the view the head may turn
+item.near_view_hud = Head turn limit
+item.near_view_hud.desc = degrees the view may turn past half its width (mode 3)
 
-item.near_view_mouse = Mouse scale
-item.near_view_mouse.desc = mouse movement in these views
+item.near_view_mouse = Mouse multiplier
+item.near_view_mouse.desc = mouse movement in the cockpit and nose views
 
-item.near_view_expo = Ring curve
+item.near_view_expo = Ring non-linearity
 item.near_view_expo.desc = 1 linear; higher is finer near the nose
 
 item.near_view_inertia = View lag
-item.near_view_inertia.desc = how far the view lags the aircraft, s
+item.near_view_inertia.desc = delay of the view behind the aircraft (s; 0 none)
 
-item.near_view_level = Level the view
-item.near_view_level.desc = how much the view's roll is held level
+item.near_view_level = View levelling
+item.near_view_level.desc = share of the view's roll corrected to level (0 off, 1 level)
 
-item.near_view_fov_add = Field of view
-item.near_view_fov_add.desc = deg added to the game's own
+item.near_view_fov_add = FOV offset
+item.near_view_fov_add.desc = degrees added to the game's FOV (cockpit and nose views)
 
-item.pitch_gain = Pitch response
-item.pitch_gain.desc = higher is faster; past 4 the stick jitters
+item.pitch_gain = Pitch gain
+item.pitch_gain.desc = pitch rate near the aim; higher is faster, above 4 the stick jitters
 
-item.roll_brake = Roll stop
-item.roll_brake.desc = lower stops a roll softer and later
+item.roll_brake = Roll braking
+item.roll_brake.desc = slowing before a roll arrives; lower starts earlier and softer
 
 item.level_per_deg = Wing levelling
-item.level_per_deg.desc = bank kept per deg to go; lower levels sooner
+item.level_per_deg.desc = bank kept per degree to go; lower levels sooner
 
-item.lead_gain = Follow a moving aim
-item.lead_gain.desc = how much a moving aim is led
+item.lead_gain = Moving-aim lead
+item.lead_gain.desc = share of a moving aim's motion led (0 off)
 
-item.lead_filter = Follow smoothing
-item.lead_filter.desc = smoothing of the aim's motion, s
+item.lead_filter = Lead smoothing
+item.lead_filter.desc = smoothing of the aim's motion (s)
 
 item.highg_full_from = High-G full pull
-item.highg_full_from.desc = beyond this many deg off the aim, deg
+item.highg_full_from.desc = with high-G, full stick beyond this angle off the aim (deg; 0 off)
 
 item.status_line = Status line
 item.status_line.desc = version, state and angles top left
 
 item.language = Language
-item.language.desc = of this panel and the mod's HUD lines
+item.language.desc = of the panel and the mod's on-screen text
 
-item.toggle = Mouse aim
-item.toggle.desc = mouse aim on and off
+item.toggle = Mouse aim on/off
+item.toggle.desc = turn mouse aim on or off
 
-item.recenter = Recenter
-item.recenter.desc = the aim back on the nose
+item.recenter = Recenter aim
+item.recenter.desc = put the aim back on the nose
 
 item.free_look = Free look
-item.free_look.desc = held: look around
+item.free_look.desc = held: the mouse turns only the view
 
-item.hud = HUD
-item.hud.desc = the mod's rings on and off
+item.hud = HUD on/off
+item.hud.desc = show or hide the mod's rings
 
 item.post_stall = Post-stall
-item.post_stall.desc = held: post-stall with the high-G
+item.post_stall.desc = held, then high-G below 500 km/h: post-stall maneuver
 
-item.tuning = Panel
-item.tuning.desc = open and close it
+item.tuning = Panel on/off
+item.tuning.desc = open or close this panel
 
-item.tuning_up = Previous
-item.tuning_up.desc = previous item
+item.tuning_up = Previous item
+item.tuning_up.desc = select the previous item
 
-item.tuning_down = Next
-item.tuning_down.desc = next item
+item.tuning_down = Next item
+item.tuning_down.desc = select the next item
 
-item.tuning_less = Lower
-item.tuning_less.desc = lower the value
+item.tuning_less = Decrease
+item.tuning_less.desc = decrease the value
 
-item.tuning_more = Raise
-item.tuning_more.desc = raise the value
+item.tuning_more = Increase
+item.tuning_more.desc = increase the value
 
-item.tuning_fine = Finer
-item.tuning_fine.desc = held: finer steps
+item.tuning_fine = Fine step
+item.tuning_fine.desc = held: a fifth of the step
 
 item.tuning_undo = Undo
-item.tuning_undo.desc = back to the opening value
+item.tuning_undo.desc = back to the value when the panel was opened
 
-item.tuning_bind = New key
-item.tuning_bind.desc = record a new key (this page)
+item.tuning_bind = Rebind
+item.tuning_bind.desc = record a new key for the selected item (Keys page)
 
-item.reload = Reload
+item.reload = Reload config
 item.reload.desc = read config.ini again
 
 item.trace = Flight trace
-item.trace.desc = per-frame flight trace in the log
+item.trace.desc = per-frame flight data in the log
 
-item.perf = Performance
-item.perf.desc = performance counters
+item.perf = Performance counters
+item.perf.desc = turn the performance counters on or off
 
-item.camera_probe = Camera probe
-item.camera_probe.desc = camera state capture
+item.camera_probe = Camera state capture
+item.camera_probe.desc = capture the camera state (troubleshooting)
 
-item.hangar_specs = Hangar specs
-item.hangar_specs.desc = hangar: the aircraft's ratings
+item.hangar_specs = Hangar: aircraft specs
+item.hangar_specs.desc = in the hangar, read the aircraft's parameter tables
 
-item.hangar_geometry = Hangar geometry
-item.hangar_geometry.desc = hangar: the aircraft's geometry
+item.hangar_geometry = Hangar: aircraft geometry
+item.hangar_geometry.desc = in the hangar, read the aircraft's geometry

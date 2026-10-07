@@ -191,7 +191,7 @@ HMODULE logic_module{};
 wchar_t logic_live_path[MAX_PATH]{};
 int logic_generation=0;
 FILETIME logic_file_time{}, config_file_time{};
-ULONGLONG dev_poll_at=0;
+std::atomic<ULONGLONG> dev_poll_at{0};   // the next config.ini check (0: the next frame, after the panel writes)
 void logic_reset() { logic.reset(logic_state); }
 std::atomic<bool> recenter_requested{true};
 float previous_pitch{}, previous_yaw{}, previous_roll{};
@@ -957,7 +957,7 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
                 log_line("overlay paint %dx%d target=%s at=(%.0f,%.0f) visible=%d",
                     width,height,aim_visible?"inside":"outside",x,y,IsWindowVisible(window));
             }
-            if(!aim_visible) hud_line(config.status_line ? 1 : 0,tr("hud.outside",L"TARGET OUTSIDE VIEW"));
+            if(!aim_visible) hud_line(config.status_line ? 1 : 0,tr("hud.outside",L"AIM OUTSIDE THE VIEW"));
         }
         SelectObject(dc,old_hud_font);
         GdiFlush();
