@@ -18,7 +18,7 @@
 | 名称 | 来源 |
 |---|---|
 | 开发版 | 工作区的 `src/` 与 Payload 的 `[tuning]` |
-| 0.2.30+Alf.1.0.0 | 本项目发布版（标签 `alf-v1.0.0`），代码与 `[tuning]` 冻结在 `dev/compare/controllers/alf_1_0_0/`；计分基准 |
+| 0.2.30+Alf.1.0.0 | 本项目发布版（标签 `alf-v1.0.0`），代码与 `[tuning]` 冻结在 `dev/compare/controllers/alf_1_0_0/`；计分基准。开发版的飞控代码与 `[tuning]` 仍与它相同时（如发版时）不单列，开发版一列即以此命名 |
 | FletcherMiya 0.2.30 | 上游 052cd6a |
 | xsd467 pw.11 | xsd467 05d7f48（CC0） |
 

@@ -1914,10 +1914,17 @@ int main() {
     CreateDirectoryA((out_dir + "/results").c_str(), nullptr);
     std::vector<Entry> entries;
     const flight::Tuning base = ours_tuning(config, "", scratch);
-    entries.push_back({"ours", "开发版", "src/flight_logic.h + Payload config.ini", [base] { return std::make_unique<Ours>(base); }});
-    // releases, frozen (code and [tuning]): the latest is the baseline the summary scores against
-    const alf_1_0_0::Tuning release_1_0_0 = alf_1_0_0_tuning(out_dir);
-    entries.push_back({"alf_1_0_0", "0.2.30+Alf.1.0.0", "alf-v1.0.0 (dev/compare/controllers/alf_1_0_0)", [release_1_0_0] { return std::make_unique<Alf_1_0_0>(release_1_0_0); }});
+    // releases, frozen (code and [tuning]): the latest is the baseline the summary scores against.
+    // While the working tree is still that release (as at the release itself), it is one column,
+    // named as the release, and the baseline is that column.
+    const bool at_release = alf_1_0_0_is_working_tree(out_dir, config);
+    entries.push_back({"ours", at_release ? "0.2.30+Alf.1.0.0" : "开发版",
+                       at_release ? "src/flight_logic.h + Payload config.ini (= alf-v1.0.0)" : "src/flight_logic.h + Payload config.ini",
+                       [base] { return std::make_unique<Ours>(base); }});
+    if (!at_release) {
+        const alf_1_0_0::Tuning release_1_0_0 = alf_1_0_0_tuning(out_dir);
+        entries.push_back({"alf_1_0_0", "0.2.30+Alf.1.0.0", "alf-v1.0.0 (dev/compare/controllers/alf_1_0_0)", [release_1_0_0] { return std::make_unique<Alf_1_0_0>(release_1_0_0); }});
+    }
     // The game's installed [tuning] is the development configuration (tuned there, live): it
     // is not a column of its own but must equal the repository's. Any key that differs is
     // reported here and at the top of the scorecard, to be brought into the repository.
@@ -2212,7 +2219,7 @@ int main() {
     // scene alike; every kind of scene alike; the mean rank) for every aircraft and overall.
     struct Summary { std::vector<double> per_scene, per_kind, mean_rank; std::vector<std::vector<double>> per_plant; };
     const size_t n_ctl = entries.size();
-    size_t base_ctl = 0;
+    size_t base_ctl = 0;   // the working tree's column while it is the release
     for (size_t i = 0; i < n_ctl; ++i) if (entries[i].id == "alf_1_0_0") base_ctl = i;
     auto summarize = [&](const std::map<std::string, std::vector<std::vector<float>>>& costs) {
         Summary S;
