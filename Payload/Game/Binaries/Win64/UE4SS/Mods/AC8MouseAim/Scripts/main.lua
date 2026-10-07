@@ -179,11 +179,19 @@ end
 
 -- No keys are bound here: config.ini [keys] has them all and the native side watches them (reload
 -- and performance counters it carries out itself); the ones done here come as requests each frame.
+-- The hangar probes run only in the hangar (no player aircraft): their keys are by default the HUD
+-- and mouse aim toggles too, and run on the game thread in a mission the rating tables' read
+-- stalled it for a moment (reported 2026-10-07).
 local function carry_out_requests()
     local requests = tonumber(requests_native()) or 0
-    if requests % 2 == 1 then gaze_probe.request() end                                       -- camera_probe
-    if math.floor(requests / 2) % 2 == 1 then pcall(spec_probe.run, directory, notice) end   -- hangar_specs
-    if math.floor(requests / 4) % 2 == 1 then pcall(mesh_probe.hangar, directory) end        -- hangar_geometry
+    if requests % 2 == 1 then gaze_probe.request() end   -- camera_probe
+    local specs, geometry = math.floor(requests / 2) % 2 == 1, math.floor(requests / 4) % 2 == 1
+    if (specs or geometry) and startup_address then
+        print('[AC8MouseAim] Hangar probes run in the hangar only; key ignored in a mission.\n')
+        return
+    end
+    if specs then pcall(spec_probe.run, directory, notice) end           -- hangar_specs
+    if geometry then pcall(mesh_probe.hangar, directory) end             -- hangar_geometry
 end
 
 assert(start_native(1729,0.125)==30,'AC8 direct bridge unavailable; control disabled (check native log).')
