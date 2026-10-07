@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | 简体中文
 
-**在线飞控对比：[Flight Bench 网页](https://kitasanyuu.github.io/AC8-Mouse-Aim/)**（浏览器打开，可回放三维画面）
+**在线飞控对比：[Flight Bench 网页](https://kitasanyuu.github.io/AC8-Mouse-Aim/)**
 
 为 **ACE COMBAT 8 离线单人模式**提供 War Thunder 式的鼠标指向飞控：用鼠标指定瞄准点，飞机按升力矢量规则把机首带过去。
 

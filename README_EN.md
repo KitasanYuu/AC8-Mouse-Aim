@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-**Flight control comparison online: [the Flight Bench web page](https://kitasanyuu.github.io/AC8-Mouse-Aim/)** (opens in the browser, with 3D replays)
+**Flight control comparison online: [the Flight Bench web page](https://kitasanyuu.github.io/AC8-Mouse-Aim/)**
 
 War Thunder-style mouse aim for **ACE COMBAT 8 offline single-player**: point the aim with the mouse and the aircraft brings its nose there by rolling its lift onto the aim and pulling.
 
