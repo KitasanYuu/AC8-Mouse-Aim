@@ -59,6 +59,26 @@ struct Config {
     // the aim ring then darted across the screen with each mouse move and drifted back
     // over ~0.6 s; War Thunder's camera follows the mouse closely and the ring stays put.
     float camera_follow = 12.0f;
+    float camera_distance = 30.0f, camera_height = 6.0f;   // chase camera, m; distance 0 = the game's own
+    // Cockpit and nose views: 0 the view fixed ahead (the mouse ring moves across it), 1 turned to
+    // the mouse aim (War Thunder's mouse aim in its cockpit), 2 fixed until the aim is near_view_edge
+    // deg off the view's centre, then turned just enough to keep it there. F free look in all three.
+    // 3 (default): as 0, the view turned toward the ring while flying (War Thunder's realistic
+    // battles cockpit) by near_view_follow of its offset, no further than leaves the HUD's near edge
+    // in view (half the view plus near_view_hud, the HUD's half size in deg); the ring reaches as far
+    // as turns the view that far, or keeps itself 3 deg inside the screen (not near_view_box_*: a box
+    // of 0.55 of the screen let the view turn 14 by 6 deg, "held small, ahead").
+    int near_view_camera = 3; float near_view_edge = 15.0f, near_view_hud = 8.0f, near_view_follow = 0.6f;
+    // near_view_camera 0: 1 the ring stays where the mouse puts it on screen, within a box of
+    // near_view_box_x/_y of the half width/height (a mouse joystick, as War Thunder's simulator
+    // battles: held off centre it keeps the aircraft turning); 0 a direction in the world, as in
+    // the chase view (the ring comes back to the nose as the aircraft arrives), kept in the box
+    int near_view_aim = 1; float near_view_box_x = 0.55f, near_view_box_y = 0.55f;
+    // Comfort in a cockpit view (it was "dizzying, and very sensitive"): the ring's reach as
+    // reach^near_view_expo of the mouse's (fine near the nose, all of it at the edge), the mouse
+    // scaled by near_view_mouse; the view lagging the aircraft by near_view_inertia s (a head's
+    // give: the jolt of a roll's start and stop softened), its roll near_view_level held level.
+    float near_view_expo = 1.5f, near_view_mouse = 1.0f, near_view_inertia = 0.06f, near_view_level = 0.0f;
     // Live telemetry to dev/telemetry (UDP port on 127.0.0.1); 0 = off.
     int telemetry_port = 0;
     // Post-stall request key (virtual-key code; 0 = none): held, a high-G pressed below
@@ -113,6 +133,16 @@ std::atomic<float> applied_camera_pitch{0}, applied_camera_yaw{0}, applied_camer
 std::atomic<unsigned long long> applied_camera_tick{0};
 HANDLE overlay_frame_event{};
 std::atomic<float> view_fov{100};
+// Cockpit and nose views (native_camera.h): the view is the game's, narrower than the chase view
+// and fixed ahead, so the mouse is scaled by the views' FOVs and its ring kept on screen.
+std::atomic<bool> near_view_active{false};
+std::atomic<float> chase_fov{0};            // the FOV last seen in a chase view
+std::atomic<float> view_aspect{16.0f/9};    // the game window's width over height
+std::atomic<float> near_base_pitch{0}, near_base_yaw{0}, near_base_roll{0};   // the game's own near view (along the aircraft)
+std::atomic<float> near_look_yaw{0}, near_look_pitch{0};   // F held in a near view: the head, deg off that view
+std::atomic<float> near_stick_x{0}, near_stick_y{0};       // the cockpit stick's ring, deg off that view
+// near_view_camera 3: how far the view may turn (deg): half the view plus the HUD's half size
+inline void near_view_head_limit(float& cap_x,float& cap_y);
 std::atomic<float> view_offset_x{0}, view_offset_y{0}, view_offset_z{0};
 std::atomic<float> roll_reference{0};
 std::atomic<unsigned long long> pose_tick{0};
@@ -121,6 +151,7 @@ std::atomic<float> command_pitch{0}, command_roll{0}, command_yaw{0};
 std::atomic<float> target_pitch{0}, target_yaw{0};
 // Camera destination is independent of the flight target while F is held.
 std::atomic<float> look_pitch{0}, look_yaw{0};
+std::atomic<bool> free_look_held{false};   // F held: the camera on look_pitch/look_yaw, not the aim
 flight::FreeLook free_look;
 flight::V desired_aim{1,0,0};
 bool desired_aim_valid=false;
@@ -242,6 +273,19 @@ void load_config() {
     config.roll_slot = std::clamp(read_config_int(L"roll_slot", config.roll_slot), 0, 2);
     config.input_probe = read_config_int(L"input_probe", 0);
     config.camera_follow = std::clamp(read_config_float(L"camera_follow", config.camera_follow), 1.0f, 60.0f);
+    config.camera_distance = std::clamp(read_config_float(L"camera_distance", config.camera_distance), 0.0f, 200.0f);
+    config.camera_height = std::clamp(read_config_float(L"camera_height", config.camera_height), -50.0f, 50.0f);
+    config.near_view_camera = std::clamp(read_config_int(L"near_view_camera", config.near_view_camera), 0, 3);
+    config.near_view_hud = std::clamp(read_config_float(L"near_view_hud", config.near_view_hud), 0.0f, 40.0f);
+    config.near_view_follow = std::clamp(read_config_float(L"near_view_follow", config.near_view_follow), 0.0f, 1.0f);
+    config.near_view_edge = std::clamp(read_config_float(L"near_view_edge", config.near_view_edge), 2.0f, 60.0f);
+    config.near_view_aim = read_config_int(L"near_view_aim", config.near_view_aim) != 0;
+    config.near_view_expo = std::clamp(read_config_float(L"near_view_expo", config.near_view_expo), 1.0f, 4.0f);
+    config.near_view_mouse = std::clamp(read_config_float(L"near_view_mouse", config.near_view_mouse), 0.1f, 3.0f);
+    config.near_view_inertia = std::clamp(read_config_float(L"near_view_inertia", config.near_view_inertia), 0.0f, 0.5f);
+    config.near_view_level = std::clamp(read_config_float(L"near_view_level", config.near_view_level), 0.0f, 1.0f);
+    config.near_view_box_x = std::clamp(read_config_float(L"near_view_box_x", config.near_view_box_x), 0.1f, 0.95f);
+    config.near_view_box_y = std::clamp(read_config_float(L"near_view_box_y", config.near_view_box_y), 0.1f, 0.95f);
     config.telemetry_port = std::clamp(read_config_int(L"telemetry_port", 0), 0, 65535);
     config.post_stall_key = read_config_key(L"post_stall_key", VK_XBUTTON1);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
@@ -559,17 +603,88 @@ void update_commands() {
     }
     const bool looking=!manual && (GetAsyncKeyState('F')&0x8000)!=0;
     if(looking && !free_look.held) desired_aim=aim;
-    const V camera_target=free_look.step(looking,desired_aim,view,
-        mouse_dx.exchange(0)*config.sensitivity,mouse_dy.exchange(0)*config.sensitivity);
-    if(!looking) aim=smooth_direction(aim,desired_aim,dt,0.045f);
+    // In a cockpit or nose view the mouse turns the aim by as much less as the view is narrower
+    // than the chase view's, so that the ring crosses the screen at the same speed.
+    const bool in_near_view=near_view_active.load();
+    if(!in_near_view && view_fov.load()>1) chase_fov.store(view_fov.load());
+    float sensitivity=config.sensitivity;
+    if(in_near_view && chase_fov.load()>1) sensitivity*=std::clamp(view_fov.load()/chase_fov.load(),0.2f,1.0f);
+    const float mdx=mouse_dx.exchange(0)*sensitivity, mdy=mouse_dy.exchange(0)*sensitivity;
+    // A cockpit or nose view fixed ahead (near_view_camera 0): the mouse works in the aircraft's
+    // own frame. F turns the head (left and right 135, up 75, down 25 deg, as a head turns; a world
+    // direction had swung the free look with the bank, all round); otherwise the ring, by
+    // near_view_aim, stays where it is put on screen (a mouse joystick) or is a world direction,
+    // either way inside the box (flung past the narrow view it had been lost off screen).
+    const bool cockpit=in_near_view && (config.near_view_camera==0 || config.near_view_camera==3);
+    static bool was_cockpit=false, was_attached=false; static float stick_x=0, stick_y=0;
+    // The cockpit's mouse joystick, but for a post-stall maneuver (its key held) a direction in the
+    // world: flung behind, the nose swings to it and stops (attached, the ring stayed 40 deg off the
+    // nose as it turned, and the aircraft looped on, reported 2026-10-07).
+    const bool attached=config.near_view_aim && !post_stall_armed.load();
+    V camera_target=desired_aim;
+    auto head_look=[&]() {   // F in a near view: the head in the aircraft's frame, as far as a head turns
+        if(looking) {
+            near_look_yaw.store(std::clamp(near_look_yaw.load()+mdx,-135.0f,135.0f));
+            near_look_pitch.store(std::clamp(near_look_pitch.load()-mdy,-25.0f,75.0f));
+        } else { near_look_yaw.store(0); near_look_pitch.store(0); }
+    };
+    if(cockpit) {
+        free_look.reset();
+        const Basis base=basis(near_base_pitch.load(),near_base_yaw.load(),near_base_roll.load());
+        head_look();
+        const float half_w=std::clamp(view_fov.load(),20.0f,150.0f)*0.5f*rad;
+        const float half_h=std::atan(std::tan(half_w)/std::max(view_aspect.load(),0.5f));
+        float lim_x=std::atan(config.near_view_box_x*std::tan(half_w))/rad, lim_y=std::atan(config.near_view_box_y*std::tan(half_h))/rad;
+        if(config.near_view_camera==3) {   // as far as turns the view to its limit, or keeps the ring on screen
+            float cap_x, cap_y; near_view_head_limit(cap_x,cap_y);
+            const float f=config.near_view_follow, screen_x=half_w/rad-3, screen_y=half_h/rad-3;
+            lim_x=std::min(f>0.01f ? cap_x/f : 1e3f, f<0.99f ? screen_x/(1-f) : 1e3f);
+            lim_y=std::min(f>0.01f ? cap_y/f : 1e3f, f<0.99f ? screen_y/(1-f) : 1e3f);
+            lim_x=std::clamp(lim_x,2.0f,89.0f); lim_y=std::clamp(lim_y,2.0f,89.0f);
+        }
+        auto offsets=[&](const V& d,float& x,float& y) {
+            x=std::atan2(dot(d,base.r),dot(d,base.f))/rad; y=std::atan2(dot(d,base.u),std::max(std::hypot(dot(d,base.f),dot(d,base.r)),1e-6f))/rad;
+        };
+        // stick_x/y: where the mouse has the stick; ring_x/y: the ring, reach^expo of it (an ellipse
+        // through the limits: a box let a corner reach further than either axis)
+        const float expo=attached ? config.near_view_expo : 1.0f;
+        auto reach_of=[&](float x,float y) { return std::hypot(x/std::max(lim_x,1e-3f),y/std::max(lim_y,1e-3f)); };
+        if(!was_cockpit || (attached && !was_attached)) {   // from the aim as it was: the stick that gives that ring
+            offsets(desired_aim,stick_x,stick_y);
+            const float r=std::min(reach_of(stick_x,stick_y),1.0f);
+            if(r>1e-4f) { const float k=std::pow(r,1/expo-1); stick_x*=k; stick_y*=k; }
+        }
+        if(attached) {
+            if(!looking) { stick_x+=mdx*config.near_view_mouse; stick_y-=mdy*config.near_view_mouse; }
+        } else if(!looking) {
+            desired_aim=rotate(desired_aim,base.r,mdy*rad);
+            desired_aim=rotate(desired_aim,base.u,mdx*rad);
+            offsets(desired_aim,stick_x,stick_y);
+        }
+        const float reach=reach_of(stick_x,stick_y);
+        if(reach>1) { stick_x/=reach; stick_y/=reach; }
+        const float curve=std::pow(std::min(reach,1.0f),expo-1);
+        const float ring_x=stick_x*curve, ring_y=stick_y*curve;
+        near_stick_x.store(ring_x); near_stick_y.store(ring_y);
+        if(attached || !looking)
+            desired_aim=unit(base.f+base.r*std::tan(ring_x*rad)+base.u*(std::tan(ring_y*rad)/std::cos(ring_x*rad)));
+        camera_target=desired_aim;
+    } else {
+        near_look_yaw.store(0); near_look_pitch.store(0);
+        camera_target=free_look.step(looking,desired_aim,view,mdx,mdy);
+    }
+    was_cockpit=cockpit; was_attached=cockpit && attached;
+    // (a cockpit's stick keeps steering while the head turns)
+    if(!looking || (cockpit && attached)) aim=smooth_direction(aim,desired_aim,dt,0.045f);
     look_pitch.store(flight::pitch(camera_target)); look_yaw.store(flight::yaw(camera_target));
+    free_look_held.store(looking);   // (in a cockpit view the head is near_look_yaw/pitch)
     target_pitch.store(flight::pitch(aim)); target_yaw.store(flight::yaw(aim));
     // Lift-vector maneuver paradigm (docs/maneuver-spec.md), see flight_logic.h.
     flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),aim.x,aim.y,aim.z,
         filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load(),aircraft_serial,
         input_throttle.load(),input_brake.load(),
         path_velocity.x,path_velocity.y,path_velocity.z,path_accel.x,path_accel.y,path_accel.z,float(actor_z/100),
-        post_stall_armed.load()?1:0};
+        post_stall_armed.load()?1:0, cockpit && attached ? 1 : 0};
     flight::LogicOutput output{};
     logic.step(logic_state,&input,&output);
     if(output.event[0]) log_line("%s",output.event);
@@ -694,15 +809,17 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
             target_pitch.load(),target_yaw.load(),camera_pitch.load(),camera_yaw.load());
         TextOutA(dc,28,40,label,static_cast<int>(strlen(label)));
         const int width=rect.right-rect.left, height=rect.bottom-rect.top;
+        if(width>0 && height>0) view_aspect.store(float(width)/float(height));
         float x{},y{},bx{},by{};
         bool aim_visible=false, nose_visible=false;
         if (active.load() && enabled.load()) {
-            // The camera applied for the frame on screen (native camera: 30 m behind and 6 m
-            // above along its own axes); else the last camera read from the game.
+            // The camera applied for the frame on screen (native camera: the chase distance
+            // behind and above along its own axes, or the game's cockpit or nose position);
+            // else the last camera read from the game.
             const bool applied=GetTickCount64()-applied_camera_tick.load()<100;
             const auto view=applied ? flight::basis(applied_camera_pitch.load(),applied_camera_yaw.load(),applied_camera_roll.load())
                                     : flight::basis(camera_pitch.load(),camera_yaw.load(),camera_roll.load());
-            const flight::V offset=applied ? view.f*-3000.0f+view.u*600.0f
+            const flight::V offset=applied ? flight::V{applied_offset_x.load(),applied_offset_y.load(),applied_offset_z.load()}
                                            : flight::V{view_offset_x.load(),view_offset_y.load(),view_offset_z.load()};
             const auto aim=flight::basis(target_pitch.load(),target_yaw.load(),0).f;
             auto project=[&](flight::V v,float& sx,float& sy) {
