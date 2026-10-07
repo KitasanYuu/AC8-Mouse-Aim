@@ -158,6 +158,9 @@ $files = @(
     'Scripts\rig_math.lua',
     'Scripts\contacts.lua'
 )
+# every language file (the panel's and HUD texts)
+$langFolder = Join-Path $repo (Join-Path 'Payload' (Join-Path $modRelative 'Scripts\lang'))
+foreach ($lang in Get-ChildItem -LiteralPath $langFolder -Filter '*.txt' -File) { $files += "Scripts\lang\$($lang.Name)" }
 if ($IncludeConfig) { $files += 'config.ini' }
 $changes = @()
 foreach ($file in $files) {
