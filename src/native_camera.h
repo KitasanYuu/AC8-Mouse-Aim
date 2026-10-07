@@ -206,7 +206,7 @@ void __fastcall update_native_camera(void* manager,float dt) {
     if(native_camera_fault || !running.load()) return;
     // not ours this frame: ease it over, and start the head and its give afresh when it comes back
     // (kept, they swung the view from before a resupply to the aircraft after it)
-    if(!active.load() || !enabled.load() || yielding()) { ease_release(manager,dt); camera_blend.resume=0; near_head={}; near_steady.primed=false; return; }
+    if(!active.load() || !enabled.load() || yielding()) { camera_released_since.store(0); ease_release(manager,dt); camera_blend.resume=0; near_head={}; near_steady.primed=false; return; }
     CameraCommand cmd;
     {
         std::unique_lock<std::mutex> lock(camera_command_mutex,std::try_to_lock);
@@ -222,6 +222,8 @@ void __fastcall update_native_camera(void* manager,float dt) {
     else if(GetTickCount64()-cmd.tick>250) reason="camera command timeout";
     else if(GetTickCount64()-pose_tick.load()>250) reason="pose timeout";
     else if(!foreground_is_game()) reason="foreground lost";
+    if(!cmd.manager) { if(!camera_released_since.load()) camera_released_since.store(GetTickCount64()); }
+    else camera_released_since.store(0);
     static const char* previous_reason=nullptr;
     if(reason!=previous_reason) {
         log_line("native camera ownership: %s",reason?reason:"resumed");

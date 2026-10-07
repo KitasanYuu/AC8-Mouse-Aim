@@ -123,6 +123,7 @@ std::atomic<long> autopilot_travel{0};
 constexpr float autopilot_takeover_degrees=6.0f;
 bool yielding() { return gaze_active.load() || autopilot_active.load(); }
 std::atomic<bool> resume_center_requested{false};
+std::atomic<ULONGLONG> camera_released_since{0};   // the game's camera has the view (Lua release) since this tick
 std::atomic<bool> active{false};
 std::atomic<uintptr_t> aircraft{0};
 std::atomic<float> pose_pitch{0}, pose_yaw{0}, pose_roll{0};
@@ -545,7 +546,16 @@ void update_commands() {
     // both low-passed (position steps are frame-quantized).
     {
         const double px[3]={actor_x,actor_y,actor_z};
-        if(actor_valid && previous_pose_clock && elapsed>0.0005f && elapsed<=0.2f) {
+        // Placed rather than flown (mission start, resupply, respawn): no velocity from the jump,
+        // and the aim starts again from the new nose.
+        const double moved=std::sqrt((px[0]-previous_actor[0])*(px[0]-previous_actor[0])+
+            (px[1]-previous_actor[1])*(px[1]-previous_actor[1])+(px[2]-previous_actor[2])*(px[2]-previous_actor[2]));
+        const bool placed=actor_valid && moved>100000 && moved>200000*std::max(elapsed,0.001f);   // over 1 km, and 2 km/s
+        if(placed) {
+            recenter_requested.store(true);
+            log_line("aircraft placed %.1f km away: target re-anchored to nose",moved/100000);
+        }
+        if(actor_valid && !placed && previous_pose_clock && elapsed>0.0005f && elapsed<=0.2f) {
             const V raw{float((px[0]-previous_actor[0])/elapsed/100),float((px[1]-previous_actor[1])/elapsed/100),
                         float((px[2]-previous_actor[2])/elapsed/100)};
             const V raw_accel=(raw-path_raw_velocity)*(1.0f/elapsed);
@@ -584,7 +594,11 @@ void update_commands() {
     V aim=basis(target_pitch.load(),target_yaw.load(),0).f;
     if(!desired_aim_valid) { desired_aim=aim; desired_aim_valid=true; }
     const bool manual = !foreground_is_game();
-    if (recenter_requested.exchange(false) || manual) {
+    // While the game's own camera has had the view for over a second (the mission's opening shot,
+    // a scene), the ring cannot be seen to be aimed: hold it on the nose, so the view comes back ahead.
+    const ULONGLONG released=camera_released_since.load();
+    const bool game_view_held=released && GetTickCount64()-released>1000;
+    if (recenter_requested.exchange(false) || manual || game_view_held) {
         desired_aim=aim=b.f;
         logic_reset();
         mouse_dx.store(0); mouse_dy.store(0);
@@ -596,6 +610,8 @@ void update_commands() {
         const float along=dot(offset,view.f);
         const float t=-along+std::sqrt(std::max(0.0f,along*along+50000.0f*50000.0f-dot(offset,offset)));
         desired_aim=aim=unit(offset+view.f*t);
+        // a view still far off the nose (not yet ours again) would fly the aircraft round to it
+        if(dot(view.f,b.f)<std::cos(45*rad)) desired_aim=aim=b.f;
         logic_reset();
         mouse_dx.store(0); mouse_dy.store(0);
         filtered_pitch_rate=filtered_yaw_rate=filtered_roll_rate=0;
