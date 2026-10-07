@@ -135,6 +135,14 @@ const D = { angle: 0, pitchErr: 1, yawErr: 2, rollErr: 3, w: 4, push: 5, tail: 6
             pitchPred: 9, rollPred: 10, coming: 11, speed: 12, aoa: 13, beta: 14, nz: 15 };
 const rad = Math.PI / 180;
 let frames = [];          // current buffer (live: last 2 minutes; replay: whole recording)
+// Pieces of flight between placements: a frame more than 500 m from the one before starts a new
+// piece (the mission's start places the aircraft from a stand-in position kilometres away, a
+// resupply or respawn moves it): trails are not drawn across, where they had been a long line.
+const PLACED = 500;
+function piece(fr, last) {
+  fr.seg = last ? last.seg + (Math.hypot(fr.pos[0] - last.pos[0], fr.pos[1] - last.pos[1], fr.pos[2] - last.pos[2]) > PLACED ? 1 : 0) : 0;
+  fr.segStart = last && last.seg === fr.seg ? last.segStart : fr.t;   // the charts leave out a piece's first 3 s (the mod's filtered rates settling)
+}
 let contacts = [];        // other aircraft snapshots (~10 Hz): {gt, selected, me, c: [[id, class, x, y, z, pitch, yaw, roll, speed, hidden]]}
 const gtOf = fr => (fr.gt !== undefined && fr.gt >= 0) ? fr.gt : fr.t;
 function contactsAt(gt) {
@@ -268,7 +276,7 @@ function drawScene() {
   // pale while upright and orange while inverted. Half span drawn at WING m.
   const t0 = fr.t - 30, samples = [];
   for (let i = Math.max(0, cursor - 4000); i <= cursor; i += 2) {
-    const s = frames[i]; if (s.t < t0) continue;
+    const s = frames[i]; if (s.t < t0 || s.seg !== fr.seg) continue;
     const sb = basis(s.att[0], s.att[1], s.att[2]), c = enu(s.pos), wr = enu(sb.r);
     samples.push({ c: P(c), l: P(sub(c, mul(wr, WING))), r: P(add(c, mul(wr, WING))), inverted: sb.u[2] < 0 });
   }
@@ -362,7 +370,7 @@ function drawMap() {
   if (cursor < 0) return;
   const fr = frames[cursor], t0 = fr.t - 120;
   const pts = [];
-  for (let i = Math.max(0, cursor - 12000); i <= cursor; i++) if (frames[i].t >= t0) pts.push(enu(frames[i].pos));
+  for (let i = Math.max(0, cursor - 12000); i <= cursor; i++) if (frames[i].t >= t0 && frames[i].seg === fr.seg) pts.push(enu(frames[i].pos));
   const A = enu(fr.pos);
   let x0 = A[0], x1 = A[0], y0 = A[1], y1 = A[1];
   for (const p of pts) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }
@@ -484,7 +492,7 @@ function drawCharts() {
   if (cursor < 0) { CHARTS.forEach(c => setup(c.canvas)); return; }
   const tEnd = frames[cursor].t, window_ = 20, tStart = tEnd - window_;
   let i0 = cursor; while (i0 > 0 && frames[i0 - 1].t >= tStart) i0--;
-  const span = frames.slice(i0, cursor + 1);
+  const here = frames[cursor].seg, span = frames.slice(i0, cursor + 1).filter(fr => fr.seg === here && fr.t - fr.segStart >= 3);
   for (const c of CHARTS) {
     const { ctx, w, h } = setup(c.canvas);
     let lo = c.lo, hi = c.hi;
@@ -548,6 +556,7 @@ function acceptLive(list) {
     if (fr.type) continue;   // other packets ("boss": bosses at 30 Hz) are not flight frames
     const last = frames[frames.length - 1];
     if (last && (fr.t < last.t || fr.t - last.t > 5 || fr.aircraft !== last.aircraft)) { frames = []; contacts = contacts.filter(c => c.gt >= gtOf(fr) - 1); camHeading = null; }
+    piece(fr, frames[frames.length - 1]);
     frames.push(fr);
   }
   const keep = frames.length ? frames[frames.length - 1].t - 120 : 0;
@@ -598,6 +607,7 @@ async function startReplay(name) {
   const text = await (await fetch('/recordings/' + encodeURIComponent(name))).text();
   const all = text.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
   frames = all.filter(x => !x.type); contacts = [];
+  frames.forEach((fr, i) => piece(fr, frames[i - 1]));
   for (const x of all) {   // a big sample comes in several packets: the rest ("contacts_more") join the first
     if (x.type === 'contacts') contacts.push(x);
     else if (x.type === 'contacts_more' && contacts.length && contacts[contacts.length - 1].gt === x.gt) contacts[contacts.length - 1].c.push(...x.c);
