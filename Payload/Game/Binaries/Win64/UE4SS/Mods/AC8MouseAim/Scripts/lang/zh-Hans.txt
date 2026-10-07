@@ -107,7 +107,7 @@ item.hud = MOD 指示 ON/OFF
 item.hud.desc = 设置切换 MOD 瞄准圈显示的按键。飞行控制不受影响。
 
 item.post_stall = 失速机动辅助
-item.post_stall.desc = 设置失速机动辅助的按键。按住期间在 500km/h 以下进行高G力回转时，俯仰先回中约 0.04 秒再拉满，以符合游戏进入失速机动的条件。
+item.post_stall.desc = 设置失速机动辅助的按键。按住期间进行高G力回转时，调整俯仰杆量以达成失速机动的条件。
 
 item.tuning = 设置面板
 item.tuning.desc = 设置用于打开或关闭本面板的按键。

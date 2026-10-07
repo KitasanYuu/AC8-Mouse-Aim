@@ -110,7 +110,7 @@ item.hud = Mod HUD ON/OFF
 item.hud.desc = Sets the key that shows or hides the mod's rings. Flight control is unaffected.
 
 item.post_stall = Post-Stall Assist
-item.post_stall.desc = Sets the key for post-stall assist. While it is held, a High-G Turn below 500 km/h holds the pitch neutral for about 0.04 s, then pulls fully, meeting the game's post-stall condition.
+item.post_stall.desc = Sets the key for post-stall assist. While it is held, the pitch input during a High-G Turn is adjusted to meet the post-stall condition.
 
 item.tuning = Settings Panel
 item.tuning.desc = Sets the key that opens and closes this panel.
