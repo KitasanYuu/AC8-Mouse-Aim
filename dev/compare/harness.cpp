@@ -228,7 +228,7 @@ float input_smooth(float f, float u, float dt, float build, float release) {
 // 2.85 km), so they told the controllers apart in nothing, and brought down 99.7% of the enemies
 // (2026-10-06), with no turn limits or lost locks modelled. Off everywhere, the fixed orders of
 // attack included; missiles=1 brings the old rules back, everywhere. A scene in scenes.txt can
-// have missiles on its own: missiles=1 the old rules, missiles=laam LAAMs flown (see Laam).
+// have missiles on its own: missiles=1 the old rules, missiles=long long-range missiles flown (see LongRange).
 bool with_missiles = false;
 // The pilot's ground floor: the share of the full pull counted on, and the reaction before it
 // (seconds, plus the bank at 90 deg/s); BENCH_FLOOR=<share>,<react> to try others.
@@ -241,9 +241,11 @@ float floor_margin = 0.6f;
 // line before it could level out (by the floor's reckoning), or inverted (bank past 120) within
 // low_take_m of it, the mouse at least low_take_deg above the horizon until the sinking stops.
 bool low_take = true; float low_take_m = 300, low_take_deg = 25;
-enum MissileKind { NoMissiles = 0, RuleMissiles = 1, LaamMissiles = 2 };
-// The player's LAAM (BP_plwp_laam_e0, read in game 2026-10-06; UE cm and cm/s converted), flown
-// frame by frame instead of hitting by rule. It leaves at the aircraft's velocity plus 83 m/s,
+enum MissileKind { NoMissiles = 0, RuleMissiles = 1, LongRangeMissiles = 2 };
+// A long-range missile, flown frame by frame instead of hitting by rule. Its figures were first
+// taken from the game's long-range missile class (BP_plwp_laam_e0, read in game 2026-10-06; UE cm
+// and cm/s converted), but it does not fly as the game's does: called a long-range missile, not by
+// the game's name for it. It leaves at the aircraft's velocity plus 83 m/s,
 // coasts 0.4 s (AccelerationDelayFromStart) and then gains 333 m/s^2 up to 1389 m/s; it does
 // not steer for 0.4 s (HomingDelayFromStart), then 1.2 s at 20 deg/s at most
 // (ReducedHomingDuration, ReducedHomingRotationAngle), then 195 deg/s (MaxRotationAngle),
@@ -255,7 +257,7 @@ enum MissileKind { NoMissiles = 0, RuleMissiles = 1, LaamMissiles = 2 };
 // 6.5 s after it fires (MaxLoadedCount 2, LoadTime). 12 aboard, the bench's own choice (the
 // game's tables give the J-39E 26 or 14). So at close range it rarely turns in time: in its first
 // 1.6 s it covers ~800 m nearly straight.
-struct Laam {
+struct LongRange {
     static constexpr float ignition = 83.3f, accel = 333.3f, top = 1388.9f, accel_delay = 0.4f;
     static constexpr float homing_delay = 0.4f, reduced_for = 1.2f, reduced_rate = 20, rate = 195;
     static constexpr float max_homing = 117, life = 25, lock_angle = 27.5f, lock_range = 10000;
@@ -458,7 +460,7 @@ struct Encounter {
     // the first all 235 s (a boss is never let go).
     std::vector<std::pair<float, int>> selections; bool follow_selection = false;
     bool has_player = false; V3 player_pos; float player_pitch = 0, player_yaw = 0, player_roll = 0, player_speed = 0;   // the recorded start
-    int missiles = NoMissiles;   // this scene's missiles (scenes.txt missiles=1|laam)
+    int missiles = NoMissiles;   // this scene's missiles (scenes.txt missiles=1|long)
     // Below this the aircraft has hit the ground (m): 50, or 20 m under the lowest any recorded
     // enemy flew. The ground is unknown (0-200 m); over the sea LADON came down to 40 m and Moon
     // 11 to 43, and those following them at 45 m were counted crashed (2026-10-06).
@@ -762,7 +764,7 @@ std::vector<Scenario> scenarios(const std::string& dir) {
             else if (opt.rfind("start=", 0) == 0) behind = std::stof(opt.substr(6));
             else if (opt.rfind("order=", 0) == 0) order = opt.substr(6);
             else if (opt == "missiles=1") missiles = RuleMissiles;
-            else if (opt == "missiles=laam") missiles = LaamMissiles;
+            else if (opt == "missiles=long") missiles = LongRangeMissiles;
             else break;
             title = sp == std::string::npos ? "" : title.substr(sp + 1);
         }
@@ -837,7 +839,7 @@ std::vector<Scenario> scenarios(const std::string& dir) {
             std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；%s%s%s%s%s。",
                           int(c.encounter->foes.size()), elites, bosses, from, bosses ? "，速度取头目当时的速度" : "",
                           *fixed ? "；所有飞控" : "", fixed,
-                          with_missiles || missiles == RuleMissiles ? "；机炮和导弹" : missiles == LaamMissiles ? "；机炮和 12 发远程导弹（逐帧飞行，尾追）" : "；只用机炮");
+                          with_missiles || missiles == RuleMissiles ? "；机炮和导弹" : missiles == LongRangeMissiles ? "；机炮和 12 发远程导弹（逐帧飞行，尾追）" : "；只用机炮");
         }
         c.note = note;
         add(c);
@@ -870,11 +872,11 @@ struct Metrics {
     float stall = 0;        // s below the stall speed (225 km/h)
 };
 struct Sample { float v[40]; int n; };
-// One LAAM: launched at t0 at an enemy `range` m away and `off` deg off the nose; how it ended
+// One long-range missile: launched at t0 at an enemy `range` m away and `off` deg off the nose; how it ended
 // (0 still flying at the end, 1 hit, 2 lost: the enemy beyond 117 deg of its heading, 3 its 25 s
 // out, 4 the enemy gone meanwhile, 5 a boss's CIWS) and when; its path, t x y z every 0.1 s.
 struct Shot { float t0, range, off, t_end = -1; int target, outcome = 0; std::vector<float> track; };
-// the bench's launch-range bins for the LAAM log (m): 0-500, 500-800, 800-1200, 1200-2000, 2000-4000, 4000+
+// the bench's launch-range bins for the long-range missile log (m): 0-500, 500-800, 800-1200, 1200-2000, 2000-4000, 4000+
 constexpr float shot_bins[] = {500, 800, 1200, 2000, 4000, 1e9f};
 constexpr int n_shot_bins = sizeof(shot_bins) / sizeof(shot_bins[0]);
 int shot_bin(float range) { int b = 0; while (range >= shot_bins[b]) ++b; return b; }
@@ -1051,7 +1053,7 @@ PilotProfile pilot_profile = pilot_profiles[0];   // read-only while a pass runs
 //     controller) misses (the player's missiles: a fighter gone within the flight time after 75%
 //     of the presses, near and far alike, logged); an elite (or a boss's escort drone) dodges unless launched within 1000 m and 5 deg, and takes two hits;
 //     a boss's CIWS stops them (a boss is scored on the lock time, not brought down).
-//     So by the old rules (missiles=1); a scene with missiles=laam flies LAAMs instead (see Laam).
+//     So by the old rules (missiles=1); a scene with missiles=long flies long-range missiles instead (see LongRange).
 //   gun: rounds at 1389 m/s plus the aircraft's velocity, falling at 9.8 m/s^2, gone after 1.08 s
 //     (the game's BP_plwp_gun_x1). The game's ring (the locked target within 1.1 km, with the range
 //     part) shows where the rounds are now at the enemy's distance, trailing the nose in a turn;
@@ -1194,11 +1196,11 @@ struct Pilot {
     bool extending = false;   // flying out after an overshoot (see before())   // deg/s: the aircraft's full pull at its present speed (fly() sets it: a player knows its aircraft)
     int missile_kind = with_missiles ? RuleMissiles : e.missiles;
     bool use_missiles = missile_kind != NoMissiles;
-    // LAAMs in flight (missile_kind LaamMissiles)
+    // long-range missiles in flight (missile_kind LongRangeMissiles)
     struct Flying { V3 pos, vel; float t0; int target, shot; };
-    std::vector<Flying> laams;
-    std::vector<Shot> shots;   // every LAAM launched, for the log and the viewer
-    int laams_left = Laam::aboard;
+    std::vector<Flying> long_range;
+    std::vector<Shot> shots;   // every long-range missile launched, for the log and the viewer
+    int long_left = LongRange::aboard;
     std::vector<std::pair<float, float>> target_speed;   // the target's speed lately (time, m/s), for its braking
     explicit Pilot(const Encounter& enc, V3 forward)
         : e(enc), killed(enc.foes.size(), 0), hits(enc.foes.size(), 0), missile_hits(enc.foes.size(), 0),
@@ -1263,10 +1265,10 @@ struct Pilot {
         return false;
     }
     bool protected_now(int i, float t) const { return shielded(i, t) || (e.foes[i].escort && in_field(i, t)); }
-    // Brought down already, or (the old rules: they hit for certain) a missile on its way. A LAAM is
+    // Brought down already, or (the old rules: they hit for certain) a missile on its way. A long-range missile is
     // flown and may miss: the player stays on the enemy until it is down (the player, 2026-10-06;
-    // with a LAAM out the next was taken at once until then).
-    bool doomed(int i) const { return missile_hits[i] + (missile_kind == LaamMissiles ? 0 : on_the_way[i]) >= needed(i); }
+    // with a long-range missile out the next was taken at once until then).
+    bool doomed(int i) const { return missile_hits[i] + (missile_kind == LongRangeMissiles ? 0 : on_the_way[i]) >= needed(i); }
     void kill(float t, int i, bool gun = false) {
         killed[i] = 1; kill_log.push_back({t, i}); kill_gun.push_back(gun);
         elite_kills += e.foes[i].elite;
@@ -1460,22 +1462,22 @@ struct Pilot {
         if (extending) { throttle = 1; brake = 0; }
     }
     void after(float t, float dt, const Aircraft& me) {
-        for (size_t k = 0; k < laams.size();) {   // LAAMs: flown, steering at the enemy's tail
-            Flying& m = laams[k];
+        for (size_t k = 0; k < long_range.size();) {   // long-range missiles: flown, steering at the enemy's tail
+            Flying& m = long_range[k];
             const int i = m.target;
             const float age = t - m.t0;
-            bool gone = age > Laam::life || !alive(i, t);
+            bool gone = age > LongRange::life || !alive(i, t);
             if (!gone) {
                 float speed = len(m.vel);
-                if (age > Laam::accel_delay) speed = std::min(Laam::top, speed + Laam::accel * dt);
+                if (age > LongRange::accel_delay) speed = std::min(LongRange::top, speed + LongRange::accel * dt);
                 V3 dir = unit(m.vel);
                 const V3 was = pose_at(e.foes[i].path, t - dt).pos, now = pose_at(e.foes[i].path, t).pos;
-                if (age > Laam::homing_delay) {
+                if (age > LongRange::homing_delay) {
                     const V3 los = unit(now - m.pos);
                     const float ang = std::acos(std::clamp(dot(dir, los), -1.0f, 1.0f));
-                    if (ang > Laam::max_homing * rad) gone = true;   // lost: it flies on, harming nothing
+                    if (ang > LongRange::max_homing * rad) gone = true;   // lost: it flies on, harming nothing
                     else if (ang > 1e-4f) {
-                        const float turn = (age < Laam::homing_delay + Laam::reduced_for ? Laam::reduced_rate : Laam::rate) * rad * dt;
+                        const float turn = (age < LongRange::homing_delay + LongRange::reduced_for ? LongRange::reduced_rate : LongRange::rate) * rad * dt;
                         const V3 side = unit(los - dir * dot(dir, los));
                         const float a = std::min(ang, turn);
                         dir = unit(dir * std::cos(a) + side * std::sin(a));
@@ -1494,15 +1496,15 @@ struct Pilot {
                         shots[m.shot].track.insert(shots[m.shot].track.end(), {t, m.pos.x, m.pos.y, m.pos.z});
                         --on_the_way[i];
                         if (!protected_now(i, t) && ++missile_hits[i] >= needed(i)) kill(t, i);
-                        laams.erase(laams.begin() + k);
+                        long_range.erase(long_range.begin() + k);
                         continue;
                     }
                 }
             }
             if (gone) {
                 Shot& sh = shots[m.shot];
-                sh.outcome = age > Laam::life ? 3 : !alive(i, t) ? 4 : 2; sh.t_end = t;
-                --on_the_way[i]; laams.erase(laams.begin() + k); continue;
+                sh.outcome = age > LongRange::life ? 3 : !alive(i, t) ? 4 : 2; sh.t_end = t;
+                --on_the_way[i]; long_range.erase(long_range.begin() + k); continue;
             }
             ++k;
         }
@@ -1535,22 +1537,22 @@ struct Pilot {
         if (target < 0) { lock = 0; end_window(); return; }
         const V3 to = pose_at(e.foes[target].path, t).pos - me.pos;
         const float seen = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
-        const bool in_lock = missile_kind == LaamMissiles
-                                 ? seen < Laam::lock_angle && range < (e.foes[target].ecm ? 1000.0f : Laam::lock_range)
+        const bool in_lock = missile_kind == LongRangeMissiles
+                                 ? seen < LongRange::lock_angle && range < (e.foes[target].ecm ? 1000.0f : LongRange::lock_range)
                                  : seen < 15 && range > 300 && range < lock_range(target);
         lock = in_lock ? lock + dt : 0;
         target_time += dt; if (in_lock) lock_time += dt;
         float* rail = rail_ready[0] <= rail_ready[1] ? &rail_ready[0] : &rail_ready[1];
-        // one LAAM at a time at an enemy: the second rail waits to see the first hit or miss
-        if (missile_kind == LaamMissiles && !e.guns_only && lock >= 0.8f && t >= *rail && laams_left > 0 && range >= Laam::min_range &&
+        // one long-range missile at a time at an enemy: the second rail waits to see the first hit or miss
+        if (missile_kind == LongRangeMissiles && !e.guns_only && lock >= 0.8f && t >= *rail && long_left > 0 && range >= LongRange::min_range &&
             on_the_way[target] == 0 && !doomed(target)) {
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
             // a boss's CIWS stops it, as the other missiles
             shots.push_back({t, range, seen, -1, target, 0, {t, me.pos.x, me.pos.y, me.pos.z}});
-            if (!e.foes[target].boss) { laams.push_back({me.pos, me.vel + me.b.f * Laam::ignition, t, target, int(shots.size()) - 1}); ++on_the_way[target]; }
+            if (!e.foes[target].boss) { long_range.push_back({me.pos, me.vel + me.b.f * LongRange::ignition, t, target, int(shots.size()) - 1}); ++on_the_way[target]; }
             else { shots.back().outcome = 5; shots.back().t_end = t; }
-            ++launched[target]; ++missiles; --laams_left;
-            *rail = t + Laam::reload;
+            ++launched[target]; ++missiles; --long_left;
+            *rail = t + LongRange::reload;
             if (doomed(target)) { target = -1; lock = 0; return; }
         }
         if (missile_kind == RuleMissiles && !e.guns_only && lock >= 0.8f && t >= *rail && !doomed(target)) {
@@ -1650,8 +1652,8 @@ std::map<std::string, double> stall_time;
 // and the speeds (km/h) for the median. Per controller and condition.
 struct SpeedLog { double mode[4] = {}, fast = 0, total = 0; std::vector<float> kmh; };
 std::map<std::string, SpeedLog> pilot_speed;
-// LAAMs of the standard pass, per controller: [launch-range bin][outcome 0-5]
-std::map<std::string, std::array<std::array<int, 6>, n_shot_bins>> laam_log;
+// long-range missiles of the standard pass, per controller: [launch-range bin][outcome 0-5]
+std::map<std::string, std::array<std::array<int, 6>, n_shot_bins>> long_range_log;
 std::mutex stats_mutex;   // the maps above: each run adds its own totals at its end
 std::string trace_scene;   // BENCH_TRACE=<scene>:<controller>@<condition>[,<from s>]: the controller's internals for 6 s
 float trace_from = 0;
@@ -1803,7 +1805,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         std::lock_guard<std::mutex> lock(stats_mutex);
         const std::string key = ctl_id + "@" + cond.id;
         if (keep_frames && pilot)
-            for (const Shot& sh : pilot->shots) ++laam_log[ctl_id][shot_bin(sh.range)][sh.outcome];
+            for (const Shot& sh : pilot->shots) ++long_range_log[ctl_id][shot_bin(sh.range)][sh.outcome];
         stall_time[key] += me.stalled;
         auto& f = roll_fight[key];
         for (int i = 0; i < 4; ++i) f[i] += fight[i];
@@ -2044,7 +2046,7 @@ int main() {
                         kills_json += e;
                     }
                     kills_json += "]";
-                    // LAAMs: [t0, enemy, range, off, outcome, t_end, [t, x, y, z, ...]]
+                    // long-range missiles: [t0, enemy, range, off, outcome, t_end, [t, x, y, z, ...]]
                     shots_json += std::string(sep) + "\"" + entries[ci].id + "\":[";
                     for (size_t k = 0; k < run.shots.size(); ++k) {
                         const Shot& sh = run.shots[k];
@@ -2076,7 +2078,7 @@ int main() {
             if (sc.encounter) {
                 // every enemy's path at 2 Hz, a boss at 10 Hz (t, x, y, z, roll, pitch, yaw, and a boss's wing sweep and fold
                 // when recorded; attitude as recorded, pitch from the climb in recordings before 2026-10-05) and the kill times
-                data += ",\"_kills\":" + kills_json + "},\"_laams\":" + shots_json + "},\"_foes\":[";
+                data += ",\"_kills\":" + kills_json + "},\"_long_range\":" + shots_json + "},\"_foes\":[";
                 for (size_t i = 0; i < sc.encounter->foes.size(); ++i) {
                     const Foe& f = sc.encounter->foes[i];
                     char head[200];
@@ -2305,16 +2307,16 @@ int main() {
     summary_js += "],\"per_scene\":" + arr(main_summary.per_scene) + ",\"per_kind\":" + arr(main_summary.per_kind) +
                   ",\"mean_rank\":" + arr(main_summary.mean_rank) + ",\"per_plant\":{";
     for (int p = 0; p < condition_count; ++p) summary_js += std::string(p ? "," : "") + "\"" + conditions[p].id + "\":" + arr(main_summary.per_plant[p]);
-    if (!laam_log.empty()) {
-        // LAAMs by launch range, all aircraft, the standard pass: launched, and the share that hit
+    if (!long_range_log.empty()) {
+        // long-range missiles by launch range, all aircraft, the standard pass: launched, and the share that hit
         // (the rest lost beyond 117 deg, out of time, or the enemy gone meanwhile)
         header("Long-range missiles by launch range (all aircraft; launched, hit %, lost %)");
         static const char* bins[n_shot_bins] = {"<500 m", "500-800", "800-1200", "1.2-2 km", "2-4 km", "4 km+"};
-        summary_js += "},\"laam\":{";
+        summary_js += "},\"long_range\":{";
         bool first_ctl = true;
         for (size_t i = 0; i < n_ctl; ++i) {
-            auto it = laam_log.find(entries[i].id);
-            if (it == laam_log.end()) continue;
+            auto it = long_range_log.find(entries[i].id);
+            if (it == long_range_log.end()) continue;
             summary_js += std::string(first_ctl ? "" : ",") + "\"" + entries[i].id + "\":["; first_ctl = false;
             std::snprintf(line, sizeof(line), "  %-24s", entries[i].id.c_str()); card += line;
             for (int b = 0; b < n_shot_bins; ++b) {

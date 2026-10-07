@@ -678,10 +678,10 @@ function drawView() {
     }
     ctx.globalAlpha = 1;
   }
-  // LAAMs (scenes with missiles=laam): each in its controller's colour, the last 3 s of its path
+  // long-range missiles (scenes with missiles=long): each in its controller's colour, the last 3 s of its path
   // and its head while it flies; one lost (beyond 117 deg, or out of time) ends in a ring for 2 s
   for (const c of list) {
-    for (const m of (data._laams && data._laams[c.id]) || []) {
+    for (const m of (data._long_range && data._long_range[c.id]) || []) {
       const [t0, , , , outcome, tEnd, tr] = m;
       const end = tEnd >= 0 ? tEnd : Infinity;
       if (st.t < t0 || st.t > end + 2 || tr.length < 8) continue;

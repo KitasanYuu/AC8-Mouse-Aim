@@ -19,14 +19,14 @@
 #           order=game|near|nose|mixed: every controller attacks in the same fixed order (the
 #           player's own, or a reference flight's; see reference_order in harness.cpp). The
 #           crowded M28 battle runs in the player's own order only (four orders until 2026-10-06);
-#           and missiles=1|laam: missiles as well as the gun, by the old rules or LAAMs flown
+#           and missiles=1|long: missiles as well as the gun, by the old rules or long-range missiles flown
 #           (fights are gun only otherwise).
 #
 # kind    file                      id        title
 landing   20261005-131536_613.txt   man_10    通用机动 · 战时降落 盘旋进近
 landing   20261005-131536_1131.txt  man_11    通用机动 · 战时降落 垂直俯冲
 landing   20261005-131536_1509.txt  man_12    通用机动 · 战时降落 高速俯冲
-multi     20261005-131536_100.txt   multi_01  order=game missiles=laam 多机 · M28 千颗亮点
+multi     20261005-131536_100.txt   multi_01  order=game missiles=long 多机 · M28 千颗亮点
 boss      20261005-102156_93.txt    boss_01   from=61.8 start=player target=game 头目 · LADON 一阶段
 boss      20261005-102156_343.txt   boss_02   start=player 头目 · LADON 二阶段
 boss      20261005-113403_10.txt    boss_03   头目 · Selene
