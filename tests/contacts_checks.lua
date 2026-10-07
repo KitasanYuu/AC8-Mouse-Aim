@@ -54,6 +54,8 @@ local part = object(8, 'BP_Boss_Part_Engine_C', 5000, 0, 5000, {target = true, s
 FindAllOf = function() return objects end
 
 local packets, boss = {}, {}
+local hooks = {}
+RegisterHook = function(name, fn) hooks[name] = fn end
 local contacts = dofile('Payload/Game/Binaries/Win64/UE4SS/Mods/AC8MouseAim/Scripts/contacts.lua')
 contacts.init(function(text)
     if text:find('"type":"boss"') then boss[#boss + 1] = text else packets[#packets + 1] = text end
@@ -120,9 +122,9 @@ packets = {}
 contacts.update(pawn, 8.0)
 io.open = real_open
 local list = packets[1]:match('"c":%[(.*)%]')
-assert(list:find('%[3,"BP_OP1020_m29a_CP_Shadow_C",[^%]]*,2%]'), 'lockable target not marked 2: ' .. list)
-assert(list:find('%[9,"BP_OP0045_ladn_CP_C",[^%]]*,1%]'), 'untargetable candidate not marked 1')
-assert(list:find('%[4,"BP_WOP1004_f15c_C",[^%]]*,0%]'), 'ally not marked 0')
+assert(list:find('%[3,"BP_OP1020_m29a_CP_Shadow_C",[^%]]*,2,%-?%d+%]'), 'lockable target not marked 2: ' .. list)
+assert(list:find('%[9,"BP_OP0045_ladn_CP_C",[^%]]*,1,%-?%d+%]'), 'untargetable candidate not marked 1')
+assert(list:find('%[4,"BP_WOP1004_f15c_C",[^%]]*,0,%-?%d+%]'), 'ally not marked 0')
 assert(#logged == 1 and logged[1]:find('target%-candidates%-'), 'candidate lists not logged once')
 pawn.TargetSelectionComponent = {GetSelectedTarget = function() return nil end}
 -- a Tu-95's wing is not tracked unless selected
@@ -141,4 +143,14 @@ assert(packets[1]:find('"type":"contacts"'), 'first packet is not the contacts p
 assert(more >= 2, 'a big sample not split: ' .. more)
 assert(aircraft >= 800, 'aircraft lost when split: ' .. aircraft)
 for _, text in ipairs(packets) do assert(not text:gsub('"classes":%b{}', ''):find('LeftChildWing'), 'a part tracked when not selected') end
+-- damage and gun hits as the game reports them, with the victim's health after
+assert(hooks['/Script/Live.LiveAIGameObject:OnLiveDamageTakenBP'] and hooks['/Script/Live.LiveGameObject:OnHitByGun'], 'hit hooks not registered')
+enemy.HealthInternal = 40
+local function param(v) return {get = function() return v end} end
+packets = {}
+hooks['/Script/Live.LiveAIGameObject:OnLiveDamageTakenBP'](param(enemy), param(15), param(pawn))
+hooks['/Script/Live.LiveGameObject:OnHitByGun'](param(enemy), param(pawn))
+assert(packets[1] and packets[1]:find('"type":"hit"') and packets[1]:find('"kind":"damage"') and packets[1]:find('"d":15%.00')
+       and packets[1]:find('"v":2,') and packets[1]:find('"a":1,') and packets[1]:find('"h":40'), 'damage not reported: ' .. tostring(packets[1]))
+assert(packets[2] and packets[2]:find('"kind":"gun"'), 'gun hit not reported: ' .. tostring(packets[2]))
 print('Lua contacts checks passed')

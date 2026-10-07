@@ -1,5 +1,5 @@
--- Other aircraft for the telemetry stream (dev\Telemetry.cmd): position, attitude and the
--- game's own speed of each aircraft at ~10 Hz, the selected target, and the player's own
+-- Other aircraft for the telemetry stream (dev\Telemetry.cmd): position, attitude, the
+-- game's own speed and the current health of each aircraft at ~10 Hz, the selected target, and the player's own
 -- game speed and aircraft class. Read-only. Does nothing while telemetry is off (the send
 -- returns 0). Enemies are tracked first (elites always), then the nearest others; an
 -- aircraft that disappears (destroyed, or removed by the game) is reported once in "gone".
@@ -23,7 +23,7 @@ local SCAN_SECONDS,SAMPLE_SECONDS,MAX_TRACKED,PER_PACKET=3,0.1,1000,350
 local BOSS_SECONDS,MAX_FAST=1/30,12
 local next_boss=0
 
-function M.init(send_function) send=send_function end
+function M.init(send_function) send=send_function; pcall(function() M.register_hooks() end) end   -- defined below
 -- Telemetry is on: the last packet went out (the send returns 0 while it is off).
 local sending=false
 function M.active() return sending end
@@ -152,6 +152,48 @@ local function scan(pawn,game_time)
 end
 
 local function json_string(s) return '"'..tostring(s):gsub('[%c"\\]','')..'"' end
+
+-- Hits as the game counts them (what its HUD shows as HIT and, the health run out, DESTROYED):
+-- every damage an AI object takes (LiveAIGameObject.OnLiveDamageTakenBP: the amount and the
+-- attacker) and every gun hit (LiveGameObject.OnHitByGun), each with the victim's health after
+-- it. Until 2026-10-06 the player's kills were judged from wrecks and the selection, which took
+-- in kills by missiles and wingmen. Packets "hit": kind (damage | gun), victim, attacker.
+local last_time=-1
+local hooks_on=false
+local function object_of(param)
+    local o=nil
+    pcall(function() o=param:get() end)
+    if o==nil then o=param end
+    return o
+end
+local function id_class(o)
+    local id,cls=0,'?'
+    pcall(function() if o and o:IsValid() then id=o:GetAddress(); cls=short_class(o) end end)
+    return id,cls
+end
+local function send_hit(kind,victim,damage,attacker)
+    if not send or not sending or last_time<0 then return end
+    local vid,vcls=id_class(victim)
+    local aid,acls=id_class(attacker)
+    local health=-1
+    pcall(function() health=tonumber(victim.HealthInternal) or -1 end)
+    pcall(send,string.format('{"type":"hit","gt":%.4f,"kind":"%s","v":%.0f,"vc":%s,"d":%.2f,"a":%.0f,"ac":%s,"h":%.0f}',
+        last_time,kind,vid,json_string(vcls),damage,aid,json_string(acls),health))
+end
+function M.register_hooks()
+    if hooks_on or not RegisterHook then return end
+    hooks_on=true
+    pcall(RegisterHook,'/Script/Live.LiveAIGameObject:OnLiveDamageTakenBP',function(context,damage,attacker)
+        pcall(function()
+            local amount=0
+            pcall(function() amount=tonumber(damage:get()) or 0 end)
+            send_hit('damage',object_of(context),amount,object_of(attacker))
+        end)
+    end)
+    pcall(RegisterHook,'/Script/Live.LiveGameObject:OnHitByGun',function(context,attacker)
+        pcall(function() send_hit('gun',object_of(context),0,object_of(attacker)) end)
+    end)
+end
 
 -- The game's own targeting: the player's LiveTargetSelectionComponent keeps TargetCandidates
 -- (lockable now) and UnTargetableCandidates (candidates that cannot be locked now). Allies are
@@ -308,6 +350,7 @@ end
 
 local self_id,self_class=nil,'?'
 function M.update(pawn,game_time)
+    last_time=game_time
     if not send or game_time<0 or game_time<backoff_until then return end
     local boss_due=game_time>=next_boss
     if boss_due then next_boss=game_time+BOSS_SECONDS end
@@ -355,8 +398,12 @@ function M.update(pawn,game_time)
             pcall(function() speed=tonumber(c.obj:GetSpeedMps()) or -1 end)
             local hidden=0
             pcall(function() if c.obj.bHidden then hidden=1 end end)
-            return string.format('[%.0f,%s,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.1f,%d,%d,%d]',
-                c.id,json_string(c.cls),x,y,z,rot_pitch(r),vec(r,'Yaw'),vec(r,'Roll'),speed,hidden,c.enemy and 1 or 0,lockable[c.id] or 0)
+            -- current health (LiveGameObject.HealthInternal; -1 unread): the damage each burst of
+            -- the gun does, for the gun's reach by range (bench calibration, 2026-10-06)
+            local health=-1
+            pcall(function() health=tonumber(c.obj.HealthInternal) or -1 end)
+            return string.format('[%.0f,%s,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.1f,%d,%d,%d,%.0f]',
+                c.id,json_string(c.cls),x,y,z,rot_pitch(r),vec(r,'Yaw'),vec(r,'Roll'),speed,hidden,c.enemy and 1 or 0,lockable[c.id] or 0,health)
         end)
         if ok and entry then parts[#parts+1]=entry end
     end
