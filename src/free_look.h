@@ -5,11 +5,13 @@ struct FreeLook {
     bool held=false;
     V direction{1,0,0};
     void reset() { held=false; }
-    V step(bool down, V& aim, const Basis& view, float dx, float dy) {
+    // keep: on release the aim takes the direction looked in (War Thunder's), else it is where it was.
+    V step(bool down, V& aim, const Basis& view, float dx, float dy, bool keep=false) {
         // Discard boundary-frame deltas so release cannot move the flight target.
         if (down!=held) {
             held=down;
             if (held) direction=view.f;
+            else if (keep) aim=direction;
             dx=dy=0;
         }
         if (held) {

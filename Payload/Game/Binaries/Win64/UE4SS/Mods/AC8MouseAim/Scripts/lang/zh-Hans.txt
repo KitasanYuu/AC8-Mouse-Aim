@@ -40,6 +40,9 @@ item.camera_distance.desc = 设置追尾镜头与机体的距离（m）。设为
 item.camera_height = 镜头高度
 item.camera_height.desc = 设置追尾镜头在机体上方的高度（m）。镜头距离为 0 时无效。
 
+item.free_look_keep = 自由视角后保持朝向
+item.free_look_keep.desc = 设置解除自由视角时瞄准点的位置。OFF：回到进入自由视角前的位置　ON：移到解除时镜头所朝的方向（同 War Thunder）
+
 item.camera_fov_add = FOV 修正
 item.camera_fov_add.desc = 在游戏的视野角度（FOV）上增减的度数（追尾镜头）。保留游戏随速度产生的变化。
 

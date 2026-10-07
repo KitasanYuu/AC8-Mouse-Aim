@@ -64,6 +64,8 @@ struct Config {
     // over ~0.6 s; War Thunder's camera follows the mouse closely and the ring stays put.
     float camera_follow = 12.0f;
     float camera_distance = 30.0f, camera_height = 6.0f;   // chase camera, m; distance 0 = the game's own
+    // Free look released: 0 the aim stays where it was, 1 it takes the direction looked in (War Thunder's).
+    int free_look_keep = 0;
     // Degrees added to the game's own FOV (which it changes with speed): chase, cockpit and nose views.
     float camera_fov_add = 0.0f, near_view_fov_add = 0.0f;
     // Cockpit and nose views: 0 the view fixed ahead (the mouse ring moves across it), 1 turned to
@@ -310,6 +312,7 @@ void load_config() {
     config.camera_follow = std::clamp(read_config_float(L"camera_follow", config.camera_follow), 1.0f, 60.0f);
     config.camera_distance = std::clamp(read_config_float(L"camera_distance", config.camera_distance), 0.0f, 200.0f);
     config.camera_height = std::clamp(read_config_float(L"camera_height", config.camera_height), -50.0f, 50.0f);
+    config.free_look_keep = read_config_int(L"free_look_keep", 0) != 0;
     config.camera_fov_add = std::clamp(read_config_float(L"camera_fov_add", 0.0f), -40.0f, 40.0f);
     config.near_view_fov_add = std::clamp(read_config_float(L"near_view_fov_add", 0.0f), -40.0f, 40.0f);
     config.near_view_camera = std::clamp(read_config_int(L"near_view_camera", config.near_view_camera), 0, 3);
@@ -716,6 +719,15 @@ void update_commands() {
         // the aircraft's own frame (the game's camera turns away from it to look at a target or a
         // story point; the stick had turned with it and the aircraft after it)
         const Basis base=basis(pose_pitch.load(),pose_yaw.load(),pose_roll.load());
+        // free look released with free_look_keep: the aim takes the head's direction, the stick put there
+        static bool was_looking=false;
+        bool look_kept=false;
+        if(was_looking && !looking && config.free_look_keep) {
+            const float yaw_off=near_look_yaw.load()*rad, pitch_off=near_look_pitch.load()*rad;
+            desired_aim=unit(base.f*(std::cos(pitch_off)*std::cos(yaw_off))+base.r*(std::cos(pitch_off)*std::sin(yaw_off))+base.u*std::sin(pitch_off));
+            look_kept=true;
+        }
+        was_looking=looking;
         head_look();
         const float half_w=std::clamp(view_fov.load(),20.0f,150.0f)*0.5f*rad;
         const float half_h=std::atan(std::tan(half_w)/std::max(view_aspect.load(),0.5f));
@@ -736,7 +748,7 @@ void update_commands() {
         auto reach_of=[&](float x,float y) { return std::hypot(x/std::max(lim_x,1e-3f),y/std::max(lim_y,1e-3f)); };
         // from the aim as it is: the stick that gives that ring (kept after a recentre, the stick put
         // the ring back where it had been before the autopilot, reported 2026-10-07)
-        if(!was_cockpit || (attached && !was_attached) || recentred) {
+        if(!was_cockpit || (attached && !was_attached) || recentred || look_kept) {
             offsets(desired_aim,stick_x,stick_y);
             const float r=std::min(reach_of(stick_x,stick_y),1.0f);
             if(r>1e-4f) { const float k=std::pow(r,1/expo-1); stick_x*=k; stick_y*=k; }
@@ -758,7 +770,7 @@ void update_commands() {
         camera_target=desired_aim;
     } else {
         near_look_yaw.store(0); near_look_pitch.store(0);
-        camera_target=free_look.step(looking,desired_aim,view,mdx,mdy);
+        camera_target=free_look.step(looking,desired_aim,view,mdx,mdy,config.free_look_keep!=0);
     }
     was_cockpit=cockpit; was_attached=cockpit && attached;
     // (a cockpit's stick keeps steering while the head turns)
