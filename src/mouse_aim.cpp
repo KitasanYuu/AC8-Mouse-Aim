@@ -61,6 +61,9 @@ struct Config {
     float camera_follow = 12.0f;
     // Live telemetry to dev/telemetry (UDP port on 127.0.0.1); 0 = off.
     int telemetry_port = 0;
+    // Post-stall request key (virtual-key code; 0 = none): held, a high-G pressed below
+    // 500 km/h enters the game's post-stall maneuver (see post_stall_override).
+    int post_stall_key = VK_XBUTTON1;
 };
 
 struct Pose {
@@ -80,6 +83,9 @@ std::atomic<bool> trace_enabled{false};
 // Axes the player is flying by keyboard (1 pitch, 2 roll, 4 yaw), for trace analysis.
 std::atomic<int> keyboard_axes{0};
 std::atomic<float> input_throttle{0}, input_brake{0};  // the game's InputThrottle / InputBrake
+// Post-stall requested: the key held (a toggle that a later high-G used up could be spent by
+// an unintended one, or one over 500 km/h, reported).
+std::atomic<bool> post_stall_armed{false};
 // The player's own axis input as the game wrote it, before the override (game convention).
 std::atomic<float> raw_axis_pitch{0}, raw_axis_yaw{0}, raw_axis_roll{0};
 // Actor position (cm) and the flight path derived from it (game thread only).
@@ -186,6 +192,34 @@ int read_config_int(const wchar_t* key, int fallback) {
     return GetPrivateProfileIntW(L"control", key, fallback, config_path);
 }
 
+// A key by name, for every bindable key: XButton1/XButton2 (mouse side buttons, back and
+// forward), MButton, F1-F24, a letter or digit, or a virtual-key code (0x05 or 5). Empty or
+// "none" is no key; anything else unreadable keeps the default.
+int read_config_key(const wchar_t* key, int fallback) {
+    wchar_t value[64]{};
+    GetPrivateProfileStringW(L"control", key, L"", value, 64, config_path);
+    std::wstring text(value);
+    if(text==L"") return fallback;
+    while(!text.empty() && iswspace(text.back())) text.pop_back();
+    while(!text.empty() && iswspace(text.front())) text.erase(text.begin());
+    for(auto& c:text) c=towupper(c);
+    if(text.empty() || text==L"NONE") return 0;
+    static const struct { const wchar_t* name; int vk; } names[]={
+        {L"XBUTTON1",VK_XBUTTON1},{L"XBUTTON2",VK_XBUTTON2},{L"MBUTTON",VK_MBUTTON},
+        {L"SHIFT",VK_SHIFT},{L"CTRL",VK_CONTROL},{L"ALT",VK_MENU},{L"SPACE",VK_SPACE},
+        {L"TAB",VK_TAB},{L"CAPSLOCK",VK_CAPITAL}};
+    for(const auto& n:names) if(text==n.name) return n.vk;
+    if(text.size()>=2 && text[0]==L'F' && iswdigit(text[1])) {
+        const int f=_wtoi(text.c_str()+1);
+        if(f>=1 && f<=24) return VK_F1+f-1;
+    }
+    if(text.size()==1 && (iswalpha(text[0]) || iswdigit(text[0]))) return int(text[0]);
+    wchar_t* end{};
+    const long code=wcstol(text.c_str(),&end,0);
+    if(end!=text.c_str() && *end==0 && code>0 && code<256) return int(code);
+    return fallback;
+}
+
 void load_config() {
     init_paths();
     config.sensitivity = std::clamp(read_config_float(L"sensitivity", config.sensitivity), 0.01f, 1.0f);
@@ -209,6 +243,7 @@ void load_config() {
     config.input_probe = read_config_int(L"input_probe", 0);
     config.camera_follow = std::clamp(read_config_float(L"camera_follow", config.camera_follow), 1.0f, 60.0f);
     config.telemetry_port = std::clamp(read_config_int(L"telemetry_port", 0), 0, 65535);
+    config.post_stall_key = read_config_key(L"post_stall_key", VK_XBUTTON1);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
         config.pitch_slot = 0;
         config.roll_slot = 2;
@@ -367,6 +402,13 @@ void mouse_loop() {
             recenter_requested.store(true);
             log_line("autopilot: mouse takeover; target re-anchored to nose");
         }
+        static bool post_stall_down=false;
+        const int psk=config.post_stall_key;
+        const bool post_stall=psk>0 && (GetAsyncKeyState(psk)&0x8000)!=0;
+        const bool requested=post_stall && foreground_is_game() && active.load() && enabled.load();
+        if(requested!=post_stall_down) log_line("post-stall: %s",requested?"key held":"key released");
+        post_stall_armed.store(requested);
+        post_stall_down=requested;
         static bool f4_down=false;
         const bool f4=(GetAsyncKeyState(VK_F4)&0x8000)!=0;
         if(f4 && !f4_down && foreground_is_game()) {
@@ -406,7 +448,7 @@ void send_telemetry(long long clock,float dt,const flight::LogicOutput& output,b
     unsigned mouse_buttons=0;
     const int button_keys[]={VK_LBUTTON,VK_RBUTTON,VK_MBUTTON,VK_XBUTTON1,VK_XBUTTON2,VK_SPACE};
     for(int i=0;i<6;++i) if(GetAsyncKeyState(button_keys[i])&0x8000) mouse_buttons|=1u<<i;
-    if(n>0) n+=std::snprintf(packet+n,sizeof(packet)-n,"\"mb\":%u,",mouse_buttons);
+    if(n>0) n+=std::snprintf(packet+n,sizeof(packet)-n,"\"mb\":%u,\"psm\":%d,",mouse_buttons,post_stall_armed.load()?1:0);
     float pad[6]{}; unsigned buttons=0;
     if(n>0 && gamepad_read(pad,buttons))
         n+=std::snprintf(packet+n,sizeof(packet)-n,"\"pad\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u],",
@@ -526,7 +568,8 @@ void update_commands() {
     flight::LogicInput input{pose_pitch.load(),pose_yaw.load(),pose_roll.load(),aim.x,aim.y,aim.z,
         filtered_pitch_rate,filtered_yaw_rate,filtered_roll_rate,dt,keyboard_axes.load(),aircraft_serial,
         input_throttle.load(),input_brake.load(),
-        path_velocity.x,path_velocity.y,path_velocity.z,path_accel.x,path_accel.y,path_accel.z,float(actor_z/100)};
+        path_velocity.x,path_velocity.y,path_velocity.z,path_accel.x,path_accel.y,path_accel.z,float(actor_z/100),
+        post_stall_armed.load()?1:0};
     flight::LogicOutput output{};
     logic.step(logic_state,&input,&output);
     if(output.event[0]) log_line("%s",output.event);
@@ -543,7 +586,7 @@ void update_commands() {
 #include "native_camera.h"
 
 void release_controls() {
-    active.store(false); aircraft.store(0);
+    active.store(false); aircraft.store(0); post_stall_armed.store(false);
     command_pitch.store(0); command_yaw.store(0); command_roll.store(0);
     mouse_dx.store(0); mouse_dy.store(0);
     previous_pose_clock=0; free_look.reset(); desired_aim_valid=false; logic_reset();
@@ -589,6 +632,7 @@ void receive_pose(const double (&v)[19]) {
         telemetry_tick = 0;
         recenter_requested.store(true);
         free_look.reset();
+        post_stall_armed.store(false);
         log_line("aircraft acquired 0x%llX pose=(%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f)",
                  static_cast<unsigned long long>(address), pitch, yaw, roll, view_pitch, view_yaw, view_roll);
     }
@@ -607,7 +651,8 @@ void receive_pose(const double (&v)[19]) {
 // a white line on a soft dark halo, both partly transparent, at sub-pixel position.
 // GDI rings had no antialiasing (jagged edges, reported) and were fully opaque.
 RECT draw_ring(uint32_t* pixels,int width,int height,float cx,float cy,float radius,
-               float line,float halo,float line_alpha,float halo_alpha) {
+               float line,float halo,float line_alpha,float halo_alpha,uint32_t rgb=0xFFFFFF) {
+    const float lr=float((rgb>>16)&0xFF), lg=float((rgb>>8)&0xFF), lb=float(rgb&0xFF);
     const float half=line*0.5f, extent=radius+half+halo+1.5f;
     RECT box{std::max(0,static_cast<int>(std::floor(cx-extent))),std::max(0,static_cast<int>(std::floor(cy-extent))),
              std::min(width,static_cast<int>(std::ceil(cx+extent))+1),std::min(height,static_cast<int>(std::ceil(cy+extent))+1)};
@@ -620,21 +665,23 @@ RECT draw_ring(uint32_t* pixels,int width,int height,float cx,float cy,float rad
             h=h*h*(3-2*h)*halo_alpha;
             const float a=line_cover+h*(1-line_cover);
             if(a<=0.002f) continue;
-            const float c=255.0f*line_cover+12.0f*h*(1-line_cover);  // premultiplied grey level
+            const float dark=12.0f*h*(1-line_cover);  // premultiplied, per channel
+            const float cr=lr*line_cover+dark, cg=lg*line_cover+dark, cb=lb*line_cover+dark;
             uint32_t& pixel=pixels[static_cast<size_t>(y)*width+x];
             const float keep=1-a;
             const float da=(pixel>>24)/255.0f;
-            const float dc=(pixel&0xFF);
-            const float oa=a+da*keep, oc=c+dc*keep;
+            const float oa=a+da*keep;
+            auto mix=[&](float c,int shift) {
+                return static_cast<uint32_t>(std::lround(std::min(c+float((pixel>>shift)&0xFF)*keep,255.0f)));
+            };
             const uint32_t A=static_cast<uint32_t>(std::lround(std::min(oa,1.0f)*255));
-            const uint32_t C=static_cast<uint32_t>(std::lround(std::min(oc,255.0f)));
-            pixel=(A<<24)|(C<<16)|(C<<8)|C;
+            pixel=(A<<24)|(mix(cr,16)<<16)|(mix(cg,8)<<8)|mix(cb,0);
         }
     return box;
 }
 
 // Draws the HUD and returns the regions drawn (for clearing and dirty-rect presents).
-unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, RECT (&drawn)[4]) {
+unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, RECT (&drawn)[5]) {
         drawn[0]={20,35,1100,85};
         unsigned count=1;
         unsigned text_count=1;  // the first regions hold GDI text, which needs its alpha set
@@ -699,6 +746,10 @@ unsigned draw_overlay(HWND window, HDC dc, const RECT& rect, uint32_t* pixels, R
         // Sizes at 1080p (scaled with height): ring 50 px across, nose ring 14 px.
         const float scale=std::max(0.75f,height/1080.0f);
         if(aim_visible) drawn[count++]=draw_ring(pixels,width,height,x,y,25*scale,2.0f*scale,2.5f*scale,0.8f,0.35f);
+        // Post-stall key held: a second ring outside the aim ring, amber (white blended into
+        // the sky and the HUD; reported).
+        if(aim_visible && post_stall_armed.load())
+            drawn[count++]=draw_ring(pixels,width,height,x,y,34*scale,3.0f*scale,2.5f*scale,1.0f,0.45f,0xFFA000);
         if(nose_visible) drawn[count++]=draw_ring(pixels,width,height,bx,by,7*scale,2.0f*scale,2.5f*scale,0.8f,0.35f);
         return count;
 }
@@ -738,7 +789,7 @@ void overlay_loop() {
     bool window_reported = false;
     ULONGLONG window_check=0;
     MSG message{};
-    RECT drawn[4]{}; unsigned drawn_count=0;   // regions drawn last time (to clear)
+    RECT drawn[5]{}; unsigned drawn_count=0;   // regions drawn last time (to clear)
     POINT last_origin{-1,-1}; SIZE last_size{};
     bool full_clear=true;
     while (running.load()) {
