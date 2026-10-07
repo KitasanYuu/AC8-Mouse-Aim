@@ -2,6 +2,8 @@
 
 English | [简体中文](README.md)
 
+**Flight control comparison online: [the Flight Bench web page](https://kitasanyuu.github.io/AC8-Mouse-Aim/)** (opens in the browser, with 3D replays)
+
 War Thunder-style mouse aim for **ACE COMBAT 8 offline single-player**: point the aim with the mouse and the aircraft brings its nose there by rolling its lift onto the aim and pulling.
 
 > Offline single-player only. Multiplayer is not supported, and compatibility with other input, camera or loader mods is not guaranteed. A game update may stop an older version of the mod from working.
@@ -24,7 +26,9 @@ The mod replaces only the player's control inputs and corrects the camera; it do
 
 ## Flight control comparison
 
-[Flight Bench](https://kitasanyuu.github.io/AC8-Mouse-Aim/): this project's flight control, upstream FletcherMiya 0.2.30 and xsd467 pw.11, each flying the same scenes (general maneuvers, landings, a multi-aircraft fight, boss fights) on the same aircraft model with the same simulated pilot, compared scene by scene (aim error, kills, overall cost) with a 3D replay. These are simulation results, not the in-game experience; the method and its limits are in the [flight bench](docs/04-development/flight-bench.md) document (in Chinese). The page is in Chinese.
+Web page: **<https://kitasanyuu.github.io/AC8-Mouse-Aim/>**
+
+On the page, this project's flight control, upstream FletcherMiya 0.2.30 and xsd467 pw.11, each flying the same scenes (general maneuvers, landings, a multi-aircraft fight, boss fights) on the same aircraft model with the same simulated pilot, compared scene by scene (aim error, kills, overall cost) with a 3D replay. These are simulation results, not the in-game experience; the method and its limits are in the [flight bench](docs/04-development/flight-bench.md) document (in Chinese). The page is in Chinese.
 
 ## Quick start
 

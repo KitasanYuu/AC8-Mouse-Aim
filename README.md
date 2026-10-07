@@ -2,6 +2,8 @@
 
 [English](README_EN.md) | 简体中文
 
+**在线飞控对比：[Flight Bench 网页](https://kitasanyuu.github.io/AC8-Mouse-Aim/)**（浏览器打开，可回放三维画面）
+
 为 **ACE COMBAT 8 离线单人模式**提供 War Thunder 式的鼠标指向飞控：用鼠标指定瞄准点，飞机按升力矢量规则把机首带过去。
 
 > 仅供离线单人使用。不支持多人模式，不保证与其他输入、镜头或加载器模组兼容。游戏更新后，旧版本模组可能不再适用。
@@ -24,7 +26,9 @@
 
 ## 飞控对比
 
-[Flight Bench](https://kitasanyuu.github.io/AC8-Mouse-Aim/)：本项目、上游 FletcherMiya 0.2.30 与 xsd467 pw.11 的飞控在同一个机体模型上，由同一个模拟飞行员飞同一组场景（通用机动、降落、多机缠斗、头目战），逐场景比较偏差、击落与综合代价，可回放三维画面。这是模拟结果，不等于游戏内体验；方法与局限见[飞控对比台](docs/04-development/flight-bench.md)。
+在线网页：**<https://kitasanyuu.github.io/AC8-Mouse-Aim/>**
+
+网页中，本项目、上游 FletcherMiya 0.2.30 与 xsd467 pw.11 的飞控在同一个机体模型上，由同一个模拟飞行员飞同一组场景（通用机动、降落、多机缠斗、头目战），逐场景比较偏差、击落与综合代价，可回放三维画面。这是模拟结果，不等于游戏内体验；方法与局限见[飞控对比台](docs/04-development/flight-bench.md)。
 
 ## 快速开始
 
