@@ -92,7 +92,7 @@ struct Config {
         int toggle=VK_F8, recenter=VK_F9, free_look='F', hud=VK_F7, post_stall=VK_XBUTTON1, trace=VK_F4,
             reload=VK_F10, perf=VK_F5, camera_probe=VK_F6, hangar_specs=VK_F7, hangar_geometry=VK_F8,
             tuning=VK_F3, tuning_up=VK_UP, tuning_down=VK_DOWN, tuning_less=VK_LEFT, tuning_more=VK_RIGHT,
-            tuning_fine=VK_SHIFT, tuning_undo=VK_BACK;
+            tuning_fine=VK_SHIFT, tuning_undo=VK_BACK, tuning_bind=VK_RETURN;
     } keys;
 };
 
@@ -333,6 +333,7 @@ void load_config() {
     k.tuning_more=read_key(L"keys",L"tuning_more",d.tuning_more);
     k.tuning_fine=read_key(L"keys",L"tuning_fine",d.tuning_fine);
     k.tuning_undo=read_key(L"keys",L"tuning_undo",d.tuning_undo);
+    k.tuning_bind=read_key(L"keys",L"tuning_bind",d.tuning_bind);
     if (config.roll_slot == config.pitch_slot || config.pitch_slot == 1 || config.roll_slot == 1) {
         config.pitch_slot = 0;
         config.roll_slot = 2;
