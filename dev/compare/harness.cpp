@@ -21,15 +21,20 @@
 #include "controllers/ours.h"
 #include "controllers/upstream.h"
 #include "controllers/pw5.h"
+#include "controllers/pw11.h"
 #include <shellapi.h>
 #pragma comment(lib, "shell32.lib")
 #include <cmath>
 #include <cstdio>
+#include <atomic>
 #include <deque>
+#include <mutex>
+#include <thread>
 #include <functional>
 #include <algorithm>
 #include <array>
 #include <map>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <random>
@@ -83,27 +88,72 @@ struct Plant {
     float pitch_delay, pitch_input, pitch_release, pitch_tau, pitch_pull, pitch_push, pitch_gravity, pitch_curve;
     float roll_delay, roll_input, roll_accel, roll_curve, roll_max, roll_tau;
     float yaw_delay, yaw_max, yaw_tau;   // rudder: full stick held ~5.4 deg/s (logged)
-    float highg_pull;                     // full-pull rate multiplier, throttle+brake held
+    float highg_pull;                     // unused since 2026-10-06 (see highg_rate: the same for all)
     // flight path
     float aoa_lag;                        // s: AoA = lag x path rate
-    float cruise, cruise_rate;            // neutral throttle: speed relaxes to cruise (m/s, 1/s)
-    float turn_drag;                      // m/s^2 per g above 1
+    float cruise, cruise_rate;            // unused: the neutral throttle is game_neutral below (until 2026-10-05)
+    float turn_drag;                      // unused: the turn's cost is turn_cost below (until 2026-10-06)
     // Authority by speed, per 100 m/s from 0 (interpolated): factors on the pull and push
     // and on the roll acceleration and limit. From full-stick p90 rates in each speed band.
     std::array<float, 9> pull_by_speed{1, 1, 1, 1, 1, 1, 1, 1, 1};
     std::array<float, 9> roll_by_speed{1, 1, 1, 1, 1, 1, 1, 1, 1};
     // Full throttle: dV/dt + g sin(climb) by speed (m/s^2, per 100 m/s, nz < 3, logged).
     std::array<float, 9> thrust_by_speed{43, 43, 35, 29, 22, 8.7f, 3.6f, -3, -10};
+    // Brake held (throttle not): dV/dt + g sin(climb) by speed (m/s^2, per 100 m/s, nz < 1.5,
+    // logged). The FA-36's unless the aircraft's own was measured.
+    std::array<float, 9> brake_by_speed{-25, -25, -59, -85, -122, -132, -126, -112, -83};
+    float stall_speed = 62.5f;            // m/s: 225 km/h logged on the FA-36 (the game's SpeedStall per aircraft)
+    // m/s, the game's SpeedMax: no scene starts or is held faster (scenes set from an FA-36's
+    // flight or a boss's speed started an A-10C at 3190 km/h, its top speed being 1890)
+    float speed_max = 850;
 };
+// Neutral throttle, the same for every aircraft logged (FA-36, Su-57, Su-35, 2026-10-05,
+// dV/dt + g sin(climb), median, nz < 1.5): the speed holds near 150-200 m/s and above that
+// falls 14 m/s^2 at 250, 23 at 350, 28 at 450, ~30 at 550-750. The bench had relaxed toward
+// 187 m/s at 0.0825/s instead: 5 m/s^2 at 250 and 13 at 350, a glide that kept a fight's speed
+// two to three times as long as the game does.
+constexpr std::array<float, 9> game_neutral{2, 2, -14, -23, -28, -30, -30, -27, -15};
 // Entry k is measured over the band k*100 to k*100+99 m/s, so it holds at the band's centre
 // (k*100+50); read at the band's start, every table ran half a band early (the ADF-X02's ~0 at
 // 800-899 m/s made 800 its top speed, while it held 845 behind LADON).
+// What turning costs in speed (m/s^2), by the path's turn rate (deg/s): the same at every speed from
+// 200 to 600 m/s (every recording, 2026-10-06: dV/dt + g sin(climb) less that of flying straight
+// at the same speed and controls). Nothing to ~50 deg/s, then fast; held high-G costs from 20 deg/s
+// on, more at the same rate. It was turn_drag (nz - 1) for every pull, from fits at low speed:
+// a 35 g pull at 2000 km/h (50 deg/s, as the player's in the M28 opening) cost 140 m/s^2, where
+// the recording shows 6-30, and a FA-36 diving in at 2300 km/h was down to 600 in 7 s (the player
+// kept 1600). High-G held was -28 - 0.08 v on top of it.
+constexpr float turn_rate_at[12] = {5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 110, 135};
+constexpr float turn_cost_free[12] = {0, 0, 0, -3, -4, -12, -42, -52, -60, -68, -82, -110};    // throttle, neutral, brake
+// High-G held: a speed part and a turn-rate part, fitted together (additive, least squares over
+// 74 speed x turn-rate cells, every recording with the nose within 30 deg of the path, i.e. no
+// post-stall: FA-36, Su-57, ADF-X02, Su-35, MiG-21 alike; median residual 5 m/s^2, 2026-10-06).
+// Was {0,0,-4,-11,-20,-33,-57,-73,-88,-100,-120,-155} with a straight part of -8 to -11 at 100-600
+// m/s: a 52 deg/s high-G turn at 200-500 m/s lost ~39 m/s^2 where the recordings lose 50-53, and
+// the speed came back sooner than the game gives it (thrust is right: see thrust_by_speed).
+constexpr float turn_cost_highg[12] = {0, -3, -8, -18, -27, -38, -51, -65, -79, -92, -110, -140};
+// by speed per 100 m/s from 50; below 100 m/s the game holds the speed up (its minimum, 150 km/h)
+constexpr std::array<float, 9> highg_straight{20, -1, -20, -19, -18, -10, -7, -16, -17};
+// High-G full-pull pitch rate (deg/s) by speed per 100 m/s from 50, the same for every aircraft:
+// median with the full pull held 0.5 s and more (every recording, 34,000 frames; 2026-10-06). The
+// game's high-G does not follow the aircraft's pitch table: the MiG-21bis, whose table is 0.6 of
+// the FA-36's, turned 55 deg/s at 1000 km/h as the FA-36 did (gamepad steps), and the Su-57, with
+// the FA-36's very table, a median 10-20 deg/s more in combat. It was each aircraft's full pull x
+// 2.2: 110 deg/s for the FA-36, 66 for the MiG-21.
+constexpr std::array<float, 9> highg_rate{50, 63, 63, 66, 67, 61, 57, 55, 47};
+float turn_cost(const float (&cost)[12], float rate) {
+    if (rate <= turn_rate_at[0]) return cost[0];
+    for (int k = 1; k < 12; ++k)
+        if (rate <= turn_rate_at[k]) return cost[k - 1] + (cost[k] - cost[k - 1]) * (rate - turn_rate_at[k - 1]) / (turn_rate_at[k] - turn_rate_at[k - 1]);
+    return cost[11] + (cost[11] - cost[10]) * (rate - turn_rate_at[11]) / (turn_rate_at[11] - turn_rate_at[10]);
+}
 float by_speed(const std::array<float, 9>& table, float speed) {
     const float x = std::clamp((speed - 50.0f) / 100.0f, 0.0f, 8.0f);
     const int i = std::min(int(x), 7);
     return table[i] + (table[i + 1] - table[i]) * (x - i);
 }
-// The weaker aircraft flown 2026-10-04/05 (game clock): full pull ~43 deg/s p90 from 200 to
+// MiG-21bis, flown 2026-10-04/05 (game clock; the recordings did not yet name the aircraft, the
+// player did later): full pull ~43 deg/s p90 from 200 to
 // 500 m/s, falling to 6-10 at 600-700 m/s; rolls ~105 deg/s, 55-73 above 500 m/s.
 constexpr std::array<float, 9> weak_pull{0.88f, 0.88f, 1.0f, 1.0f, 0.95f, 0.75f, 0.2f, 0.15f, 0.1f};
 constexpr std::array<float, 9> weak_roll{0.85f, 0.85f, 1.0f, 0.97f, 0.7f, 0.55f, 0.62f, 0.58f, 0.55f};
@@ -111,12 +161,15 @@ constexpr std::array<float, 9> weak_roll{0.85f, 0.85f, 1.0f, 0.97f, 0.7f, 0.55f,
 // pull at 600-800 m/s and rolls 80-100 deg/s up to 700 m/s.
 constexpr std::array<float, 9> su35_pull{0.95f, 0.95f, 1.0f, 0.8f, 0.82f, 0.65f, 0.66f, 0.68f, 0.42f};
 constexpr std::array<float, 9> su35_roll{0.72f, 0.72f, 0.92f, 0.92f, 1.0f, 0.94f, 0.85f, 0.68f, 0.73f};
-// Full throttle: the weak aircraft tops out near 640 m/s, the Su-35 near 795 m/s.
+// Full throttle: the MiG-21bis tops out near 640 m/s, the Su-35 near 795 m/s.
 constexpr std::array<float, 9> weak_thrust{43, 43, 35, 29, 22, 8.7f, 3.6f, -3, -10};
 constexpr std::array<float, 9> su35_thrust{62, 62, 65, 45, 42, 33, 15, 5.2f, -0.5f};
+// Brake held, logged 2026-10-05 (m/s^2): the Su-35 sheds speed hardest, the Su-57 least.
+constexpr std::array<float, 9> su35_brake{-32, -32, -99, -166, -173, -143, -169, -176, -176};
+constexpr std::array<float, 9> su57_brake{-16, -24, -42, -59, -80, -106, -110, -110, -110};
 // Fitted on the game clock (see tests/flight_sim.cpp `measured`, fit_airframe.py): full pull
 // ~50 deg/s at 200-500 m/s, x1.4-1.6 in a high-G turn; rolls top out near 105 deg/s.
-constexpr Plant measured{"measured", "实测机体",
+constexpr Plant mig21bis{"mig21bis", "MiG-21bis",
     0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 1.5f,
@@ -125,7 +178,7 @@ constexpr Plant su35{"su35", "Su-35",
     0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 1.5f,
-    0.20f, 187, 0.0825f, 0.4f, su35_pull, su35_roll, su35_thrust};
+    0.20f, 187, 0.0825f, 0.4f, su35_pull, su35_roll, su35_thrust, su35_brake};
 // Su-57 (two Shadow-boss missions, 2026-10-05, attitude differences at 75 Hz, p90): full pull
 // 50-53 deg/s at 100-500 m/s, 44 at 600, 33 at 700, 11 at 800; high-G (throttle and brake held)
 // ~2.5 times that; full roll 110-116 deg/s at 100-400, 92-97 at 500-600, 78 at 700, 49 at 800;
@@ -137,7 +190,7 @@ constexpr Plant su57{"su57", "Su-57",
     0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 2.5f,
-    0.20f, 187, 0.0825f, 0.4f, su57_pull, su57_roll, su57_thrust};
+    0.20f, 187, 0.0825f, 0.4f, su57_pull, su57_roll, su57_thrust, su57_brake};
 // ADF-X02 (LADON missions, 2026-10-05, dev/compare/fit_speed_tables.py, p90): full pull 56 deg/s
 // below 300 m/s, 38-39 at 300-500, 35 at 500, 23-24 at 600-800, 17 above 800; high-G about 2.7
 // times that; full roll ~100 deg/s to 400, 87 at 400-600, 70 at 600-800, 60 above; full-throttle
@@ -151,26 +204,80 @@ constexpr Plant adfx02{"adfx02", "ADF-X02",
     0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
     0.15f, 5.4f, 0.35f, 2.7f,
     0.20f, 187, 0.0825f, 0.4f, adfx02_pull, adfx02_roll, adfx02_thrust};
-// Robustness: 30% more delay and smoothing, less authority (a heavier aircraft, or the
-// fit being optimistic). A controller tuned to the edge of the measured model shows it here.
-constexpr Plant sluggish{"sluggish", "迟钝机体（延迟 ×1.3，权限 ×0.75）",
-    0.16f, 0.26f, 0.13f, 0.8f, 38, 19, 0.3f, 1.5f,
-    0.18f, 0.33f, 165, 1.3f, 80, 0.7f,
-    0.2f, 4.0f, 0.45f, 1.5f,
-    0.25f, 187, 0.0825f, 0.4f, weak_pull, weak_roll, weak_thrust};
+// FA-36 (Selene and LADON missions and M28, 2026-10-05, dev/compare/fit_speed_tables.py, p90):
+// full pull 49-51 deg/s at 100-500 m/s, 43 at 500, 36 at 600, 28 at 700, 23 above 800; high-G
+// about 2.1 times that; full roll 106-116 deg/s at 100-500, 99-106 at 500-700, 77-79 above;
+// full-throttle dV/dt 68 at 100, 73 at 200, 59 at 300, 50 at 400, 38 at 500, 18 at 600, ~5 at
+// 700-900: about twice the weak aircraft's. Below 100 m/s the frames are post-stall manoeuvres
+// (an 88 deg/s pull, 12 m/s^2): the 100-199 band is used there.
+constexpr std::array<float, 9> fa36_pull{1.02f, 1.02f, 1.02f, 1.02f, 0.98f, 0.85f, 0.72f, 0.57f, 0.46f};
+constexpr std::array<float, 9> fa36_roll{1.01f, 1.01f, 1.08f, 1.1f, 1.1f, 1.0f, 0.94f, 0.73f, 0.76f};
+constexpr std::array<float, 9> fa36_thrust{68, 68, 73, 59, 50, 38, 18, 4.5f, -7.7f};   // past 790 m/s (2850 km/h, its SpeedMax): slowing
+constexpr Plant fa36{"fa36", "FA-36",
+    0.12f, 0.20f, 0.10f, 0.6f, 50, 25, 0.3f, 1.5f,
+    0.14f, 0.25f, 220, 1.3f, 105, 0.6f,
+    0.15f, 5.4f, 0.35f, 2.1f,
+    0.20f, 187, 0.0825f, 0.4f, fa36_pull, fa36_roll, fa36_thrust};
 
 float input_smooth(float f, float u, float dt, float build, float release) {
     const float tc = (u * f < 0 || std::abs(u) < std::abs(f)) ? release : build;
     return f + (u - f) * (1 - std::exp(-dt / tc));
 }
 
-bool trace_on = false;   // BENCH_TRACE=<scene>:<controller>: plant internals every 0.1 s
+// Fights are gun only: missiles lock from far and almost anything on screen (the game's 40 deg,
+// 2.85 km), so they told the controllers apart in nothing, and brought down 99.7% of the enemies
+// (2026-10-06), with no turn limits or lost locks modelled. Off everywhere, the fixed orders of
+// attack included; missiles=1 brings the old rules back, everywhere. A scene in scenes.txt can
+// have missiles on its own: missiles=1 the old rules, missiles=laam LAAMs flown (see Laam).
+bool with_missiles = false;
+// The pilot's ground floor: the share of the full pull counted on, and the reaction before it
+// (seconds, plus the bank at 90 deg/s); BENCH_FLOOR=<share>,<react> to try others.
+float floor_pull_share = 0.5f, floor_react = 2.0f;
+// The share of the height the floor lets the mouse's path use (the low takeover acts on the
+// aircraft's own path at all of it): at the whole, a path a little past the mouse's tripped the
+// takeover, let go, and the mouse went back down to the limit, every 5 s (LADON's second phase).
+float floor_margin = 0.6f;
+// The player takes over low (BENCH_LOWTAKE=<m>,<deg>; 0 off): the present path going into the crash
+// line before it could level out (by the floor's reckoning), or inverted (bank past 120) within
+// low_take_m of it, the mouse at least low_take_deg above the horizon until the sinking stops.
+bool low_take = true; float low_take_m = 300, low_take_deg = 25;
+enum MissileKind { NoMissiles = 0, RuleMissiles = 1, LaamMissiles = 2 };
+// The player's LAAM (BP_plwp_laam_e0, read in game 2026-10-06; UE cm and cm/s converted), flown
+// frame by frame instead of hitting by rule. It leaves at the aircraft's velocity plus 83 m/s,
+// coasts 0.4 s (AccelerationDelayFromStart) and then gains 333 m/s^2 up to 1389 m/s; it does
+// not steer for 0.4 s (HomingDelayFromStart), then 1.2 s at 20 deg/s at most
+// (ReducedHomingDuration, ReducedHomingRotationAngle), then 195 deg/s (MaxRotationAngle),
+// always at where the enemy is now (HomingForesightAmount 0: the game's missiles chase the
+// tail). An enemy more than 117 deg off its heading (MaxHomingAngle) is lost for good; 25 s
+// and it is gone (LifeTime). It hits when it passes within the enemy's size (no proximity fuse
+// in the class: ProximityFuseRadius 0). Locked within 27.5 deg of the nose and 10 km
+// (LockonAngle, LockonRange; held 0.8 s, as for the other missiles); two rails, each reloading
+// 6.5 s after it fires (MaxLoadedCount 2, LoadTime). 12 aboard, the bench's own choice (the
+// game's tables give the J-39E 26 or 14). So at close range it rarely turns in time: in its first
+// 1.6 s it covers ~800 m nearly straight.
+struct Laam {
+    static constexpr float ignition = 83.3f, accel = 333.3f, top = 1388.9f, accel_delay = 0.4f;
+    static constexpr float homing_delay = 0.4f, reduced_for = 1.2f, reduced_rate = 20, rate = 195;
+    static constexpr float max_homing = 117, life = 25, lock_angle = 27.5f, lock_range = 10000;
+    static constexpr float reload = 6.5f;
+    static constexpr int aboard = 12;
+    // kept for the far ones (the player, 2026-10-06): not fired within 2 km, where the gun reaches
+    // soon; fired at anything in reach, the 12 were gone in the first minutes
+    static constexpr float min_range = 2000;
+};
+thread_local bool trace_on = false;   // BENCH_TRACE=<scene>:<controller>: plant internals every 0.1 s
 struct Aircraft {
     Frame3 b;
     float q = 0, p = 0, r = 0, sq = 0, sr = 0;
     std::deque<float> dq, dr, dy;
     V3 pos, vel, acc;
     float nz = 1;
+    float stalled = 0;   // s spent below the stall speed
+    // Stall, as the game has it: below 225 km/h (62.5 m/s) the nose and the flight path fall
+    // toward the ground whatever the stick. Fitted to 766 stalled frames logged on 2026-10-05:
+    // beyond what the controls and gravity do, the nose fell a median 22 deg/s and the path
+    // 25 deg/s (34 in all), the speed held near 60 until the nose was down and it built again.
+    static constexpr float stall_nose = 22, stall_path = 25;   // the speed is the plant's stall_speed
     void start(float pitch, float yaw, float roll, float speed, V3 at) {
         b = basis(pitch, yaw, roll); pos = at; vel = b.f * speed; acc = {};
     }
@@ -188,7 +295,7 @@ struct Aircraft {
         const bool high_g = throttle > 0.5f && brake > 0.5f;
         const float aq = std::pow(std::min(std::abs(sq), 1.0f), m.pitch_curve);
         const float speed_now = len(vel), pitch_k = by_speed(m.pull_by_speed, speed_now), roll_k = by_speed(m.roll_by_speed, speed_now);
-        const float pull = m.pitch_pull * pitch_k * (high_g ? m.highg_pull : 1.0f);
+        const float pull = high_g ? by_speed(highg_rate, speed_now) : m.pitch_pull * pitch_k;
         const float steady = (sq >= 0 ? pull * aq : -m.pitch_push * pitch_k * aq) - m.pitch_gravity * b.u.z;
         q += dt * (steady - q) / m.pitch_tau;
         if (trace_on) std::printf("  sq %.2f aq %.2f k %.2f hg %d steady %.1f q %.1f speed %.0f\n", sq, aq, pitch_k, high_g ? 1 : 0, steady, q, speed_now);
@@ -203,14 +310,25 @@ struct Aircraft {
         const V3 gravity{0, 0, -g0};
         nz = len(lift) / g0;
         float dv;
-        if (high_g) dv = -28 - 0.08f * speed;                       // fitted: high-G bleeds speed
-        else if (brake > 0.5f) dv = -12 - 0.135f * speed;
-        else dv = (1 - throttle) * m.cruise_rate * (m.cruise - speed) + throttle * by_speed(m.thrust_by_speed, speed);
-        dv -= m.turn_drag * std::max(0.0f, nz - 1);
+        const float turn_rate = len(lift) / speed / rad;   // deg/s
+        if (high_g) dv = by_speed(highg_straight, speed) + turn_cost(turn_cost_highg, turn_rate);
+        else {
+            if (brake > 0.5f) dv = by_speed(m.brake_by_speed, speed);   // -12 - 0.135 v until 2026-10-05
+            else dv = throttle > 0.5f ? by_speed(m.thrust_by_speed, speed) : by_speed(game_neutral, speed);
+            dv += turn_cost(turn_cost_free, turn_rate);
+        }
         const V3 a = lift + gravity + vh * dv;
         acc = a;
         vel = vel + a * dt;
-        if (len(vel) < 60) vel = unit(vel) * 60;   // no stall model: the game keeps aircraft flying
+        if (len(vel) < m.stall_speed) {
+            stalled += dt;
+            // nose: toward straight down, as fast as it is still off it (none pointing down)
+            const V3 down = V3{0, 0, -1} + b.f * b.f.z;
+            if (len(down) > 1e-3f) rotate_body(b, stall_nose * dot(down, b.u), 0, stall_nose * dot(down, b.r), dt);
+            const V3 vd = unit(vel), pd = V3{0, 0, -1} + vd * vd.z;
+            if (len(pd) > 1e-3f) vel = turn(vd, unit(pd), stall_path * len(pd) * dt * rad) * len(vel);
+        }
+        if (len(vel) < 45) vel = unit(vel) * 45;   // the lowest logged in a stall: ~52
         pos = pos + vel * dt;
     }
 };
@@ -242,19 +360,36 @@ Pose pose_at(const std::vector<Pose>& path, float t) {
     if (t <= path.front().t) return path.front();
     for (size_t i = 1; i < path.size(); ++i) if (path[i].t >= t) {
         const Pose& a = path[i - 1]; const Pose& b = path[i];
-        const float k = (t - a.t) / std::max(b.t - a.t, 1e-3f);
+        const float span = std::max(b.t - a.t, 1e-3f), k = (t - a.t) / span;
         auto mix = [k](float x, float y) { return x + std::remainder(y - x, 360.0f) * k; };
-        return {t, a.pos + (b.pos - a.pos) * k, a.pitch + (b.pitch - a.pitch) * k, mix(a.yaw, b.yaw), mix(a.roll, b.roll),
+        V3 pos = a.pos + (b.pos - a.pos) * k;
+        // A gap in the recording (the enemy off the contact list: LADON for 9 s in its first phase,
+        // back 3.5 km off the straight line): a curve meeting both ends at their own velocities,
+        // not a straight line that turns sharply where the samples resume.
+        if (span > 0.5f && i >= 2 && i + 1 < path.size()) {
+            const Pose& a0 = path[i - 2]; const Pose& b1 = path[i + 1];
+            if (a.t - a0.t < 0.5f && b1.t - b.t < 0.5f) {
+                const V3 va = (a.pos - a0.pos) * (1 / std::max(a.t - a0.t, 1e-3f)), vb = (b1.pos - b.pos) * (1 / std::max(b1.t - b.t, 1e-3f));
+                const float k2 = k * k, k3 = k2 * k;
+                pos = a.pos * (2 * k3 - 3 * k2 + 1) + va * (span * (k3 - 2 * k2 + k)) + b.pos * (-2 * k3 + 3 * k2) + vb * (span * (k3 - k2));
+            }
+        }
+        return {t, pos, a.pitch + (b.pitch - a.pitch) * k, mix(a.yaw, b.yaw), mix(a.roll, b.roll),
                 a.sweep + (b.sweep - a.sweep) * k, a.fold + (b.fold - a.fold) * k};
     }
     return path.back();
 }
-// Where a gun must point from `from` to hit an aircraft flying `path`: its position after
-// the bullet's flight (~1000 m/s), the way a lead indicator shows it.
-V3 lead_point(const std::vector<Pose>& path, float t, V3 from) {
+// Where rounds must go from `from` to meet an aircraft flying `path`: where it will be after the
+// rounds' flight (`bullet` m/s over the ground) if it keeps its present velocity, as seen up to
+// now (it read 0.1 s of the path ahead until 2026-10-06). The game shows no such point: only where
+// the rounds go (the gun marker, within 1 km); where the enemy will be is the player's judgement.
+V3 lead_point(const std::vector<Pose>& path, float t, V3 from, float bullet = 1000) {
     const Pose e = pose_at(path, t);
-    const V3 vel = (pose_at(path, t + 0.1f).pos - pose_at(path, t - 0.1f).pos) * 5.0f;
-    return unit(e.pos + vel * (len(e.pos - from) / 1000.0f) - from);
+    const V3 vel = (e.pos - pose_at(path, t - 0.2f).pos) * 5.0f;
+    // the flight time to where it will be, not to where it is (it opens or closes the range meanwhile)
+    float tof = len(e.pos - from) / std::max(bullet, 300.0f);
+    for (int k = 0; k < 2; ++k) tof = len(e.pos + vel * tof - from) / std::max(bullet, 300.0f);
+    return unit(e.pos + vel * tof + V3{0, 0, 0.5f * 9.8f * tof * tof} - from);   // aimed above by the rounds' fall
 }
 // Recorded enemies carry only a heading (the actor's pitch and roll read 0): attitude is
 // rebuilt from the path, the nose along the velocity and the bank from the turn.
@@ -301,19 +436,33 @@ void orient_from_path(std::vector<Pose>& path) {
 // ecm: missiles lock only within 1 km (LADON); escort: a boss's shield drone (Moon 11's uavn):
 // while two or more stay within 150 m of their boss, each projects a field around itself and
 // neither they nor the boss can be harmed (the player's account of the Expert battle)
-struct Foe { std::string cls; float first = 0, last = 0; bool elite = false, boss = false, ecm = false, escort = false; std::vector<Pose> path; };
+// down: brought down in the recording (by the player or anyone): its path ends there
+struct Foe { std::string cls; float first = 0, last = 0; bool elite = false, boss = false, ecm = false, escort = false, down = false; std::vector<Pose> path; };
 struct Encounter {
     std::vector<Foe> foes;
     bool guns_only = false;   // a single enemy: gun tracking for the whole path (never brought down)
     // the standard start, the same for every controller and condition (see standard_start)
-    V3 start; float pitch = 0, yaw = 0, speed = 250;
+    V3 start; float pitch = 0, yaw = 0, roll = 0, speed = 250;
     // A fixed order of attack (enemy indices), the same for every controller: the simulated
-    // player takes the first one in it still flying instead of choosing by its own position.
-    // In a crowd (78 Tu-95s) choosing by position split the controllers onto different targets
-    // within ~10 s, and the kill counts measured the luck of the draw as much as the flying.
+    // player takes the best placed of the next three in it still flying (order_window) instead of
+    // choosing among all by its own position. In a crowd (78 Tu-95s) choosing among all split the
+    // controllers onto different targets within ~10 s, and the kill counts measured the luck of
+    // the draw as much as the flying. The first in it alone (until 2026-10-06) was often behind
+    // the simulated player or far off (the order is the player's, flown elsewhere), and with one
+    // missile on its way the next was taken at once: three picks in a second, the last behind.
     std::vector<int> order;
     std::vector<int> game_order;   // the player's own selections in the recording, in order
-    bool has_player = false; V3 player_pos; float player_pitch = 0, player_yaw = 0, player_speed = 0;   // the recorded start
+    // target=game (scenes.txt): the enemy the player had locked at each moment (time, index; -1
+    // none), followed instead of the pilot's own choice while one is locked. In LADON's first
+    // phase the player went between the two (the second 56 s, the first 9 s); its own choice kept
+    // the first all 235 s (a boss is never let go).
+    std::vector<std::pair<float, int>> selections; bool follow_selection = false;
+    bool has_player = false; V3 player_pos; float player_pitch = 0, player_yaw = 0, player_roll = 0, player_speed = 0;   // the recorded start
+    int missiles = NoMissiles;   // this scene's missiles (scenes.txt missiles=1|laam)
+    // Below this the aircraft has hit the ground (m): 50, or 20 m under the lowest any recorded
+    // enemy flew. The ground is unknown (0-200 m); over the sea LADON came down to 40 m and Moon
+    // 11 to 43, and those following them at 45 m were counted crashed (2026-10-06).
+    float crash_z = 50;
 };
 bool elite_class(const std::string& cls) {
     std::string c = cls; for (char& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
@@ -347,10 +496,12 @@ void standard_start(Encounter& e, float behind) {
 }
 // tracks/<file>: "enemy t x y z pitch yaw roll" (one enemy; its class in the header line)
 // battles/<file>: "enemy i class first last down elite by_player boss" and "e i t x y z p y r"
-std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, float behind = -1) {
+std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, float behind = -1, float from = 0) {
     std::ifstream in(path);
     if (!in) return nullptr;
     auto e = std::make_shared<Encounter>();
+    struct Own { float t; V3 pos; float pitch, yaw, roll, speed; };
+    std::vector<Own> own;   // the player's path, for a scene cut later than the file (from=)
     for (std::string line; std::getline(in, line);) {
         std::istringstream ss(line);
         std::string tag; ss >> tag;
@@ -366,14 +517,13 @@ std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, 
         } else if (tag == "enemy") {
             size_t i; Foe f; int down = 0, elite = 0, by_player = 0, boss = 0;
             ss >> i >> f.cls >> f.first >> f.last >> down >> elite >> by_player >> boss;
-            f.elite = elite != 0; f.boss = boss != 0;
+            f.elite = elite != 0; f.boss = boss != 0; f.down = down != 0;
             f.ecm = f.boss && f.cls.find("_ladn") != std::string::npos;
             f.escort = f.cls.find("uavn") != std::string::npos;
             if (e->foes.size() <= i) e->foes.resize(i + 1);
             e->foes[i] = f;
         } else if (tag == "player" && !single) {   // "player x y z pitch yaw roll speed"
-            float roll = 0;
-            if (ss >> e->player_pos.x >> e->player_pos.y >> e->player_pos.z >> e->player_pitch >> e->player_yaw >> roll >> e->player_speed)
+            if (ss >> e->player_pos.x >> e->player_pos.y >> e->player_pos.z >> e->player_pitch >> e->player_yaw >> e->player_roll >> e->player_speed)
                 e->has_player = true;
         } else if (tag == "own" && !single) {   // "own t x y z p y r aim_p aim_y speed q r p sp sr sy selected ctl"
             // the player's attacks: an enemy counts once it was selected within 3 km (selections
@@ -382,6 +532,8 @@ std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, 
             float v[18]; int k = 0;
             while (k < 18 && ss >> v[k]) ++k;
             const int sel = k == 18 ? int(v[16]) : -1;
+            if (k >= 10) own.push_back({v[0], V3{v[1], v[2], v[3]}, v[4], v[5], v[6], v[9]});
+            if (k == 18 && (e->selections.empty() || e->selections.back().second != sel)) e->selections.push_back({v[0], sel});
             if (sel >= 0 && sel < int(e->foes.size()) && !e->foes[sel].path.empty() &&
                 std::find(e->game_order.begin(), e->game_order.end(), sel) == e->game_order.end() &&
                 len(pose_at(e->foes[sel].path, v[0]).pos - V3{v[1], v[2], v[3]}) < 3000)
@@ -392,16 +544,48 @@ std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, 
             if (i < e->foes.size()) e->foes[i].path.push_back(p);
         }
     }
+    // from=<s> (scenes.txt): the scene starts that far into the file, the player as recorded then
+    // (LADON's first phase from 61.8 s: right behind both at 2.6-2.9 km, after the head-on meeting
+    // the recording has gaps of 12-15 s in)
+    if (from > 0) {
+        for (Foe& f : e->foes) {
+            size_t k = 0; while (k < f.path.size() && f.path[k].t < from) ++k;
+            f.path.erase(f.path.begin(), f.path.begin() + (k > 0 ? k - 1 : 0));   // one sample before, to interpolate from
+            for (Pose& p : f.path) p.t -= from;
+            f.first = std::max(f.first - from, 0.0f); f.last -= from;
+        }
+        for (Foe& f : e->foes) if (f.last <= 0) f.path.clear();   // over before the cut: dropped below
+        int last_sel = -1; std::vector<std::pair<float, int>> sel;
+        for (const auto& [ts, i] : e->selections) { if (ts <= from) last_sel = i; else sel.push_back({ts - from, i}); }
+        sel.insert(sel.begin(), {0.0f, last_sel}); e->selections = sel;
+        const auto o = std::find_if(own.begin(), own.end(), [from](const Own& x) { return x.t >= from; });
+        if (o != own.end()) {
+            e->has_player = true; e->player_pos = o->pos; e->player_pitch = o->pitch; e->player_yaw = o->yaw;
+            e->player_roll = o->roll; e->player_speed = o->speed;
+        }
+    }
     {   // drop enemies with too few samples, keeping the player's order on the new indices
         std::vector<int> index(e->foes.size(), -1); int kept = 0;
         for (size_t i = 0; i < e->foes.size(); ++i) if (e->foes[i].path.size() >= 5) index[i] = kept++;
         std::vector<int> order;
         for (int i : e->game_order) if (index[i] >= 0) order.push_back(index[i]);
         e->game_order = order;
+        for (auto& [ts, i] : e->selections) i = i >= 0 && i < int(index.size()) ? index[i] : -1;
     }
     e->foes.erase(std::remove_if(e->foes.begin(), e->foes.end(), [](const Foe& f) { return f.path.size() < 5; }), e->foes.end());
     if (e->foes.empty()) return nullptr;
     e->guns_only = single;
+    // A big aircraft brought down keeps flying in the recording (its wreck stays on the contact
+    // list, never marked down): LADON's second in its first phase, shot down by the player at
+    // 216 s, then on a frozen heading, slowing and falling to the end. Down from where its heading
+    // froze, if it stayed within 0.3 deg for the last 5 s or more.
+    for (Foe& f : e->foes) {
+        if (!f.boss || f.path.size() < 10 || f.down) continue;
+        const float yaw_end = f.path.back().yaw;
+        size_t k = f.path.size();
+        while (k > 0 && std::abs(std::remainder(f.path[k - 1].yaw - yaw_end, 360.0f)) < 0.3f) --k;
+        if (k < f.path.size() && f.path.back().t - f.path[k].t >= 5) { f.down = true; f.last = f.path[k].t; }
+    }
     for (Foe& f : e->foes) {
         orient_from_path(f.path);
         if (single) { f.first = f.path.front().t; f.last = f.path.back().t; f.elite = elite_class(f.cls); }
@@ -409,6 +593,7 @@ std::shared_ptr<Encounter> load_encounter(const std::string& path, bool single, 
     // a boss (supersonic, ECM: lock only within 1 km) is met 800 m behind at its own speed
     const bool boss = std::any_of(e->foes.begin(), e->foes.end(), [](const Foe& f) { return f.boss; });
     standard_start(*e, behind > 0 ? behind : single ? 1000.0f : boss ? 800.0f : 1500.0f);
+    for (const Foe& f : e->foes) for (const Pose& p : f.path) e->crash_z = std::min(e->crash_z, std::max(0.0f, p.pos.z - 20));
     return e;
 }
 
@@ -499,6 +684,7 @@ struct Scenario {
     V3 enemy_offset{}; float enemy_yaw = 0, enemy_speed = 220;   // enemy start, relative to us (m, deg)
     std::shared_ptr<Encounter> encounter;                // recorded enemies
     std::shared_ptr<Approach> approach;                  // a recorded landing
+    std::string group;   // scenes of one battle (M28 in four orders) share it: counted once in the summaries
 };
 std::vector<int> reference_order(const Encounter& e, float seconds, int prefer, const std::vector<int>& first = {});
 // The scenes, named "<category> · <what>" with ids "<category>_<nn>". Scripted ones are defined
@@ -566,16 +752,21 @@ std::vector<Scenario> scenarios(const std::string& dir) {
         // standard distance; "order=game|near|nose|mixed" fixes the order of attack (the player's
         // own selections, then as the mixed reference; or a reference flight's choosing nearest
         // first, nearest the nose first, or mixed: see reference_order)
-        float behind = -1; std::string order;
+        float behind = -1, from = 0; std::string order; int missiles = NoMissiles; bool from_player = false, follow_selection = false;
         for (;;) {
             const size_t sp = title.find(' ');
             const std::string opt = title.substr(0, sp);
-            if (opt.rfind("start=", 0) == 0) behind = std::stof(opt.substr(6));
+            if (opt == "start=player") from_player = true;
+            else if (opt == "target=game") follow_selection = true;
+            else if (opt.rfind("from=", 0) == 0) from = std::stof(opt.substr(5));
+            else if (opt.rfind("start=", 0) == 0) behind = std::stof(opt.substr(6));
             else if (opt.rfind("order=", 0) == 0) order = opt.substr(6);
+            else if (opt == "missiles=1") missiles = RuleMissiles;
+            else if (opt == "missiles=laam") missiles = LaamMissiles;
             else break;
             title = sp == std::string::npos ? "" : title.substr(sp + 1);
         }
-        Scenario c; c.id = id; c.title = title;
+        Scenario c; c.id = id; c.title = title; c.group = file;
         c.kind = kind == "single" ? Single : kind == "multi" ? Multi : kind == "boss" ? Boss : kind == "landing" ? Landing : Capture;
         if (c.kind == Capture) continue;
         if (c.kind == Landing) {   // landings/<file>: until 8 s after the recorded touchdown
@@ -586,8 +777,32 @@ std::vector<Scenario> scenarios(const std::string& dir) {
             continue;
         }
         const std::string path = dir + (c.kind == Single ? "/tracks/" : "/battles/") + file;
-        c.encounter = load_encounter(path, c.kind == Single, behind);
+        c.encounter = load_encounter(path, c.kind == Single, behind, from);
         if (!c.encounter) { std::fprintf(stderr, "scenes.txt: cannot read %s\n", path.c_str()); continue; }
+        c.encounter->missiles = missiles;
+        c.encounter->follow_selection = follow_selection;
+        // The player's locks smoothed: a lock counts only once held 3 s, and a moment with none
+        // keeps the last. Wearing both LADONs down in its first phase, the player went between them
+        // and between their parts, a second or two each, and the pilot turned after each at once.
+        if (follow_selection) {
+            auto& sel = c.encounter->selections;
+            std::vector<std::pair<float, int>> kept;
+            for (size_t k = 0; k < sel.size(); ++k) {
+                const float until = k + 1 < sel.size() ? sel[k + 1].first : 1e9f;
+                if (sel[k].second < 0 || until - sel[k].first < 3) continue;
+                if (kept.empty() || kept.back().second != sel[k].second) kept.push_back(sel[k]);
+            }
+            sel = kept;
+        }
+        // start=player: as the player was at the cut, attitude and all (a phase following another
+        // without a break: LADON's second phase opens in a 50-70 deg dive at ~800 m/s, which the
+        // player was already in; the standard start, level within 20 deg 800 m behind, left every
+        // controller to push over at full speed close behind it)
+        if (from_player && c.encounter->has_player) {
+            Encounter& e = *c.encounter;
+            e.start = e.player_pos; e.pitch = e.player_pitch; e.yaw = e.player_yaw; e.roll = e.player_roll;
+            e.speed = std::clamp(e.player_speed, 200.0f, 900.0f);
+        }
         float end = 0; for (const Foe& f : c.encounter->foes) end = std::max(end, f.last);
         c.seconds = std::floor(end * 4) / 4;
         if (!order.empty()) {
@@ -604,13 +819,13 @@ std::vector<Scenario> scenarios(const std::string& dir) {
                     : reference_order(e, c.seconds, order == "near" ? 1 : order == "nose" ? 2 : 0);
         }
         int bosses = 0, elites = 0; for (const Foe& f : c.encounter->foes) { bosses += f.boss; elites += f.elite; }
-        char note[400];
+        char note[600];
         if (c.kind == Single) std::snprintf(note, sizeof(note), "敌机轨迹取自录像（%s）；我方从敌机后方 1 km 出发，全程用机炮跟踪（不计击落）。", elites ? "精英" : "普通");
         else {
             char dist[64];
             if (behind > 0) std::snprintf(dist, sizeof(dist), "%.0f m", behind);
             else std::snprintf(dist, sizeof(dist), "%s", bosses ? "800 m" : "1.5 km");
-            const char* how = order == "game" ? "按实战锁定顺序（%d 架，之后按综合参考顺序）击杀"
+            const char* how = order == "game" ? "按实战锁定顺序（%d 架，之后按综合参考顺序），每次在接下来的 3 架里挑位置最好的一架击杀"
                             : order == "near" ? "按参考飞行“距离优先”得出的固定顺序击杀"
                             : order == "nose" ? "按参考飞行“偏角优先”得出的固定顺序击杀"
                             : order == "mixed" ? "按参考飞行“综合”得出的固定顺序击杀" : "";
@@ -619,9 +834,10 @@ std::vector<Scenario> scenarios(const std::string& dir) {
             char from[96];
             if (order == "game" && c.encounter->has_player) std::snprintf(from, sizeof(from), "我方从实战中玩家的起点出发");
             else std::snprintf(from, sizeof(from), "我方从敌机后方 %s 出发", dist);
-            std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；%s%s%s%s。",
+            std::snprintf(note, sizeof(note), "敌机 %d 架（精英 %d、头目 %d），轨迹取自录像；%s%s%s%s%s。",
                           int(c.encounter->foes.size()), elites, bosses, from, bosses ? "，速度取头目当时的速度" : "",
-                          *fixed ? "；所有飞控" : "", fixed);
+                          *fixed ? "；所有飞控" : "", fixed,
+                          with_missiles || missiles == RuleMissiles ? "；机炮和导弹" : missiles == LaamMissiles ? "；机炮和 12 发远程导弹（逐帧飞行，尾追）" : "；只用机炮");
         }
         c.note = note;
         add(c);
@@ -640,6 +856,10 @@ struct Metrics {
     float cost = 0;
     // encounters
     int kills = -1, elite_kills = 0, foes = 0, gun_kills = 0, missiles = 0;
+    // gun: the share of the time with a target that the trigger was held with the nose on the lead
+    // point (what can hit), and the unbroken spells on it (within 1 km, 2 deg): longest, median (s)
+    float gun_usable = -1, gun_window_max = 0, gun_window_med = 0;
+    float gun_hits = 0, gun_hits_max = 0;   // hit-seconds credited by the rounds: all enemies, and the most on one
     float first_kill = -1, on_lead = -1, close_time = 0, to_shot = -1;
     float lock_frac = -1;   // share of the time the target was within missile lock (15 deg, 0.3-2.5 km; a boss 1 km)
     float crashed = -1;     // time the aircraft went below 50 m (the ground is near 0-200 m)
@@ -647,9 +867,18 @@ struct Metrics {
     int landed = -1;
     float td_sink = -1, td_bank = 0, td_pitch = 0, td_side = 0, td_late = 0;   // td_late: s after the player
     float clear = -1;       // time the last enemy came down (the run ends there)
+    float stall = 0;        // s below the stall speed (225 km/h)
 };
-struct Sample { float v[28]; int n; };
-struct Run { Metrics m; std::vector<Sample> frames; std::vector<std::pair<float, int>> kills; std::vector<char> kill_gun; };
+struct Sample { float v[40]; int n; };
+// One LAAM: launched at t0 at an enemy `range` m away and `off` deg off the nose; how it ended
+// (0 still flying at the end, 1 hit, 2 lost: the enemy beyond 117 deg of its heading, 3 its 25 s
+// out, 4 the enemy gone meanwhile, 5 a boss's CIWS) and when; its path, t x y z every 0.1 s.
+struct Shot { float t0, range, off, t_end = -1; int target, outcome = 0; std::vector<float> track; };
+// the bench's launch-range bins for the LAAM log (m): 0-500, 500-800, 800-1200, 1200-2000, 2000-4000, 4000+
+constexpr float shot_bins[] = {500, 800, 1200, 2000, 4000, 1e9f};
+constexpr int n_shot_bins = sizeof(shot_bins) / sizeof(shot_bins[0]);
+int shot_bin(float range) { int b = 0; while (range >= shot_bins[b]) ++b; return b; }
+struct Run { Metrics m; std::vector<Sample> frames; std::vector<std::pair<float, int>> kills; std::vector<char> kill_gun; std::vector<Shot> shots; };
 
 struct Scorer {
     const Scenario& sc;
@@ -705,6 +934,7 @@ struct Scorer {
             m.within2 *= k; m.within5 *= k;
             if (m.lock_frac >= 0) m.lock_frac *= k;
             if (m.on_lead >= 0) m.on_lead *= k;
+            if (m.gun_usable >= 0) m.gun_usable *= k;
         }
         // Long scenes count roll reversals and stick chatter per minute.
         const float minutes = std::max(span / 60.0f, 0.25f);
@@ -721,13 +951,14 @@ struct Scorer {
         else if (sc.kind == Pursuit)
             m.cost = 0.5f * m.mean_angle + 3 * (1 - m.within5) + 0.2f * m.reversals + 0.05f * m.chatter;
         else if (sc.kind == Boss)   // kept in missile lock, on the gun lead point, the nose near the aim
-            m.cost = 10 * (1 - std::max(m.lock_frac, 0.0f)) + 10 * (1 - std::max(m.on_lead, 0.0f)) + 0.2f * m.mean_angle +
-                     0.05f * rev_rate + 0.01f * chatter_rate;
+            m.cost = (with_missiles ? 10 * (1 - std::max(m.lock_frac, 0.0f)) + 10 * (1 - std::max(m.gun_usable, 0.0f))
+                                    : 20 * (1 - std::max(m.gun_usable, 0.0f))) + 0.2f * m.mean_angle +
+                     0.05f * rev_rate + 0.01f * chatter_rate;   // gun only: the usable gun time in place of the lock
         else if (sc.kind == Single)   // gun tracking of one enemy: on the lead point, steadily
             m.cost = 0.5f * m.mean_angle + 2 * (1 - m.within5) + 2 * (1 - m.within2) + 0.05f * rev_rate + 0.01f * chatter_rate;
         else   // enemies brought down, how soon all of them, how quickly a picked enemy is fired at, gun aim
             m.cost = 20 * (1 - float(std::max(m.kills, 0)) / std::max(m.foes, 1)) + 10 * (m.clear < 0 ? 1 : m.clear / span) +
-                     (m.to_shot < 0 ? 15 : m.to_shot) + 5 * (1 - std::max(m.on_lead, 0.0f)) + 0.2f * m.mean_angle;
+                     (m.to_shot < 0 ? 15 : m.to_shot) + 5 * (1 - std::max(m.gun_usable, 0.0f)) + 0.2f * m.mean_angle;
         if (m.crashed >= 0) m.cost += 20;
     }
 };
@@ -735,108 +966,116 @@ struct Scorer {
 // Conditions: the aircraft model plus how the host senses body rates (on the game clock the
 // filtered rates are quiet, 0.1-0.2 deg/s rms in level flight, logged). Every scene runs on
 // every condition.
-struct Condition { const char* id; const char* title; const Plant* plant; float white; float jitter; };
-const Condition conditions[] = {
-    {"measured", "差机体", &measured, 0.15f, 0.0f},
+struct Condition { std::string id, title; const Plant* plant; float white; float jitter; std::array<int, 3> bars{}; };
+// The aircraft fitted from flights, used when there is no dev/compare/aircraft/aircraft.txt.
+const Condition fitted_conditions[] = {
+    {"mig21bis", "MiG-21bis", &mig21bis, 0.15f, 0.0f},
     {"su35", "Su-35", &su35, 0.15f, 0.0f},
     {"su57", "Su-57", &su57, 0.15f, 0.0f},
     {"adfx02", "ADF-X02", &adfx02, 0.15f, 0.0f},
-    {"sluggish", "迟钝机体", &sluggish, 0.15f, 0.0f},
+    {"fa36", "FA-36", &fa36, 0.15f, 0.0f},
 };
-constexpr int condition_count = int(sizeof(conditions) / sizeof(conditions[0]));
+std::vector<Condition> conditions;
+int condition_count = 0;
+std::deque<Plant> imported_plants;
+std::deque<std::string> imported_names;
+// Every player plane from the game's own flight parameters (import_aircraft.py writes the file
+// from the spec probe; it is game data and stays out of the repository): the FA-36's fitted
+// dynamics (delays, smoothing, flight path) with each aircraft's pull, roll, high-G, thrust,
+// brake and stall speed. Sorted by the hangar's Speed + Mobility. (A made-up sluggish aircraft,
+// a MiG-21bis with 30% more delay and 25% less authority, followed until 2026-10-06: the game's
+// own slow aircraft cover it now.)
+void load_conditions(const std::string& dir) {
+    std::ifstream in(dir + "/aircraft/aircraft.txt");
+    for (std::string line; std::getline(in, line);) {
+        if (line.empty() || line[0] == '#') continue;
+        std::vector<std::string> f;
+        std::stringstream ss(line);
+        for (std::string part; std::getline(ss, part, '|');) f.push_back(part);
+        if (f.size() < 9) continue;
+        auto nums = [](const std::string& text) { std::vector<float> v; std::stringstream t(text); for (float x; t >> x;) v.push_back(x); return v; };
+        const auto bars = nums(f[2]), pull = nums(f[5]), roll = nums(f[6]), thrust = nums(f[7]), brake = nums(f[8]);
+        if (bars.size() < 3 || pull.size() < 9 || roll.size() < 9 || thrust.size() < 9 || brake.size() < 9) continue;
+        Plant plant = fa36;
+        imported_names.push_back(f[0]); plant.id = imported_names.back().c_str();
+        imported_names.push_back(f[1]); plant.title = imported_names.back().c_str();
+        plant.stall_speed = std::stof(f[3]);
+        plant.highg_pull = std::stof(f[4]);
+        if (f.size() > 9 && !f[9].empty()) plant.speed_max = std::stof(f[9]);
+        for (int k = 0; k < 9; ++k) {
+            plant.pull_by_speed[k] = pull[k]; plant.roll_by_speed[k] = roll[k];
+            plant.thrust_by_speed[k] = thrust[k]; plant.brake_by_speed[k] = brake[k];
+        }
+        imported_plants.push_back(plant);
+        conditions.push_back({f[0], f[1], &imported_plants.back(), 0.15f, 0.0f, {int(bars[0]), int(bars[1]), int(bars[2])}});
+    }
+    if (conditions.empty()) for (const Condition& c : fitted_conditions) conditions.push_back(c);
+    condition_count = int(conditions.size());
+}
 
-// The simulated player's hand on the mouse: not an aimbot. A person sees the target a moment
-// late, moves the mouse in separate strokes (each with a bell-shaped speed, landing a few
-// percent off), takes a moment to react to a new target (more to find one outside the view),
-// and between strokes follows the target's motion only in part. So the aim jumps in steps,
-// overshoots, and wanders around the lead point while tracking, which is what the controller
-// has to fly through. The numbers are those of a competent player (the logged player's mouse,
-// checked against them, was a little slower and less steady: a reference, not the standard).
-struct Hand {
-    float react = 0.22f;      // s from a new target to the first stroke
-    float search = 0.35f;     // s more when the target is beyond view_half from the nose
-    float view_half = 40;     // deg
-    float delay = 0.12f;      // s the seen target lags
-    float dwell = 0.06f;      // s between a stroke's end and the next decision
-    float gain = 0.95f;       // share of the seen error a stroke covers
-    float scatter = 0.07f;    // endpoint scatter, share of the stroke (each axis, 1 sigma)
-    float floor_deg = 0.12f;  // endpoint scatter of the smallest strokes, deg
-    float pursuit = 0.8f;     // share of the target's apparent motion followed between strokes
-    float max_speed = 700;    // deg/s
-    V3 cursor{1, 0, 0}; bool primed = false, moving = false;
-    V3 axis{0, 0, 1}; float total = 0, done = 0, t0 = 0, dur = 0, next = 0;
-    int last_target = -2;
-    std::deque<std::pair<float, V3>> seen;
-    std::mt19937 rng{20261005};
-    std::normal_distribution<float> n01{0.0f, 1.0f};
-    static V3 rotate(V3 v, V3 k, float a) {   // Rodrigues, k a unit axis
-        return v * std::cos(a) + cross(k, v) * std::sin(a) + k * (dot(k, v) * (1 - std::cos(a)));
-    }
-    V3 at(float t) const {   // the wanted direction as it was at t
-        if (seen.empty()) return cursor;
-        for (size_t k = seen.size(); k-- > 0;) if (seen[k].first <= t) return seen[k].second;
-        return seen.front().second;
-    }
-    static float mj(float s) { s = std::clamp(s, 0.0f, 1.0f); return s * s * s * (10 - 15 * s + 6 * s * s); }   // minimum jerk
-    V3 step(float t, float dt, V3 want, int target, V3 nose) {
-        seen.push_back({t, want});
-        while (seen.size() > 2 && seen.front().first < t - delay - 0.5f) seen.pop_front();
-        if (!primed) { cursor = want; primed = true; last_target = target; next = t; }
-        if (target != last_target) {   // a new target: react first (and find it, if out of view)
-            last_target = target; moving = false;
-            const float off = std::acos(std::clamp(dot(nose, want), -1.0f, 1.0f)) / rad;
-            next = t + react + (off > view_half ? search : 0);
-        }
-        const V3 now_seen = at(t - delay), before = at(t - delay - 0.1f);
-        // between strokes, the target's seen motion followed in part (smooth pursuit)
-        if (t >= next - dwell) {
-            const V3 w = cross(before, now_seen);
-            const float a = std::asin(std::clamp(len(w), 0.0f, 1.0f)) / 0.1f * dt;
-            if (len(w) > 1e-6f && a < 0.5f) cursor = unit(rotate(cursor, unit(w), pursuit * a));
-        }
-        if (moving) {
-            const float f = mj((t - t0) / dur), d = (f - done) * total;
-            cursor = unit(rotate(cursor, axis, d)); done = f;
-            if (t >= t0 + dur) { moving = false; next = t + dwell; }
-        } else if (t >= next) {   // the next stroke, toward the target as seen, landing a little off
-            const float err = std::acos(std::clamp(dot(cursor, now_seen), -1.0f, 1.0f));
-            if (err < 0.02f * rad) { next = t + dwell; return cursor; }
-            const V3 k = unit(cross(cursor, now_seen));
-            V3 end = rotate(cursor, k, gain * err);
-            const V3 side = unit(cross(end, k));
-            const float sigma = std::hypot(scatter * gain * err, floor_deg * rad);
-            end = unit(rotate(end, k, sigma * n01(rng)));
-            end = unit(rotate(end, side, sigma * n01(rng)));
-            const V3 kk = cross(cursor, end);
-            if (len(kk) < 1e-7f) { next = t + dwell; return cursor; }
-            axis = unit(kk); total = std::acos(std::clamp(dot(cursor, end), -1.0f, 1.0f)); done = 0; t0 = t;
-            dur = std::max(0.09f + 0.045f * std::log2(1 + total / rad / 0.5f), total / rad / max_speed);   // Fitts-like
-            moving = true;
-        }
-        return cursor;
-    }
+// The simulated player's habits, one set per pass over every scene and aircraft. The standard
+// one (seed 0) is what the controllers were tuned on; the others took no part in tuning and show
+// whether a ranking holds for other players and other luck (robust=0 skips them).
+struct PilotProfile {
+    const char* id; const char* title;
+    float react = 1, highg_off = 40;   // reaction x, high-G beyond (deg)
+    unsigned seed = 0;
 };
+const PilotProfile pilot_profiles[] = {
+    {"std", "标准（调参用）"},
+    {"std_s1", "标准 · 种子 1", 1, 40, 1},
+    {"std_s2", "标准 · 种子 2", 1, 40, 2},
+    // slow (reaction and scatter x1.5), sharp (x0.75, x0.7, high-G from 25 deg) and few high-G
+    // turns (from 70 deg) until 2026-10-07: they ranked as the standard (0.874-0.895 against its
+    // 0.887) and crowded the page; the two seeds stay, to tell a change from the forks.
+};
+PilotProfile pilot_profile = pilot_profiles[0];   // read-only while a pass runs
+
+// No simulated hand on the mouse (removed 2026-10-07): the mouse is where the pilot wants it at
+// once. Strokes, pauses, reaction and scatter modelled after the player's mouse (cddf6e3 on) moved
+// the results more than any controller change did, and each fix brought new artefacts (the mouse
+// still while a fighter moved away, stepping on a crossing target).
 
 // The simulated player: the same decisions for every controller. Picks an enemy the way the
 // game's target selection tends to (nearest the nose, distance counting), keeps it until it is
-// down or over 5 km away, moves the mouse by hand toward its gun lead point (Hand: strokes,
-// reaction, scatter; never an aimbot), and works the throttle:
+// down or over 5 km away, puts the mouse on it (a little ahead of its motion across the view),
+// and works the throttle:
 // throttle+brake (a high-G turn) while the enemy is more than 40 deg off the nose, full
 // throttle while it is beyond 1.5 km (a boss: 800 m) and not closing at 50 m/s, brake inside
 // 600 m (a boss: 400 m) when closing fast. Low over the ground it does not follow the aim into
 // it: within ~4 s of 700 m the mouse is held at least level, higher the lower it gets.
 // It fires:
 //   missiles: the enemy within 15 deg of the nose at 300-2500 m (a boss with ECM: within 1 km)
-//     for 0.8 s locks it; one missile every 1.5 s at most, ~700 m/s. It hits an ordinary enemy,
+//     for 0.8 s locks it; two rails, each reloading 4.1 s after it fires, ~700 m/s. It hits an ordinary enemy,
 //     except that the first missile at every fourth one (by its index: the same enemies for every
 //     controller) misses (the player's missiles: a fighter gone within the flight time after 75%
 //     of the presses, near and far alike, logged); an elite (or a boss's escort drone) dodges unless launched within 1000 m and 5 deg, and takes two hits;
 //     a boss's CIWS stops them (a boss is scored on the lock time, not brought down).
-//   gun: fired within 1 km while the nose is within 2 deg of the lead point. Each frame's rounds
+//     So by the old rules (missiles=1); a scene with missiles=laam flies LAAMs instead (see Laam).
+//   gun: rounds at 1389 m/s plus the aircraft's velocity, falling at 9.8 m/s^2, gone after 1.08 s
+//     (the game's BP_plwp_gun_x1). The game's ring (the locked target within 1.1 km, with the range
+//     part) shows where the rounds are now at the enemy's distance, trailing the nose in a turn;
+//     the player fires while it covers the enemy. The player sees no lead point (the game shows
+//     none): the mouse goes on the enemy (see before()); beyond the ring's range only a large
+//     target is fired on, blind, the nose on it. Hits and the gun measures go by where the enemy really is (the program's window:
+//     rounds fired then would meet it, within its size); the player's window is the ring shown
+//     and on the enemy. The trigger, a player's, not a script's, on the game's gun ring
+//     (4.4 deg around the marker): the ring sweeping onto the judged point
+//     fast enough to be on it within a reaction time, it fires ahead (a dogfight's snap shot);
+//     coming on slowly (chasing a bomber), it fires once on it (2 deg) for a reaction time
+//     (0.25 s, scaled by the profile). Either way it keeps firing until the nose is 3 deg off
+//     or the enemy beyond 1 km. (Fired the frame the nose came within 2 deg until 2026-10-05.)
+//     Each frame's rounds
 //     fly at 1000 m/s on top of the aircraft's speed along the nose and are judged where they
 //     arrive, against where the enemy really is then (its recorded path), with a 0.35 deg
 //     spread: the share that falls within the enemy's size (a fighter 6 m, a bomber 20 m, a boss
-//     30 m) counts as hits. 0.5 s of hits bring an enemy down, 1.5 s an elite. (Judged at the
+//     30 m) counts as hits, 150 a second of them on a bomber, 100 on a fighter (gun_damage_rate). Down when
+//     they reach its health (health(); the game's DT_NPC_Model, 2026-10-06: a MiG-29 60, a Tu-95
+//     150, a Shadow MiG-29 60 as any). The round's 5 m burst
+//     reaches more than the part it strikes: a Tu-95 shot at its wing went down
+//     with its body's 150 (the player: 2.2 s of fire at 450-580 m), not with the wing's 75; a
+//     missile on a wing does not bring it down. (1 s of hits for all until then; 0.5 s, and 1.5 s
+//     an elite, before 2026-10-06.) (Judged at the
 //     moment of firing, with the nose within a wingspan of a perfect lead point, every
 //     controller shot fighters down from 1 km in half a second; the player, firing a median
 //     920 m out, brought down fighters with the gun about twice in five recordings.)
@@ -846,24 +1085,101 @@ struct Pilot {
     std::vector<float> hits;
     std::vector<int> missile_hits, on_the_way;
     std::vector<std::pair<float, int>> flying;   // missile impact time, enemy
-    struct Round { float arrive, dt; V3 at; int target; float spread; };
+    // The game's gun marker, a ring around where the rounds go: at 500 m it just frames LADON's
+    // body (~77 m), 4.4 deg in radius. The player fires when the enemy, where they judge it will
+    // be, is inside it.
+    static constexpr float gun_ring = 4.4f;
+    // The player's rounds (BP_plwp_gun_x1, read in game 2026-10-06): 1389 m/s from the muzzle
+    // (5000 km/h, +-5% a round) on top of the aircraft's velocity, falling at 9.8 m/s^2, gone
+    // after 1.08 s (1.5 km and the aircraft's own speed). 1000 m/s, no fall and no end until then.
+    static constexpr float muzzle_speed = 1389, round_life = 1.08f, round_fall = 9.8f;
+    // Rounds fly until they pass the enemy (or their life ends) and count by the closest they came,
+    // within the enemy's size plus the round's 5 m burst (the game's RayCastRadius, 500 cm: area
+    // damage, a proximity hit). Judged at a fixed time, when they had covered the range the enemy
+    // was at when fired, those at an enemy opening the range fell 35-47 m short and nothing hit.
+    static constexpr float round_burst = 5;
+    // No draw onto the enemy beyond its size and the burst: the hits the game reports (contacts.lua
+    // "hit" packets, every one with the victim's health after it; dev/compare/gun_hits.py) came
+    // from rounds that would have passed it, flown straight along the nose, a median 8-34 m off
+    // a bomber and 7-19 m off a fighter at every range from 0 to 1.7 km (with and without the gun
+    // parts, 2026-10-07): a distance, its size and burst, not an angle (3.5 deg until then, from
+    // kills that took in wrecks and missiles: 61 m at 1 km, 92 at 1.5). BENCH_ASSIST=<deg> to try.
+    static inline float gun_assist_deg = 0;
+    struct Round { float t0, dt; V3 p0, v; int target; float spread, best, assist; };
     std::vector<Round> rounds;                   // gun rounds on their way (see the gun above)
     // the size a round must fall within: a fighter, a bomber (or its wing), a boss
+    // By the aircraft, not by its being a boss: Shadow 22 (a Su-57) and Moon 11 (an X-40A) are
+    // fighters, and took LADON's 30 m until 2026-10-06.
+    // Health, by the aircraft (the game's DT_NPC_Model MaxHealth, 2026-10-06; the same as live
+    // enemies' MaxHealth in a mission); a fighter not listed as a MiG-29
+    float health(int i) const {
+        static const std::pair<const char*, float> table[] = {
+            {"tu95", 150}, {"t160", 125}, {"b01b", 130}, {"ladn", 1200}, {"x40a", 300}, {"su57", 115}, {"f22a", 110},
+            {"f35c", 70}, {"su35", 65}, {"typn", 60}, {"m29a", 60}, {"f04e", 60}, {"su25", 60}, {"uavn", 60},
+            {"mr2k", 55}, {"f16c", 55}, {"a06e", 55}, {"m21b", 46}, {"mi24", 35}};
+        for (const auto& [name, hp] : table) if (e.foes[i].cls.find(name) != std::string::npos) return hp;
+        return 60;
+    }
+    // A second of hits: 150 on a bomber, 100 on a fighter. The game reports a hit about every 0.05 s
+    // while the rounds keep on an enemy (20 a second, unbroken runs to a kill, with or without the
+    // gun parts), 7.5 off a Tu-95's or a Mirage's health from the player's FA-36 with the damage
+    // part, 5 from an X-40A without (2026-10-07). The rate differs by attacker and target type (the
+    // player's account); this version takes 150 a second on bombers and 100 on fighters for all
+    // (the player's choice). The player's aircraft carry the gun parts (range, grouping, damage) in
+    // every recording: they are the standard. Was 100 a second, 150% on bombers and 85% on fighters.
+    float gun_damage_rate(int i) const {
+        const std::string& c = e.foes[i].cls;
+        const bool large = c.find("tu95") != std::string::npos || c.find("t160") != std::string::npos || c.find("b01b") != std::string::npos;
+        return large ? 150.0f : 100.0f;
+    }
     float hit_radius(int i) const {
         const std::string& c = e.foes[i].cls;
-        if (e.foes[i].boss) return 30;
+        if (c.find("ladn") != std::string::npos) return 30;
         if (c.find("tu95") != std::string::npos || c.find("t160") != std::string::npos || c.find("b01b") != std::string::npos) return 20;
         return 6;
     }
-    float lock = 0, next_launch = 0;
+    float lock = 0;
+    // The standard missile's two rails (the game's MaxLoadedCount 2): each reloads 4.1 s after
+    // it fires (LoadTime, DT_WeaponSettings "C.Story", the campaign's row). Two can go at once,
+    // then about one in 2 s. (One every 1.5 s, without end, until 2026-10-06.)
+    static constexpr float missile_reload = 4.1f;
+    float rail_ready[2] = {0, 0};
     int missiles = 0, gun_kills = 0;
     float picked_at = 0; bool shot = false;
     double to_shot = 0; int shots_timed = 0;
     int target = -1;
-    V3 aim{1, 0, 0};       // where the hand has the mouse (what the controller flies to)
-    V3 lead{1, 0, 0};      // the gun lead point itself (firing and the gun-aim measure)
-    Hand hand;
+    V3 aim{1, 0, 0};       // where the mouse is (what the controller flies to)
+    V3 lead{1, 0, 0};      // where the enemy will be when rounds fired now arrive (the gun measures)
+    V3 impact{1, 0, 0};    // where rounds fired now go: the nose plus the aircraft's own velocity
+    // The game's gun ring: where the rounds are now at the enemy's distance, those fired a flight
+    // time ago along the nose and velocity the aircraft had then. In a hard turn the aircraft
+    // turns on while they fly straight, and the ring is left well behind the nose (in game, far
+    // from the screen's centre; drawn at the nose until 2026-10-06, as if the rounds were lasers).
+    V3 ring{1, 0, 0};
+    std::deque<std::pair<float, std::pair<V3, V3>>> muzzle;   // (t, (position, rounds' velocity)), the last 1.5 s
+    V3 seen_lead{1, 0, 0}; // where the player puts the mouse: on the enemy (the game shows no lead point)
+    // The game shows the gun ring with the locked target within 1.1 km with the range part (the
+    // player's account, 2026-10-07; taken as nothing else). Beyond it the player fires only at a large target (a bomber, a boss), blind,
+    // with the nose within blind_deg of it (reported: a bomber sprayed without the ring).
+    static constexpr float ring_range = 1100, blind_deg = 2;
+    // A fighter followed at 700 m as anything else: closer, the bench pilot held its nose worse (M28,
+    // the mean of 35 aircraft: 700 m -> 14 deg off a fighter within 1.5 km, 350 m 20, 250 m 25) and
+    // killed no more (2026-10-07). BENCH_FOLLOW=<m> to try.
+    static inline float fighter_follow = 700;
+    // The mouse ahead of the enemy by its motion across the view in this many seconds: the player,
+    // not reckoning a lead (their account), kept the mouse a median 2.0 deg ahead of a fighter along
+    // its motion (quartiles -0.7 to +5.3; X-40A, 2026-10-07), the nose 7.8 deg off it, 9.9 behind
+    // the mouse as the bench's. The bench pilot, the mouse on the enemy: 2.9 deg behind it (the eye's
+    // delay and the hand's drag), the nose 14 off. M28, 35 aircraft (anticipation: mouse ahead, nose
+    // off, gun kills): 0 -2.9, 14.2, 10.5; 0.15 s -0.3, 11.0, 11.0; 0.3 s +1.8, 9.2, 11.6; 0.5 s
+    // +4.7, 7.9, 13.2; 0.8 s +8.2, 9.0, 13.7. BENCH_ANTICIPATE=<s> to try.
+    static inline float anticipate = 0.3f;
+    V3 los_prev{1, 0, 0}, los_rate{0, 0, 0}; int los_target = -1;
+    bool ring_shown = false, player_window = false;   // the player's window: the ring shown and on the enemy
+    std::mt19937 judge_rng{7};
+    std::normal_distribution<float> judge_n{0.0f, 1.0f};
     float range = 0;
+    bool taking_over = false;   // the low takeover held (see the floor)
     std::vector<std::pair<float, int>> kill_log;
     std::vector<char> kill_gun;                  // per kill: brought down by the gun
     std::vector<int> launched;                   // missiles launched at each enemy
@@ -873,11 +1189,58 @@ struct Pilot {
     // free choice (no fixed order): 0 mixed (angle off the nose and distance), 1 nearest first,
     // 2 nearest the nose first
     int prefer = 0;
+    static constexpr int order_window = 3;   // with a fixed order: picked among the next this many
+    float pull_rate = 20;
+    bool extending = false;   // flying out after an overshoot (see before())   // deg/s: the aircraft's full pull at its present speed (fly() sets it: a player knows its aircraft)
+    int missile_kind = with_missiles ? RuleMissiles : e.missiles;
+    bool use_missiles = missile_kind != NoMissiles;
+    // LAAMs in flight (missile_kind LaamMissiles)
+    struct Flying { V3 pos, vel; float t0; int target, shot; };
+    std::vector<Flying> laams;
+    std::vector<Shot> shots;   // every LAAM launched, for the log and the viewer
+    int laams_left = Laam::aboard;
     std::vector<std::pair<float, float>> target_speed;   // the target's speed lately (time, m/s), for its braking
     explicit Pilot(const Encounter& enc, V3 forward)
         : e(enc), killed(enc.foes.size(), 0), hits(enc.foes.size(), 0), missile_hits(enc.foes.size(), 0),
-          on_the_way(enc.foes.size(), 0), launched(enc.foes.size(), 0), aim(forward) {}
+          on_the_way(enc.foes.size(), 0), launched(enc.foes.size(), 0), aim(forward) {
+        const PilotProfile& pp = pilot_profile;
+        judge_rng.seed(7u + pp.seed);
+    }
+    // Time from picking an enemy to the first shot at it. A pick never fired at counts until it
+    // is dropped (gone, out of reach, the next one picked or the scene's end): averaged over the
+    // shots alone, an enemy picked and never fired at took no part (the measure favoured giving up).
+    bool pick_open = false;
+    // where the rounds are now at `dist` m: fired a flight time ago from where the aircraft was,
+    // along its velocity then
+    V3 ring_at(float t, float dist) const {
+        if (muzzle.size() < 2) return impact;
+        const V3 now = muzzle.back().second.first;
+        for (size_t k = muzzle.size(); k-- > 0;) {
+            const float age = t - muzzle[k].first;
+            const V3 at = muzzle[k].second.first + muzzle[k].second.second * age + V3{0, 0, -0.5f * round_fall * age * age};
+            if (len(at - now) >= dist || k == 0) return unit(at - now);
+        }
+        return impact;
+    }
+    void open_pick(float t) {
+        close_pick(t); end_window(); picked_at = t; shot = false; pick_open = true; extending = false;
+    }
+    // the trigger and the unbroken spells on the lead point
+    bool trigger = false;
+    float window = 0, seen_on = 0, last_off = -1, off_rate = 0;
+    double usable = 0;
+    std::vector<float> windows;
+    void end_window() { if (window > 0) windows.push_back(window); window = 0; seen_on = 0; trigger = false; last_off = -1; off_rate = 0; player_window = false; }
+    void close_pick(float t) { if (pick_open && !shot) { to_shot += t - picked_at; ++shots_timed; } pick_open = false; }
     bool alive(int i, float t) const { const Foe& f = e.foes[i]; return !killed[i] && t >= f.first && t <= f.last; }
+    // An enemy brought down in the recording within 30 s (by the player then, most of them: the
+    // order of attack is the player's) is not picked: its path ends there and it vanishes, and the
+    // simulated player, a little behind the recorded one, chased three in a row that vanished as
+    // it closed (2026-10-06). 30 s: with 15, a tenth of the picks still vanished while chased, a
+    // median 23 s after being picked. It is the recording's own end of it, not a made-up one, the
+    // same for every controller.
+    static constexpr float vanish_horizon = 30;
+    bool vanishing(int i, float t) const { const Foe& f = e.foes[i]; return f.down && f.last - t < vanish_horizon; }
     // tough: an elite, or a boss's escort (Moon 11's drones: the player shot none down at Expert)
     bool tough(int i) const { return e.foes[i].elite || e.foes[i].escort; }
     int needed(int i) const { return e.foes[i].boss ? 1000000 : tough(i) ? 2 : 1; }
@@ -900,7 +1263,10 @@ struct Pilot {
         return false;
     }
     bool protected_now(int i, float t) const { return shielded(i, t) || (e.foes[i].escort && in_field(i, t)); }
-    bool doomed(int i) const { return missile_hits[i] + on_the_way[i] >= needed(i); }
+    // Brought down already, or (the old rules: they hit for certain) a missile on its way. A LAAM is
+    // flown and may miss: the player stays on the enemy until it is down (the player, 2026-10-06;
+    // with a LAAM out the next was taken at once until then).
+    bool doomed(int i) const { return missile_hits[i] + (missile_kind == LaamMissiles ? 0 : on_the_way[i]) >= needed(i); }
     void kill(float t, int i, bool gun = false) {
         killed[i] = 1; kill_log.push_back({t, i}); kill_gun.push_back(gun);
         elite_kills += e.foes[i].elite;
@@ -913,15 +1279,27 @@ struct Pilot {
                             (e.order.empty() && !e.foes[target].boss && len(pose_at(e.foes[target].path, t).pos - me.pos) > 5000))) target = -1;
         // Moon 11's drones while they shield her cannot be harmed: no point in chasing them
         if (target >= 0 && e.foes[target].escort && in_field(target, t)) target = -1;
-        if (target < 0 && !e.order.empty()) {   // a fixed order: the first one still flying
-            for (int i : e.order)
-                if (alive(i, t) && !doomed(i) && !(e.foes[i].escort && in_field(i, t))) { target = i; break; }
-            if (target >= 0) { picked_at = t; shot = false; }
+        if (e.follow_selection && !e.selections.empty()) {   // the player's lock at this moment, if any
+            int sel = -1;
+            for (const auto& [ts, i] : e.selections) { if (ts > t) break; sel = i; }
+            if (sel >= 0 && sel != target && alive(sel, t) && !doomed(sel)) { target = sel; open_pick(t); }
+        }
+        if (target < 0 && !e.order.empty()) {   // a fixed order: the best placed of the next three still flying
+            float best = 1e9f; int seen = 0;
+            for (int i : e.order) {
+                if (!alive(i, t) || doomed(i) || vanishing(i, t) || (e.foes[i].escort && in_field(i, t))) continue;
+                const V3 to = pose_at(e.foes[i].path, t).pos - me.pos;
+                const float off = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
+                const float c = off / 20 + len(to) / 1000;   // as the free choice, mixed
+                if (c < best) { best = c; target = i; }
+                if (++seen == order_window) break;
+            }
+            if (target >= 0) open_pick(t);
         }
         if (target < 0) {
             float best = 1e9f;
             for (int i = 0; i < int(e.foes.size()); ++i) {
-                if (!alive(i, t) || doomed(i) || (e.foes[i].escort && in_field(i, t))) continue;
+                if (!alive(i, t) || doomed(i) || vanishing(i, t) || (e.foes[i].escort && in_field(i, t))) continue;
                 const V3 to = pose_at(e.foes[i].path, t).pos - me.pos;
                 const float d = len(to);
                 if (d > 8000 && !e.foes[i].boss) continue;
@@ -930,51 +1308,204 @@ struct Pilot {
                                 - (e.foes[i].boss && !e.foes[i].ecm ? 3.0f : 0.0f);   // Moon 11 before her drones
                 if (c < best) { best = c; target = i; }
             }
-            if (target >= 0) { picked_at = t; shot = false; }
+            if (target >= 0) open_pick(t);
         }
+        V3 mouse_to;
+        muzzle.push_back({t, {me.pos, me.vel + me.b.f * muzzle_speed}});
+        while (muzzle.size() > 2 && muzzle.front().first < t - 1.5f) muzzle.pop_front();
         if (target >= 0) {
-            lead = lead_point(e.foes[target].path, t, me.pos);
-            range = len(pose_at(e.foes[target].path, t).pos - me.pos);
+            const V3 v = me.vel + me.b.f * muzzle_speed;
+            const V3 epos = pose_at(e.foes[target].path, t).pos;
+            impact = unit(v);
+            lead = lead_point(e.foes[target].path, t, me.pos, len(v));
+            range = len(epos - me.pos);
+            ring = ring_at(t, range);
+            // What the player sees: the enemy, and within 1 km the game's gun ring. The mouse goes on
+            // the enemy and the trigger waits for the ring to cover it. No lead point: the game shows
+            // none (until 2026-10-06 the bench pilot judged one from the enemy's true future, 0.4-1.6
+            // times it with a 15% wander, which no player can see). Nor ahead of it by the ring's
+            // trail behind the nose: that fed back (the harder the turn, the further the mouse, the
+            // harder the turn): the nose swung 30-50 deg about a fighter within 1 km every ~3 s. M28,
+            // the mean of 35 aircraft (gain on the trail, its time constant): 0 -> 30.1 kills, 18.7 by
+            // the gun, the ring on a fighter within 1 km 10% of the time; 0.5, 1 s -> 26.9, 16.0, 8%;
+            // 1, 2 s -> 27.5, 16.9, 8%; 1, 0.25 s -> 15.6, 6.3, 4%.
+            // The eye follows the enemy's motion across the view a little ahead of it (anticipate s of
+            // its angular motion, seen over ~0.2 s): no lead point, what is on the screen moving.
+            const V3 seen = unit(epos - me.pos);
+            if (target == los_target && dt > 0) los_rate = los_rate + ((seen - los_prev) * (1 / dt) - los_rate) * (1 - std::exp(-dt / 0.2f));
+            else los_rate = V3{0, 0, 0};
+            los_prev = seen; los_target = target;
+            seen_lead = unit(seen + los_rate * anticipate);
+            ring_shown = range <= ring_range;
+            mouse_to = seen_lead;
         } else {   // nobody to attack: level flight on the current heading
             const V3 flat{me.b.f.x, me.b.f.y, 0};
             lead = len(flat) > 0.1f ? unit(flat) : V3{1, 0, 0};
+            seen_lead = impact = ring = mouse_to = lead;
+            ring_shown = false;
         }
-        aim = hand.step(t, dt, lead, target, me.b.f);   // the mouse, moved by hand (see Hand)
-        // low over the ground: the aim no lower than a floor set by the height 4 s ahead: free
-        // down to 170 m, level there, rising to 25 deg up at 45 m (crash below 50 m). A player
-        // follows LADON down to the sea; a floor from 700 m kept the aircraft above it.
-        const float low = std::min(me.pos.z, me.pos.z + me.vel.z * 4);
-        if (low < 270) {
-            const float floor_el = std::clamp((170 - low) / 5, -20.0f, 25.0f);
+        // Overshot (the enemy within 300 m and behind the wing line): fly out on the present heading
+        // at full throttle and come back from 800 m, a new pass, instead of turning back at once.
+        // Faster than a slow bomber (the 540 km/h floor below), the bench pilot circled one at
+        // 35-300 m for 38 s, its nose never on (looping, 15-135 deg off), not a round fired; the
+        // player, after a bomber, spent 9% of the time within 300 m (a median 1.9 s a pass) and 20%
+        // at 300-700 m, the bench pilot 21% and 9% (2026-10-06).
+        if (target >= 0) {
+            const V3 to = pose_at(e.foes[target].path, t).pos - me.pos;
+            const float behind = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
+            if (!extending && range < 300 && behind > 90) extending = true;
+            else if (extending && range > 800) extending = false;
+            if (extending) {
+                const float path_el = std::asin(std::clamp(me.vel.z / std::max(len(me.vel), 1.0f), -1.0f, 1.0f)) / rad;
+                mouse_to = direction(std::clamp(path_el, -10.0f, 20.0f), std::atan2(me.vel.y, me.vel.x) / rad);
+            }
+        } else extending = false;
+        aim = mouse_to;
+        // Low over the ground: the aim no steeper down than a path that can still be levelled above
+        // 150 m (crash below 50 m): time to roll upright and start the pull (2 s and the bank at
+        // 90 deg/s: inverted 4 s), then half the aircraft's own full pull at this speed: from a path
+        // angle g at speed v it loses v sin(-g) meanwhile and (v / pull) (1 - cos g) pulling out.
+        // Tried over the boss fights (BENCH_FLOOR, 2026-10-06): 0.5 s and the full pull let the
+        // dives after Moon 11 from 2.8 km go into the ground (24 and 19 of 36); 2 s and half, 14
+        // and 9, with LADON's low windows kept (63%); a high-G pull when held up cost LADON's windows (at 15 deg/s for every aircraft, the weak
+        // ones at speed, 6-10 deg/s, went into the sea after Moon 11). Below 150 m, up, by as much as a path climbing
+        // back within 4 s (at most 25 deg). By the aim and the height, so that a dive already too
+        // steep is pulled out of (the aim above the path), and no feedback from the climb.
+        // Until 2026-10-06 a floor set by the height 4 s ahead at the present climb fed back on
+        // itself at speed (diving after LADON over the sea it came up 25 deg, the climb took it
+        // away, once a second; rolled inverted to pull down, told up while inverted, into the sea:
+        // 20 of 36 runs in its second phase); then, by a 4 s straight path above 150 m, it allowed
+        // 3.6 deg down 150 m up at 2200 km/h, and the aircraft took 12 s to come down to LADON
+        // after its dive to the sea, no firing window meanwhile.
+        {
+            const float v = std::max(len(me.vel), 100.0f), room = me.pos.z - (e.crash_z + 100);   // 100 m over the ground
+            // half the full pull: the path follows the nose late, and the controller is still lining
+            // the lift up (after Moon 11's dive from 2.8 km the path turned ~10 deg/s on a ~20 pull)
+            const float radius = v / (std::max(floor_pull_share * pull_rate, 3.0f) * rad);
+            const float cos_pitch = std::max(std::sqrt(std::max(0.0f, 1 - me.b.f.z * me.b.f.z)), 0.1f);
+            const float bank = std::acos(std::clamp(me.b.u.z / cos_pitch, -1.0f, 1.0f)) / rad;   // 0 level, 180 inverted
+            const float react = floor_react + bank / 90;
+            float floor_el = std::asin(std::clamp(-room / (v * 4), 0.0f, 0.42f)) / rad;   // below 150 m
+            if (room >= 0) {
+                floor_el = 0;
+                for (float g = -1; g >= -90; g -= 1)
+                    if (v * react * std::sin(-g * rad) + radius * (1 - std::cos(g * rad)) <= floor_margin * room) floor_el = g; else break;
+            }
             const float el = std::asin(std::clamp(aim.z, -1.0f, 1.0f)) / rad;
             if (el < floor_el) aim = direction(floor_el, std::atan2(aim.y, aim.x) / rad);
+            // A player over the sea does not wait for the controller: the aircraft's own path going
+            // into the sea before it could level out (the floor bounds the mouse, not where the
+            // controller has the aircraft), or inverted near it, the mouse goes up whatever the
+            // target does, and stays up until the sinking stops or the pull-out needs under half the
+            // height left. Against the floor's own line (100 m over the crash line) it fired every
+            // few seconds following LADON at 150 m. The floor alone counted on a pull-out the controller may not give (upstream's,
+            // rolling inverted over LADON low over the sea). Taken over when the height ran out
+            // within 5 s at the present sink and let go as soon as not, it pumped the mouse between
+            // +25 and -35 deg every 4-5 s from 2.8 km down (LADON's second phase, 2026-10-07).
+            if (low_take) {
+                const float path = std::asin(std::clamp(me.vel.z / v, -1.0f, 1.0f)) / rad;
+                const float need = path < 0 ? v * react * std::sin(-path * rad) + radius * (1 - std::cos(path * rad)) : 0;
+                const float height = me.pos.z - e.crash_z;
+                if (need > height || (height < low_take_m && me.b.u.z < -0.5f)) taking_over = true;   // into the crash line itself (the floor keeps 100 m over it)   // inverted: bank past 120 (90-100 is a hard turn low over the sea)
+                else if (taking_over && (me.vel.z >= 0 || need < 0.5f * height)) taking_over = false;
+                const float el_now = std::asin(std::clamp(aim.z, -1.0f, 1.0f)) / rad;
+                if (taking_over && el_now < low_take_deg) aim = direction(low_take_deg, std::atan2(aim.y, aim.x) / rad);
+            }
         }
         const float off = std::acos(std::clamp(dot(me.b.f, aim), -1.0f, 1.0f)) / rad;
         const float closing = target >= 0 && last_range >= 0 && dt > 0 ? (last_range - range) / dt : 0;
         last_range = target >= 0 ? range : -1;
         throttle = brake = 0;
-        // Speed: hold a following distance (a boss 400 m, others 700 m) by closing at a third of
-        // the excess a second: full throttle when closing slower than that, the brake only when
-        // near and closing much faster. (Coasting between two distances let a fast boss run away:
-        // the aircraft fell to ~1 km behind LADON and never met its somersault up close.)
+        // Speed, as a player flies it: the throttle open unless closing on the target faster than
+        // a following distance wants (a boss 400 m, others 700 m, closed at a third of the excess
+        // a second), then neutral; the brake when near and still closing much faster. Logged
+        // 2026-10-05, four sorties: throttle 48-58% of the time, neutral 21-39%, brake 3-8%,
+        // high-G 8-21%, a median 1300-1950 km/h. (Throttle only when closing too slowly, neutral
+        // otherwise, left the bench pilot near the neutral cruise, ~750 km/h in fights.)
+        // Beyond the following distance, as fast as the throttle let off sheds by then: closing
+        // at sqrt(2 a d), a the neutral throttle's drag at speed (25 m/s^2: the game's neutral, 26-28
+        // at 500-600 m/s). Capped at 200 m/s until 2026-10-06: after a far enemy, a 300 km/h Tu-95
+        // say, the pilot let the throttle go at 800-900 km/h and coasted the kilometres in.
         const bool boss = target >= 0 && e.foes[target].boss;
-        const float follow = boss ? 400.0f : 700.0f, want = std::clamp((range - follow) / 3, -60.0f, 200.0f);
+        const std::string& tcls = target >= 0 ? e.foes[target].cls : std::string();
+        const bool fighter = target >= 0 && !boss && tcls.find("tu95") == std::string::npos && tcls.find("t160") == std::string::npos &&
+                             tcls.find("b01b") == std::string::npos;
+        const float follow = boss ? 400.0f : fighter ? fighter_follow : 700.0f;
         // The target braking hard (more than ~6 g over the last 0.3 s, as a pilot sees it slow):
         // throttle off and brake at once while near and closing, instead of running into it.
-        float decel = 0;
+        // LADON alone (no other enemy flies so) slows hard from 630 to 380 m/s in its first phase:
+        // its slowing over the last second taken off what letting the throttle go sheds, and the
+        // brake beyond the following distance while it slows. Before, it was closed at 250-300 m/s
+        // with the throttle let go from 1.4 km and the brake only within 400 m, run past at 250 m,
+        // and circled for a minute (FA-36, 141-152 s). Applied to every enemy, it cost M28 kills.
+        float decel = 0, slowing = 0;
         if (target >= 0) {
             const float v_now = len(pose_at(e.foes[target].path, t).pos - pose_at(e.foes[target].path, t - 0.1f).pos) / 0.1f;
             target_speed.push_back({t, v_now});
-            while (!target_speed.empty() && target_speed.front().first < t - 0.3f) target_speed.erase(target_speed.begin());
-            if (target_speed.size() > 1 && t - target_speed.front().first > 0.2f)
-                decel = (target_speed.front().second - v_now) / (t - target_speed.front().first);
+            while (!target_speed.empty() && target_speed.front().first < t - 1.0f) target_speed.erase(target_speed.begin());
+            for (const auto& [ts, vs] : target_speed)
+                if (ts >= t - 0.3f) { if (t - ts > 0.2f) decel = (vs - v_now) / (t - ts); break; }
+            if (tcls.find("ladn") != std::string::npos && t - target_speed.front().first > 0.8f) slowing = std::max(0.0f, (target_speed.front().second - v_now) / (t - target_speed.front().first));
         } else target_speed.clear();
+        const float shed = std::max(25.0f - slowing, 5.0f);   // m/s^2 the gap closes slower by, the throttle let go
+        const float want = range > follow ? std::sqrt(2 * shed * (range - follow)) : std::max(-60.0f, (range - follow) / 3);
         if (target >= 0 && decel > 60 && range < 2 * follow && closing > 0) brake = 1;
-        else if (target >= 0 && off > 40 && len(me.vel) > 150) throttle = brake = 1;
-        else if (target >= 0 && closing < want) throttle = 1;
-        else if (target >= 0 && range < follow && closing > want + 60) brake = 1;
+        else if (target >= 0 && off > pilot_profile.highg_off && len(me.vel) > 150) throttle = brake = 1;
+        else if (target >= 0 && (range < follow || slowing > 5) && closing > want + 60) brake = 1;
+        else if (target < 0 || closing <= want) throttle = 1;
+        // Not slowed below 540 km/h to sit behind a slower enemy: the player, within 700 m of a
+        // bomber, flew a median 650 km/h (quartiles 520-1000), of a fighter 970; the bench pilot,
+        // matching the enemy's speed, sat behind Tu-95s at 300 km/h, near the stall (2026-10-06).
+        if (!(throttle > 0.5f && brake > 0.5f) && len(me.vel) < 150) { throttle = 1; brake = 0; }
+        if (extending) { throttle = 1; brake = 0; }
     }
     void after(float t, float dt, const Aircraft& me) {
+        for (size_t k = 0; k < laams.size();) {   // LAAMs: flown, steering at the enemy's tail
+            Flying& m = laams[k];
+            const int i = m.target;
+            const float age = t - m.t0;
+            bool gone = age > Laam::life || !alive(i, t);
+            if (!gone) {
+                float speed = len(m.vel);
+                if (age > Laam::accel_delay) speed = std::min(Laam::top, speed + Laam::accel * dt);
+                V3 dir = unit(m.vel);
+                const V3 was = pose_at(e.foes[i].path, t - dt).pos, now = pose_at(e.foes[i].path, t).pos;
+                if (age > Laam::homing_delay) {
+                    const V3 los = unit(now - m.pos);
+                    const float ang = std::acos(std::clamp(dot(dir, los), -1.0f, 1.0f));
+                    if (ang > Laam::max_homing * rad) gone = true;   // lost: it flies on, harming nothing
+                    else if (ang > 1e-4f) {
+                        const float turn = (age < Laam::homing_delay + Laam::reduced_for ? Laam::reduced_rate : Laam::rate) * rad * dt;
+                        const V3 side = unit(los - dir * dot(dir, los));
+                        const float a = std::min(ang, turn);
+                        dir = unit(dir * std::cos(a) + side * std::sin(a));
+                    }
+                }
+                if (!gone) {
+                    const V3 from = m.pos;
+                    m.vel = dir * speed; m.pos = m.pos + m.vel * dt;
+                    std::vector<float>& tr = shots[m.shot].track;
+                    if (t - tr[tr.size() - 4] >= 0.1f) tr.insert(tr.end(), {t, m.pos.x, m.pos.y, m.pos.z});
+                    // the closest it came to the enemy over the step (both moving)
+                    const V3 r0 = was - from, r1 = now - m.pos, dr = r1 - r0;
+                    const float u = std::clamp(-dot(r0, dr) / std::max(dot(dr, dr), 1e-6f), 0.0f, 1.0f);
+                    if (len(r0 + dr * u) < hit_radius(i)) {
+                        shots[m.shot].outcome = 1; shots[m.shot].t_end = t;
+                        shots[m.shot].track.insert(shots[m.shot].track.end(), {t, m.pos.x, m.pos.y, m.pos.z});
+                        --on_the_way[i];
+                        if (!protected_now(i, t) && ++missile_hits[i] >= needed(i)) kill(t, i);
+                        laams.erase(laams.begin() + k);
+                        continue;
+                    }
+                }
+            }
+            if (gone) {
+                Shot& sh = shots[m.shot];
+                sh.outcome = age > Laam::life ? 3 : !alive(i, t) ? 4 : 2; sh.t_end = t;
+                --on_the_way[i]; laams.erase(laams.begin() + k); continue;
+            }
+            ++k;
+        }
         for (size_t k = 0; k < flying.size();) {   // missiles arriving
             if (t < flying[k].first) { ++k; continue; }
             const int i = flying[k].second;
@@ -982,24 +1513,47 @@ struct Pilot {
             if (alive(i, t) && !protected_now(i, t) && ++missile_hits[i] >= needed(i)) kill(t, i);
             flying.erase(flying.begin() + k);
         }
-        for (size_t k = 0; k < rounds.size();) {   // gun rounds arriving: judged against where the enemy is now
-            const Round& r = rounds[k];
-            if (t < r.arrive) { ++k; continue; }
+        for (size_t k = 0; k < rounds.size();) {   // gun rounds on their way: the closest each comes to its enemy
+            Round& r = rounds[k];
             const int i = r.target;
-            if (alive(i, t) && !protected_now(i, t)) {
-                const float d = len(pose_at(e.foes[i].path, t).pos - r.at), R = hit_radius(i), w = R * R + 2 * r.spread * r.spread;
-                hits[i] += r.dt * (R * R / w) * std::exp(-d * d / w);   // the share of a spread burst within R
-                if (!e.guns_only && !e.foes[i].boss && hits[i] >= (tough(i) ? 1.5f : 0.5f)) { ++gun_kills; kill(t, i, true); }
+            const float age = t - r.t0;
+            bool done = age > round_life || !alive(i, t);
+            if (!done) {
+                const V3 pos = r.p0 + r.v * age + V3{0, 0, -0.5f * round_fall * age * age};
+                const float d = len(pose_at(e.foes[i].path, t).pos - pos);
+                if (d < r.best) r.best = d;
+                else done = true;   // past it: the closest was the last
+            }
+            if (!done) { ++k; continue; }
+            if (r.best < 1e8f && alive(i, t) && !protected_now(i, t)) {
+                const float R = hit_radius(i) + round_burst + r.assist, w = R * R + 2 * r.spread * r.spread;
+                hits[i] += r.dt * (R * R / w) * std::exp(-r.best * r.best / w);   // the share of a spread burst within R
+                if (!e.guns_only && !e.foes[i].boss && hits[i] * gun_damage_rate(i) >= health(i)) { ++gun_kills; kill(t, i, true); }
             }
             rounds.erase(rounds.begin() + k);
         }
-        if (target < 0) { lock = 0; return; }
+        if (target < 0) { lock = 0; end_window(); return; }
         const V3 to = pose_at(e.foes[target].path, t).pos - me.pos;
         const float seen = std::acos(std::clamp(dot(me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
-        const bool in_lock = seen < 15 && range > 300 && range < lock_range(target);
+        const bool in_lock = missile_kind == LaamMissiles
+                                 ? seen < Laam::lock_angle && range < (e.foes[target].ecm ? 1000.0f : Laam::lock_range)
+                                 : seen < 15 && range > 300 && range < lock_range(target);
         lock = in_lock ? lock + dt : 0;
         target_time += dt; if (in_lock) lock_time += dt;
-        if (!e.guns_only && lock >= 0.8f && t >= next_launch && !doomed(target)) {
+        float* rail = rail_ready[0] <= rail_ready[1] ? &rail_ready[0] : &rail_ready[1];
+        // one LAAM at a time at an enemy: the second rail waits to see the first hit or miss
+        if (missile_kind == LaamMissiles && !e.guns_only && lock >= 0.8f && t >= *rail && laams_left > 0 && range >= Laam::min_range &&
+            on_the_way[target] == 0 && !doomed(target)) {
+            if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
+            // a boss's CIWS stops it, as the other missiles
+            shots.push_back({t, range, seen, -1, target, 0, {t, me.pos.x, me.pos.y, me.pos.z}});
+            if (!e.foes[target].boss) { laams.push_back({me.pos, me.vel + me.b.f * Laam::ignition, t, target, int(shots.size()) - 1}); ++on_the_way[target]; }
+            else { shots.back().outcome = 5; shots.back().t_end = t; }
+            ++launched[target]; ++missiles; --laams_left;
+            *rail = t + Laam::reload;
+            if (doomed(target)) { target = -1; lock = 0; return; }
+        }
+        if (missile_kind == RuleMissiles && !e.guns_only && lock >= 0.8f && t >= *rail && !doomed(target)) {
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
             const Foe& f = e.foes[target];
             const bool first_misses = !tough(target) && target % 4 == 3 && launched[target] == 0;
@@ -1007,20 +1561,44 @@ struct Pilot {
             const bool good = !f.boss && !first_misses && (!tough(target) || (range < 1000 && seen < 5));
             if (good) { flying.push_back({t + range / 700.0f, target}); ++on_the_way[target]; }
             ++missiles;
-            next_launch = t + 1.5f;
+            *rail = t + missile_reload;
             if (doomed(target)) { target = -1; lock = 0; return; }
         }
-        if (range > 1000) return;
-        // the nose against the lead point itself: the player fires when the sight is on it,
-        // wherever the mouse happens to be
-        const float off = std::acos(std::clamp(dot(me.b.f, lead), -1.0f, 1.0f)) / rad;
+        // the gun within the rounds' reach in their life (muzzle and own speed, 1.08 s: ~1.9 km at
+        // 1800 km/h); 1 km until 2026-10-06, where the player's gun kills were a median 1.0-1.15 km out
+        if (range > (muzzle_speed + len(me.vel)) * round_life) { end_window(); return; }
+        // rounds fired now against where the enemy will really be (what hits: the measures), and
+        // the game's ring against the enemy (what the player fires on: the rounds in flight are
+        // reaching it; kept on it in a steady turn, the nose is on the lead)
+        impact = unit(me.vel + me.b.f * muzzle_speed);
+        const float off = std::acos(std::clamp(dot(impact, lead), -1.0f, 1.0f)) / rad;
+        // what the player fires on: the ring on the enemy when the game shows it; beyond, at a large
+        // target only, the nose on it (blind); a fighter not at all
+        const bool blind = !ring_shown && hit_radius(target) >= 20;
+        const float judged = std::acos(std::clamp(dot(ring_shown ? ring : me.b.f, unit(to)), -1.0f, 1.0f)) / rad;
+        const float cover = ring_shown ? gun_ring : blind_deg;
+        player_window = ring_shown && judged < gun_ring;
+        // a window: rounds fired now would meet the enemy (within its size, as hits are judged,
+        // plus the rounds' spread); 2 deg for everything until 2026-10-06
+        const float hit_deg = std::atan2(hit_radius(target) + round_burst, std::max(range, 1.0f)) / rad + gun_assist_deg + 0.35f;
+        if (last_off >= 0 && dt > 0) off_rate += ((judged - last_off) / dt - off_rate) * (1 - std::exp(-dt / 0.1f));   // deg/s, seen over ~0.1 s
+        last_off = judged;
         close_time += dt;
-        if (off < 2) on_lead += dt;
-        if (off < 2) {   // the trigger: rounds along the nose, judged on arrival
+        // a window is a moment rounds would hurt it: not while it is shielded (Moon 11 with her
+        // drones near), when they meet it and count nothing
+        const bool hittable = off < hit_deg && !protected_now(target, t);
+        if (hittable) { on_lead += dt; window += dt; }
+        else if (window > 0) { windows.push_back(window); window = 0; }
+        seen_on = judged < cover ? seen_on + dt : 0;
+        const float react = 0.25f * pilot_profile.react;
+        if (!ring_shown && !blind) trigger = false;
+        else if (!trigger) trigger = (judged < 2 * cover && off_rate < -5 && judged + off_rate * react < cover) || seen_on >= react;
+        else if (judged > cover + 1) trigger = false;
+        if (trigger) {   // the trigger: rounds along the nose, judged on arrival
+            if (hittable) usable += dt;
             if (!shot) { shot = true; to_shot += t - picked_at; ++shots_timed; }
-            const V3 v = me.vel + me.b.f * 1000.0f;
-            const float tof = range / std::max(dot(v, unit(to)), 300.0f);
-            rounds.push_back({t + tof, dt, me.pos + v * tof, target, range * std::tan(0.35f * rad)});
+            const V3 v = me.vel + me.b.f * muzzle_speed;
+            rounds.push_back({t, dt, me.pos, v, target, range * std::tan(0.35f * rad), 1e9f, range * std::tan(gun_assist_deg * rad)});
         }
     }
 };
@@ -1035,7 +1613,7 @@ struct Pilot {
 // behind with each (21 kills against 45 in the same order).
 std::vector<int> reference_order(const Encounter& e, float seconds, int prefer, const std::vector<int>& first) {
     Encounter free = e; free.order.clear();
-    Aircraft me; me.start(e.pitch, e.yaw, 0, e.speed, e.start);
+    Aircraft me; me.start(e.pitch, e.yaw, e.roll, e.speed, e.start);
     Pilot pilot(free, me.b.f); pilot.prefer = prefer;
     const float dt = 1.0f / 40;
     for (float t = 0; t < seconds && !pilot.all_down(); t += dt) {
@@ -1063,6 +1641,18 @@ std::vector<int> reference_order(const Encounter& e, float seconds, int prefer, 
     return order;
 }
 
+// Roll against the guidance: time within 20 deg of the aim (outside a tail or push) that the roll
+// stick is set against a roll error of more than 30 deg the guidance asks for (controllers that
+// report it in trace(): ours and the archived configurations). Per controller and condition.
+std::map<std::string, std::array<double, 4>> roll_fight;
+std::map<std::string, double> stall_time;
+// The simulated pilot's speed in fights: s with throttle, neutral, brake, high-G, s at 1000 km/h or more,
+// and the speeds (km/h) for the median. Per controller and condition.
+struct SpeedLog { double mode[4] = {}, fast = 0, total = 0; std::vector<float> kmh; };
+std::map<std::string, SpeedLog> pilot_speed;
+// LAAMs of the standard pass, per controller: [launch-range bin][outcome 0-5]
+std::map<std::string, std::array<std::array<int, 6>, n_shot_bins>> laam_log;
+std::mutex stats_mutex;   // the maps above: each run adds its own totals at its end
 std::string trace_scene;   // BENCH_TRACE=<scene>:<controller>@<condition>[,<from s>]: the controller's internals for 6 s
 float trace_from = 0;
 Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_frames, const std::string& ctl_id = "") {
@@ -1071,9 +1661,9 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
     const float dt = 1.0f / 80;   // logged median frame 12.5-13.3 ms
     const Encounter* enc = sc.encounter.get();
     const Approach* app = sc.approach.get();
-    const float speed0 = enc ? enc->speed : app ? app->speed : sc.start_speed;
+    const float speed0 = std::min(enc ? enc->speed : app ? app->speed : sc.start_speed, plant.speed_max);
     Aircraft me;
-    if (enc) me.start(enc->pitch, enc->yaw, 0, speed0, enc->start);
+    if (enc) me.start(enc->pitch, enc->yaw, enc->roll, speed0, enc->start);
     else if (app) me.start(app->pitch, app->yaw, app->roll, speed0, app->pos);
     else me.start(sc.start_pitch, 0, sc.start_roll, speed0, {0, 0, sc.start_alt});
     me.p = sc.start_p;
@@ -1086,17 +1676,22 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
         enemy.b = basis(0, sc.enemy_yaw, 0); enemy.speed = sc.enemy_speed;
     }
     ctl.reset();
-    std::mt19937 rng(1234);
+    std::mt19937 rng(1234 + pilot_profile.seed);
     std::normal_distribution<float> unit_noise(0.0f, 1.0f);
     float fq = 0, fp = sc.start_p, fr = 0;
     Run run;
+    std::array<double, 4> fight{};   // roll_fight for this run
+    SpeedLog speed_log;              // pilot_speed for this run
     Scorer score(sc, run.m);
     V3 target = sc.first;
     const int steps = int(sc.seconds / dt);
     const float alt0 = me.pos.z;
     const int every = sc.seconds > 200 ? 16 : enc ? 8 : 4;   // stored frames: 5, 10 or 20 a second
+    float t_end = 0;
+    bool fired = false;   // the trigger held at some moment since the last stored frame (frames are 5-20 a second)
     for (int k = 0; k < steps; ++k) {
         const float t = k * dt;
+        t_end = t;
         if (sc.kind == Chain && k == int(sc.switch_at / dt)) { target = sc.next; score.restart(t); }
         if (sc.kind == Hold) target = unit(sc.aim(t));
         if (sc.kind == Pursuit) { enemy.step(sc.program, t, dt); target = unit(enemy.pos - me.pos); }
@@ -1113,6 +1708,7 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
             if (el < path_el - 20) target = direction(path_el - 20, std::atan2(target.y, target.x) / rad);
         }
         if (pilot) {
+            pilot->pull_rate = plant.pitch_pull * by_speed(plant.pull_by_speed, len(me.vel));
             pilot->before(t, dt, me);
             target = pilot->aim;
             if (pilot->target >= 0) {
@@ -1130,17 +1726,35 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
             fr += (me.r * scale + cond.white * unit_noise(rng) - fr) * a;
         }
         const float throttle = pilot ? pilot->throttle : app ? rec.throttle : 0.0f, brake = pilot ? pilot->brake : app ? rec.brake : 0.0f;
+        if (pilot) {
+            SpeedLog& sl = speed_log;
+            sl.mode[throttle > 0.5f ? (brake > 0.5f ? 3 : 0) : brake > 0.5f ? 2 : 1] += dt;
+            const float kmh = len(me.vel) * 3.6f;
+            sl.total += dt; if (kmh >= 1000) sl.fast += dt;
+            if (k % 8 == 0) sl.kmh.push_back(kmh);
+        }
         Sense s{pitch, yaw, roll, {target.x, target.y, target.z}, fq, fr, fp, seen_dt, throttle, brake,
                 {me.vel.x, me.vel.y, me.vel.z}, {me.acc.x, me.acc.y, me.acc.z}, me.pos.z};
         Stick u = ctl.step(s);
         u.pitch = std::clamp(u.pitch, -1.0f, 1.0f); u.roll = std::clamp(u.roll, -1.0f, 1.0f); u.yaw = std::clamp(u.yaw, -1.0f, 1.0f);
+        {
+            float angle = 0, ep = 0, ey = 0, er = 0; int tail = 0, push = 0;
+            const char* tr = ctl.trace(); const char* at = std::strstr(tr, "angle=");
+            if (at && std::sscanf(at, "angle=%f w=%*f tail=%d push=%d err=(p%f,y%f,r%f)", &angle, &tail, &push, &ep, &ey, &er) == 6 &&
+                angle < 20 && angle > 0.5f && !tail && !push) {
+                auto& f = fight;
+                const int i = angle < 5 ? 0 : 2;
+                f[i + 1] += dt;
+                if (std::abs(er) > 30 && u.roll * er < 0) f[i] += dt;
+            }
+        }
         trace_on = trace_this && k % 8 == 0 && t >= trace_from && t < trace_from + 6;
         if (trace_on) std::printf("t %.2f alt %.0f vz %.0f stick %.2f %.2f thr %.0f brk %.0f pitch %.1f roll %.0f aim_el %.1f | %s\n", t, me.pos.z, me.vel.z,
                                   u.pitch, u.roll, throttle, brake, pitch, roll, std::asin(target.z) / rad, ctl.trace());
         me.step(plant, u, throttle, brake, dt);
         trace_on = false;
         if (app) {
-            if (rec.speed > 1) me.vel = unit(me.vel) * rec.speed;   // the recorded speed (see Approach)
+            if (rec.speed > 1) me.vel = unit(me.vel) * std::min(rec.speed, plant.speed_max);   // the recorded speed (see Approach)
             if (me.pos.z <= app->ground + 1) {   // touchdown: held to the recorded landings' limits
                 Metrics& m = run.m;
                 const float h = app->heading * rad;
@@ -1155,11 +1769,11 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
                 if (!m.landed) m.crashed = t;
                 break;
             }
-        } else if (me.pos.z < 50) { run.m.crashed = t; break; }
+        } else if (me.pos.z < (enc ? enc->crash_z : 50.0f)) { run.m.crashed = t; break; }
 
         const float angle = std::acos(std::clamp(dot(me.b.f, target), -1.0f, 1.0f)) / rad;
         score.add(t, dt, angle, bank_of(me.b), me.p, u, me.nz);
-        if (pilot) pilot->after(t, dt, me);
+        if (pilot) { pilot->after(t, dt, me); fired = fired || pilot->trigger; }
         const bool cleared = pilot && !enc->guns_only && pilot->all_down();
         const bool has_enemy = sc.kind == Pursuit || (pilot && pilot->target >= 0);
         if (keep_frames && k % every == 0) {
@@ -1169,22 +1783,58 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
                       me.q, me.p, me.r, u.pitch, u.roll, u.yaw, len(me.vel), me.nz,
                       std::atan2(-dot(me.vel, me.b.u), dot(me.vel, me.b.f)) / rad,
                       has_enemy ? enemy.pos.x : 0, has_enemy ? enemy.pos.y : 0, has_enemy ? enemy.pos.z : 0, ep, ey, er,
-                      pilot ? float(pilot->target) : -1, pilot ? float(pilot->kill_log.size()) : 0},
-                     enc ? 28 : sc.kind == Pursuit ? 26 : 20};
+                      pilot ? float(pilot->target) : -1, pilot ? float(pilot->kill_log.size()) : 0,
+                      // the gun lead point (world direction) and the trigger, for the viewer's HUD
+                      pilot ? pilot->lead.x : 0, pilot ? pilot->lead.y : 0, pilot ? pilot->lead.z : 0, fired ? 1.0f : 0.0f,
+                      pilot ? pilot->ring.x : 0, pilot ? pilot->ring.y : 0, pilot ? pilot->ring.z : 0,
+                      pilot ? pilot->seen_lead.x : 0, pilot ? pilot->seen_lead.y : 0, pilot ? pilot->seen_lead.z : 0,
+                      pilot && pilot->window > 0 ? 1.0f : 0.0f,
+                      // the player's window: the ring shown (within 1 km) and on the enemy
+                      pilot && pilot->player_window ? 1.0f : 0.0f},
+                     enc ? 40 : sc.kind == Pursuit ? 26 : 20};
             run.frames.push_back(f);
+            fired = false;
         }
         if (cleared) { run.m.clear = t; break; }
     }
     if (app && run.m.landed < 0) run.m.landed = 0;   // never down (still flying 8 s after the player was)
+    run.m.stall = me.stalled;
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex);
+        const std::string key = ctl_id + "@" + cond.id;
+        if (keep_frames && pilot)
+            for (const Shot& sh : pilot->shots) ++laam_log[ctl_id][shot_bin(sh.range)][sh.outcome];
+        stall_time[key] += me.stalled;
+        auto& f = roll_fight[key];
+        for (int i = 0; i < 4; ++i) f[i] += fight[i];
+        if (speed_log.total > 0) {
+            SpeedLog& sl = pilot_speed[key];
+            for (int i = 0; i < 4; ++i) sl.mode[i] += speed_log.mode[i];
+            sl.fast += speed_log.fast; sl.total += speed_log.total;
+            sl.kmh.insert(sl.kmh.end(), speed_log.kmh.begin(), speed_log.kmh.end());
+        }
+    }
     if (pilot) {
         Metrics& m = run.m;
         m.foes = int(enc->foes.size()); m.kills = int(pilot->kill_log.size()); m.elite_kills = pilot->elite_kills;
         m.gun_kills = pilot->gun_kills; m.missiles = pilot->missiles;
+        pilot->close_pick(t_end);
+        pilot->end_window();
+        m.gun_usable = pilot->target_time > 0 ? float(pilot->usable / pilot->target_time) : 0;
+        for (float h : pilot->hits) { m.gun_hits += h; m.gun_hits_max = std::max(m.gun_hits_max, h); }
+        if (!pilot->windows.empty()) {
+            std::vector<float> w;   // passes of under 0.05 s (the nose sweeping through) are not spells
+            for (float x : pilot->windows) if (x >= 0.05f) w.push_back(x);
+            std::sort(w.begin(), w.end());
+            if (!w.empty()) { m.gun_window_max = w.back(); m.gun_window_med = w[w.size() / 2]; }
+        }
         m.to_shot = pilot->shots_timed ? float(pilot->to_shot / pilot->shots_timed) : -1;
         m.lock_frac = pilot->target_time > 0 ? float(pilot->lock_time / pilot->target_time) : 0;
         m.first_kill = pilot->kill_log.empty() ? -1 : pilot->kill_log.front().first;
-        m.close_time = float(pilot->close_time); m.on_lead = pilot->close_time > 0 ? float(pilot->on_lead / pilot->close_time) : 0;
-        run.kills = pilot->kill_log; run.kill_gun = pilot->kill_gun;
+        // the share of the time with a target that the gun was on it: over the time within 1 km it
+        // favoured closing in seldom (2 s near with 1 s on beat 60 s near with 24 s on)
+        m.close_time = float(pilot->close_time); m.on_lead = pilot->target_time > 0 ? float(pilot->on_lead / pilot->target_time) : 0;
+        run.kills = pilot->kill_log; run.kill_gun = pilot->kill_gun; run.shots = pilot->shots;
     }
     score.finish(speed0 - len(me.vel), me.pos.z - alt0);
     return run;
@@ -1194,18 +1844,18 @@ Run fly(const Condition& cond, const Scenario& sc, Controller& ctl, bool keep_fr
 struct Entry { std::string id, label, source; std::function<std::unique_ptr<Controller>()> make; };
 
 void json_metrics(std::string& out, const Metrics& m) {
-    char b[1100];
+    char b[1600];
     std::snprintf(b, sizeof(b),
         "{\"to5\":%.2f,\"to2\":%.2f,\"settle\":%.2f,\"level\":%.2f,\"overshoot\":%.2f,\"reversals\":%d,\"chatter\":%d,"
         "\"inverted\":%.2f,\"speed_loss\":%.1f,\"alt_change\":%.0f,\"peak_nz\":%.1f,\"mean_angle\":%.2f,\"rms_angle\":%.2f,"
         "\"within2\":%.3f,\"within5\":%.3f,\"bank_rms\":%.1f,\"pitch_sat\":%.3f,\"roll_sat\":%.3f,\"roll_effort\":%.3f,\"cost\":%.2f,"
         "\"kills\":%d,\"elite_kills\":%d,\"foes\":%d,\"gun_kills\":%d,\"missiles\":%d,\"first_kill\":%.1f,\"on_lead\":%.3f,"
         "\"close_time\":%.1f,\"to_shot\":%.2f,\"crashed\":%.1f,\"lock_frac\":%.3f,\"clear\":%.1f,"
-        "\"landed\":%d,\"td_sink\":%.1f,\"td_bank\":%.1f,\"td_pitch\":%.1f,\"td_side\":%.0f,\"td_late\":%.1f}",
+        "\"landed\":%d,\"td_sink\":%.1f,\"td_bank\":%.1f,\"td_pitch\":%.1f,\"td_side\":%.0f,\"td_late\":%.1f,\"stall\":%.2f,\"gun_usable\":%.3f,\"gun_window_max\":%.2f,\"gun_window_med\":%.2f,\"gun_hits\":%.2f,\"gun_hits_max\":%.2f}",
         m.to5, m.to2, m.settle, m.level, m.overshoot, m.reversals, m.chatter, m.inverted, m.speed_loss, m.alt_change, m.peak_nz,
         m.mean_angle, m.rms_angle, m.within2, m.within5, m.bank_rms, m.pitch_sat, m.roll_sat, m.roll_effort, m.cost,
         m.kills, m.elite_kills, m.foes, m.gun_kills, m.missiles, m.first_kill, m.on_lead, m.close_time, m.to_shot, m.crashed, m.lock_frac, m.clear,
-        m.landed, m.td_sink, m.td_bank, m.td_pitch, m.td_side, m.td_late);
+        m.landed, m.td_sink, m.td_bank, m.td_pitch, m.td_side, m.td_late, m.stall, m.gun_usable, m.gun_window_max, m.gun_window_med, m.gun_hits, m.gun_hits_max);
     out += b;
 }
 std::string esc(const std::string& s) {
@@ -1230,7 +1880,7 @@ int main() {
     std::string out_dir = "dev/compare", config = "Payload/Game/Binaries/Win64/UE4SS/Mods/AC8MouseAim/config.ini";
     std::vector<std::pair<std::string, std::string>> variants;
     std::string only;
-    bool all_refs = false;
+    bool all_refs = false, robust = true;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = args[i];
         const auto eq = arg.find('=');
@@ -1240,11 +1890,18 @@ int main() {
         else if (key == "config") config = value;
         else if (key == "only") only = value;
         else if (key == "refs") all_refs = value == "all";
+        else if (key == "robust") robust = value != "0";
+        else if (key == "missiles") with_missiles = value == "1";
         else if (key == "variant") {   // "label:key=value;key=value"
             const auto colon = value.find(':');
             variants.push_back({value.substr(0, colon), colon == std::string::npos ? "" : value.substr(colon + 1)});
         }
     }
+    if (const char* as = std::getenv("BENCH_ASSIST")) Pilot::gun_assist_deg = std::stof(as);
+    if (const char* fl = std::getenv("BENCH_FLOOR")) std::sscanf(fl, "%f,%f", &floor_pull_share, &floor_react);
+    if (const char* fo = std::getenv("BENCH_FOLLOW")) Pilot::fighter_follow = std::stof(fo);
+    if (const char* an = std::getenv("BENCH_ANTICIPATE")) Pilot::anticipate = std::stof(an);
+    if (const char* lt = std::getenv("BENCH_LOWTAKE")) std::sscanf(lt, "%f,%f", &low_take_m, &low_take_deg), low_take = low_take_m > 0;
     if (const char* tr = std::getenv("BENCH_TRACE")) {
         trace_scene = tr;
         const auto comma = trace_scene.find(',');
@@ -1320,19 +1977,26 @@ int main() {
         entries.push_back({"ours_v" + std::to_string(i + 1), "试 · " + variants[i].first, variants[i].second, [t] { return std::make_unique<Ours>(t); }});
     }
     // outside references: the upstream release by default; refs=all adds upstream's 0.2.35
-    // (which upstream itself rolled back) and xsd467's pw5
+    // (which upstream itself rolled back) and xsd467's older pw5
     entries.push_back({"upstream_legacy", "上游 0.2.30", "FletcherMiya 052cd6a controller_mode=0", [] { return std::make_unique<UpstreamLegacy>(); }});
+    // xsd467's latest, shown by default: the newest outside work to measure against
+    entries.push_back({"pw11", "pw.11 · xsd467", "xsd467 05d7f48 pw5-flight-control", [] { return std::make_unique<Pw11>(); }});
     if (all_refs) {
         entries.push_back({"upstream_coord", "上游 0.2.35", "FletcherMiya 052cd6a controller_mode=1", [] { return std::make_unique<UpstreamCoordinated>(); }});
         entries.push_back({"pw5", "pw5 · xsd467", "xsd467 821f442 pw5-flight-control", [] { return std::make_unique<Pw5>(); }});
     }
 
+    load_conditions(out_dir);
     const auto list = scenarios(out_dir);
     std::string index = "window.COMPARE_INDEX={\"controllers\":[";
     for (size_t i = 0; i < entries.size(); ++i)
         index += std::string(i ? "," : "") + "{\"id\":\"" + entries[i].id + "\",\"label\":\"" + esc(entries[i].label) + "\",\"source\":\"" + esc(entries[i].source) + "\"}";
     index += "],\"plants\":[";
-    for (int p = 0; p < condition_count; ++p) index += std::string(p ? "," : "") + "{\"id\":\"" + conditions[p].id + "\",\"title\":\"" + conditions[p].title + "\"}";
+    for (int p = 0; p < condition_count; ++p) {
+        const auto& b = conditions[p].bars;
+        index += std::string(p ? "," : "") + "{\"id\":\"" + conditions[p].id + "\",\"title\":\"" + esc(conditions[p].title) + "\",\"bars\":[" +
+                 std::to_string(b[0]) + "," + std::to_string(b[1]) + "," + std::to_string(b[2]) + "]}";
+    }
     index += "],\"scenarios\":[";
     bool first_listed = true;
     for (const Scenario& sc : list) {
@@ -1352,8 +2016,11 @@ int main() {
 
     // cost[scenario][condition][controller], for the scorecard
     std::map<std::string, std::vector<std::vector<float>>> cost;
-    for (int p = 0; p < condition_count; ++p) {
+    std::vector<std::string> index_parts(condition_count);
+    std::vector<std::map<std::string, std::vector<float>>> cost_parts(condition_count);
+    auto run_condition = [&](int p) {
         const Condition& cond = conditions[p];
+        std::string& index = index_parts[p];
         std::string data = std::string("(window.COMPARE_DATA=window.COMPARE_DATA||{})[\"") + cond.id + "\"]={";
         index += std::string(p ? "," : "") + "\"" + cond.id + "\":{";
         bool first_scenario = true;
@@ -1362,13 +2029,12 @@ int main() {
             data += std::string(first_scenario ? "" : ",") + "\"" + sc.id + "\":{";
             index += std::string(first_scenario ? "" : ",") + "\"" + sc.id + "\":{";
             first_scenario = false;
-            auto& row = cost[sc.id];
-            row.resize(condition_count);
-            std::string kills_json = "{";
+            auto& row = cost_parts[p][sc.id];
+            std::string kills_json = "{", shots_json = "{";
             for (size_t ci = 0; ci < entries.size(); ++ci) {
                 auto ctl = entries[ci].make();
                 const Run run = fly(cond, sc, *ctl, true, entries[ci].id);
-                row[p].push_back(run.m.cost);
+                row.push_back(run.m.cost);
                 const char* sep = ci ? "," : "";
                 if (sc.encounter) {   // kill times per controller, for the viewer
                     kills_json += std::string(sep) + "\"" + entries[ci].id + "\":[";
@@ -1378,6 +2044,19 @@ int main() {
                         kills_json += e;
                     }
                     kills_json += "]";
+                    // LAAMs: [t0, enemy, range, off, outcome, t_end, [t, x, y, z, ...]]
+                    shots_json += std::string(sep) + "\"" + entries[ci].id + "\":[";
+                    for (size_t k = 0; k < run.shots.size(); ++k) {
+                        const Shot& sh = run.shots[k];
+                        char e[96]; std::snprintf(e, sizeof(e), "%s[%.2f,%d,%.0f,%.1f,%d,%.2f,[", k ? "," : "", sh.t0, sh.target, sh.range, sh.off, sh.outcome, sh.t_end);
+                        shots_json += e;
+                        for (size_t j = 0; j < sh.track.size(); ++j) {
+                            char num[24]; std::snprintf(num, sizeof(num), j % 4 ? "%s%.0f" : "%s%.1f", j ? "," : "", sh.track[j]);
+                            shots_json += num;
+                        }
+                        shots_json += "]]";
+                    }
+                    shots_json += "]";
                 }
                 index += std::string(sep) + "\"" + entries[ci].id + "\":"; json_metrics(index, run.m);
                 data += std::string(sep) + "\"" + entries[ci].id + "\":[";
@@ -1387,7 +2066,7 @@ int main() {
                     for (int j = 0; j < f.n; ++j) {
                         char num[32];
                         const bool coarse = (j >= 1 && j <= 3) || (j >= 20 && j <= 22);   // positions
-                        std::snprintf(num, sizeof(num), coarse ? "%s%.1f" : (j >= 7 && j <= 9) ? "%s%.4f" : j >= 26 ? "%s%.0f" : "%s%.2f", j ? "," : "", f.v[j]);
+                        std::snprintf(num, sizeof(num), coarse ? "%s%.1f" : (j >= 7 && j <= 9) || (j >= 28 && j <= 30) || (j >= 32 && j <= 37) ? "%s%.4f" : j >= 26 ? "%s%.0f" : "%s%.2f", j ? "," : "", f.v[j]);
                         data += num;
                     }
                     data += "]";
@@ -1397,7 +2076,7 @@ int main() {
             if (sc.encounter) {
                 // every enemy's path at 2 Hz, a boss at 10 Hz (t, x, y, z, roll, pitch, yaw, and a boss's wing sweep and fold
                 // when recorded; attitude as recorded, pitch from the climb in recordings before 2026-10-05) and the kill times
-                data += ",\"_kills\":" + kills_json + "},\"_foes\":[";
+                data += ",\"_kills\":" + kills_json + "},\"_laams\":" + shots_json + "},\"_foes\":[";
                 for (size_t i = 0; i < sc.encounter->foes.size(); ++i) {
                     const Foe& f = sc.encounter->foes[i];
                     char head[200];
@@ -1423,6 +2102,22 @@ int main() {
         data += "};\n";
         index += "}";
         std::ofstream(out_dir + "/results/data_" + cond.id + ".js", std::ios::binary) << data;
+    };
+    {
+        std::atomic<int> next{0};
+        const int workers = std::max(1, std::min<int>(condition_count, int(std::thread::hardware_concurrency())));
+        std::vector<std::thread> pool;
+        for (int w = 0; w < workers; ++w)
+            pool.emplace_back([&] { for (int p; (p = next++) < condition_count;) run_condition(p); });
+        for (auto& th : pool) th.join();
+    }
+    for (int p = 0; p < condition_count; ++p) {
+        index += index_parts[p];
+        for (auto& [scene, row] : cost_parts[p]) {
+            auto& all = cost[scene];
+            all.resize(condition_count);
+            all[p] = row;
+        }
     }
     index += "}};\n";
     std::ofstream(out_dir + "/results/index.js", std::ios::binary) << index;
@@ -1447,7 +2142,7 @@ int main() {
         card += sc.id + "  " + sc.title + "\n";
         for (int p = 0; p < condition_count; ++p) {
             const auto& r = cost[sc.id][p];
-            std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id); card += line;
+            std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id.c_str()); card += line;
             const float best = *std::min_element(r.begin(), r.end());
             for (size_t ci = 0; ci < r.size(); ++ci) {
                 std::snprintf(line, sizeof(line), " %15.2f%s", r[ci], r[ci] <= best + 1e-3f ? "*" : " "); card += line;
@@ -1459,16 +2154,200 @@ int main() {
     }
     header("total");
     for (int p = 0; p < condition_count; ++p) {
-        std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id); card += line;
+        std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id.c_str()); card += line;
         for (float v : total[p]) { std::snprintf(line, sizeof(line), " %16.1f", v); card += line; }
         card += "\n";
     }
     header("best (*)");
     for (int p = 0; p < condition_count; ++p) {
-        std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id); card += line;
+        std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id.c_str()); card += line;
         for (int v : wins[p]) { std::snprintf(line, sizeof(line), " %16d", v); card += line; }
         card += "\n";
     }
+    header("roll against guidance (%, within 5 / 5-20 deg)");
+    for (int p = 0; p < condition_count; ++p) {
+        std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id.c_str()); card += line;
+        for (const Entry& e : entries) {
+            const auto it = roll_fight.find(e.id + "@" + conditions[p].id);
+            if (it == roll_fight.end() || it->second[1] <= 0 || it->second[3] <= 0) std::snprintf(line, sizeof(line), " %16s", "-");
+            else std::snprintf(line, sizeof(line), " %9.1f /%5.1f", 100 * it->second[0] / it->second[1], 100 * it->second[2] / it->second[3]);
+            card += line;
+        }
+        card += "\n";
+    }
+    header("pilot speed in fights (throttle/neutral/brake/high-G %, median km/h)");
+    for (int p = 0; p < condition_count; ++p) {
+        std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id.c_str()); card += line;
+        for (const Entry& e : entries) {
+            auto it = pilot_speed.find(e.id + "@" + conditions[p].id);
+            if (it == pilot_speed.end() || it->second.total <= 0) { std::snprintf(line, sizeof(line), " %26s", "-"); card += line; continue; }
+            SpeedLog& sl = it->second;
+            std::nth_element(sl.kmh.begin(), sl.kmh.begin() + sl.kmh.size() / 2, sl.kmh.end());
+            const double T = sl.total / 100;
+            std::snprintf(line, sizeof(line), " %3.0f/%3.0f/%2.0f/%2.0f %5.0f", sl.mode[0] / T, sl.mode[1] / T, sl.mode[2] / T, sl.mode[3] / T,
+                          sl.kmh.empty() ? 0.0f : sl.kmh[sl.kmh.size() / 2]);
+            card += line;
+        }
+        card += "\n";
+    }
+    header("stall (s, all scenes)");
+    for (int p = 0; p < condition_count; ++p) {
+        std::snprintf(line, sizeof(line), "  %-10s", conditions[p].id.c_str()); card += line;
+        for (const Entry& e : entries) {
+            const auto it = stall_time.find(e.id + "@" + conditions[p].id);
+            std::snprintf(line, sizeof(line), " %16.1f", it == stall_time.end() ? 0.0 : it->second); card += line;
+        }
+        card += "\n";
+    }
+    // Summaries. Scene costs mix seconds, degrees, kill shares and stick reversals with rough
+    // weights, so their plain sum is no verdict: each controller is put against the 10-05 baseline
+    // scene by scene, (cost + 1) / (baseline + 1), and those ratios are averaged geometrically
+    // (< 1 better), a battle flown in several orders (M28) counted once. Shown three ways (every
+    // scene alike; every kind of scene alike; the mean rank) for every aircraft and overall.
+    struct Summary { std::vector<double> per_scene, per_kind, mean_rank; std::vector<std::vector<double>> per_plant; };
+    const size_t n_ctl = entries.size();
+    size_t base_ctl = 0;
+    for (size_t i = 0; i < n_ctl; ++i) if (entries[i].id == "arch_baseline_20261005") base_ctl = i;
+    auto summarize = [&](const std::map<std::string, std::vector<std::vector<float>>>& costs) {
+        Summary S;
+        S.per_plant.assign(condition_count, std::vector<double>(n_ctl, 1.0));
+        std::vector<double> log_scene(n_ctl, 0), log_kind(n_ctl, 0), rank_sum(n_ctl, 0);
+        int plants = 0, ranked = 0;
+        for (int p = 0; p < condition_count; ++p) {
+            std::map<std::string, std::pair<Kind, std::vector<double>>> groups;
+            std::map<std::string, int> counts;
+            for (const Scenario& sc : list) {
+                const auto it = costs.find(sc.id);
+                if (it == costs.end() || int(it->second.size()) <= p || it->second[p].size() < n_ctl) continue;
+                const std::string g = sc.group.empty() ? sc.id : sc.group;
+                auto& gr = groups[g];
+                gr.first = sc.kind; gr.second.resize(n_ctl, 0);
+                for (size_t i = 0; i < n_ctl; ++i) gr.second[i] += it->second[p][i];
+                ++counts[g];
+            }
+            if (groups.empty()) continue;
+            std::vector<double> lp(n_ctl, 0);
+            std::map<Kind, std::pair<std::vector<double>, int>> kinds;
+            for (auto& [g, gr] : groups) {
+                auto& v = gr.second;
+                for (auto& x : v) x /= counts[g];
+                auto& kk = kinds[gr.first];
+                kk.first.resize(n_ctl, 0); ++kk.second;
+                for (size_t i = 0; i < n_ctl; ++i) {
+                    const double r = std::log((v[i] + 1) / (v[base_ctl] + 1));
+                    lp[i] += r; kk.first[i] += r;
+                    int better = 0;
+                    for (size_t j = 0; j < n_ctl; ++j) if (v[j] < v[i] - 1e-6) ++better;
+                    rank_sum[i] += better + 1;
+                }
+                ++ranked;
+            }
+            for (size_t i = 0; i < n_ctl; ++i) {
+                S.per_plant[p][i] = std::exp(lp[i] / groups.size());
+                log_scene[i] += lp[i] / groups.size();
+                double lk = 0;
+                for (auto& [k, kk] : kinds) lk += kk.first[i] / kk.second;
+                log_kind[i] += lk / kinds.size();
+            }
+            ++plants;
+        }
+        S.per_scene.resize(n_ctl); S.per_kind.resize(n_ctl); S.mean_rank.resize(n_ctl);
+        for (size_t i = 0; i < n_ctl; ++i) {
+            S.per_scene[i] = std::exp(log_scene[i] / std::max(plants, 1));
+            S.per_kind[i] = std::exp(log_kind[i] / std::max(plants, 1));
+            S.mean_rank[i] = rank_sum[i] / std::max(ranked, 1);
+        }
+        return S;
+    };
+    // the cost of every scene in a pass with another player profile (no frames kept), aircraft in parallel
+    auto pass_costs = [&]() {
+        std::vector<std::map<std::string, std::vector<float>>> parts(condition_count);
+        std::atomic<int> next{0};
+        const int workers = std::max(1, std::min<int>(condition_count, int(std::thread::hardware_concurrency())));
+        std::vector<std::thread> pool;
+        for (int w = 0; w < workers; ++w)
+            pool.emplace_back([&] {
+                for (int p; (p = next++) < condition_count;)
+                    for (const Scenario& sc : list) {
+                        if (!only.empty() && sc.id.find(only) == std::string::npos) continue;
+                        auto& row = parts[p][sc.id];
+                        for (size_t ci = 0; ci < n_ctl; ++ci) {
+                            auto ctl = entries[ci].make();
+                            row.push_back(fly(conditions[p], sc, *ctl, false, entries[ci].id).m.cost);
+                        }
+                    }
+            });
+        for (auto& th : pool) th.join();
+        std::map<std::string, std::vector<std::vector<float>>> out;
+        for (int p = 0; p < condition_count; ++p)
+            for (auto& [scene, row] : parts[p]) { auto& all = out[scene]; all.resize(condition_count); all[p] = row; }
+        return out;
+    };
+    const Summary main_summary = summarize(cost);
+    auto row_of = [&](const char* label, const std::vector<double>& v, const char* fmt) {
+        std::snprintf(line, sizeof(line), "  %-10s", label); card += line;
+        for (double x : v) { std::snprintf(line, sizeof(line), fmt, x); card += line; }
+        card += "\n";
+    };
+    header("summary (vs 10-05 baseline, geometric mean of (cost+1) ratios, < 1 better)");
+    row_of("per scene", main_summary.per_scene, " %16.3f");
+    row_of("per kind", main_summary.per_kind, " %16.3f");
+    row_of("mean rank", main_summary.mean_rank, " %16.2f");
+    header("per aircraft (per scene, vs baseline)");
+    for (int p = 0; p < condition_count; ++p) row_of(conditions[p].id.c_str(), main_summary.per_plant[p], " %16.3f");
+    std::string summary_js = "window.COMPARE_SUMMARY={\"controllers\":[";
+    for (size_t i = 0; i < n_ctl; ++i) summary_js += std::string(i ? "," : "") + "\"" + entries[i].id + "\"";
+    auto arr = [](const std::vector<double>& v) {
+        std::string a = "[";
+        for (size_t i = 0; i < v.size(); ++i) { char b[32]; std::snprintf(b, sizeof(b), "%s%.4f", i ? "," : "", v[i]); a += b; }
+        return a + "]";
+    };
+    summary_js += "],\"per_scene\":" + arr(main_summary.per_scene) + ",\"per_kind\":" + arr(main_summary.per_kind) +
+                  ",\"mean_rank\":" + arr(main_summary.mean_rank) + ",\"per_plant\":{";
+    for (int p = 0; p < condition_count; ++p) summary_js += std::string(p ? "," : "") + "\"" + conditions[p].id + "\":" + arr(main_summary.per_plant[p]);
+    if (!laam_log.empty()) {
+        // LAAMs by launch range, all aircraft, the standard pass: launched, and the share that hit
+        // (the rest lost beyond 117 deg, out of time, or the enemy gone meanwhile)
+        header("Long-range missiles by launch range (all aircraft; launched, hit %, lost %)");
+        static const char* bins[n_shot_bins] = {"<500 m", "500-800", "800-1200", "1.2-2 km", "2-4 km", "4 km+"};
+        summary_js += "},\"laam\":{";
+        bool first_ctl = true;
+        for (size_t i = 0; i < n_ctl; ++i) {
+            auto it = laam_log.find(entries[i].id);
+            if (it == laam_log.end()) continue;
+            summary_js += std::string(first_ctl ? "" : ",") + "\"" + entries[i].id + "\":["; first_ctl = false;
+            std::snprintf(line, sizeof(line), "  %-24s", entries[i].id.c_str()); card += line;
+            for (int b = 0; b < n_shot_bins; ++b) {
+                const auto& o = it->second[b];
+                int n = 0; for (int x : o) n += x;
+                std::snprintf(line, sizeof(line), " %s %4d %3.0f%% %3.0f%% |", bins[b], n, n ? 100.0 * o[1] / n : 0.0, n ? 100.0 * o[2] / n : 0.0);
+                card += line;
+                char a[96]; std::snprintf(a, sizeof(a), "%s[%d,%d,%d,%d,%d,%d]", b ? "," : "", o[0], o[1], o[2], o[3], o[4], o[5]);
+                summary_js += a;
+            }
+            card += "\n"; summary_js += "]";
+        }
+    }
+    summary_js += "},\"profiles\":[";
+    if (robust && only.empty()) {
+        // other players, other luck: the ranking should hold (the standard profile is the one tuned on)
+        header("robustness (per scene vs baseline, by player profile; tuned on std only)");
+        row_of(pilot_profiles[0].id, main_summary.per_scene, " %16.3f");
+        summary_js += std::string("{\"id\":\"") + pilot_profiles[0].id + "\",\"title\":\"" + esc(pilot_profiles[0].title) + "\",\"per_scene\":" + arr(main_summary.per_scene) +
+                      ",\"mean_rank\":" + arr(main_summary.mean_rank) + "}";
+        for (size_t k = 1; k < sizeof(pilot_profiles) / sizeof(pilot_profiles[0]); ++k) {
+            pilot_profile = pilot_profiles[k];
+            const Summary S = summarize(pass_costs());
+            row_of(pilot_profiles[k].id, S.per_scene, " %16.3f");
+            summary_js += std::string(",{\"id\":\"") + pilot_profiles[k].id + "\",\"title\":\"" + esc(pilot_profiles[k].title) + "\",\"per_scene\":" + arr(S.per_scene) +
+                          ",\"mean_rank\":" + arr(S.mean_rank) + "}";
+        }
+        pilot_profile = pilot_profiles[0];
+        card += "  profiles:\n";
+        for (const PilotProfile& pp : pilot_profiles) card += std::string("    ") + pp.id + "  " + pp.title + "\n";
+    }
+    summary_js += "]};\n";
+    std::ofstream(out_dir + "/results/summary.js", std::ios::binary) << summary_js;
     std::fputs(card.c_str(), stdout);
     if (only.empty() && variants.empty()) std::ofstream(out_dir + "/scorecard.txt", std::ios::binary) << card;
     return 0;

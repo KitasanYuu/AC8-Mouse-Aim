@@ -44,6 +44,9 @@ button:hover, select:hover { border-color: var(--muted); }
 button[aria-pressed=true] { border-color: var(--ink); background: #22303a; }
 :focus-visible { outline: 2px solid #4fb3d9; outline-offset: 1px; }
 .seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.overview table.planes, .overview table.summary + table { margin-top: 18px; }
+.overview tr[data-cond] { cursor: pointer; }
+.overview tr.current td:first-child { color: var(--ink); font-weight: 600; }
 .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; min-width: 0; }
 .panel > h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0; padding: 8px 12px 0; letter-spacing: .04em; }
 
@@ -70,12 +73,13 @@ td.total { font-weight: 700; }
 .replay { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px 12px 12px; }
 .replay-head { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .transport { display: flex; gap: 8px; align-items: center; flex: 1 1 320px; }
+.transport button, .transport select, .replay-head select { white-space: nowrap; flex: none; }
 .transport input[type=range] { flex: 1; min-width: 140px; accent-color: #4fb3d9; }
 .clock { font-family: var(--mono); min-width: 8ch; text-align: right; font-variant-numeric: tabular-nums; }
 .replay-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .view { position: relative; height: clamp(320px, 44vh, 620px); background: #10181c; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
 .view canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
-.gauges { display: grid; grid-template-columns: repeat(var(--n, 5), minmax(0, 1fr)); gap: 8px; }
+.gauges { display: grid; grid-template-columns: repeat(min(var(--n, 5), 4), minmax(0, 1fr)); gap: 8px; }
 .gauge { border: 1px solid var(--rule); border-radius: 5px; padding: 6px 8px 7px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; background: #121a1f; }
 .gauge .name { grid-column: 1 / -1; }
 .gauge .name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
@@ -106,8 +110,27 @@ td.total { font-weight: 700; }
 .empty { padding: 40px; color: var(--muted); text-align: center; }
 .empty code { font-family: var(--mono); color: var(--aim); }
 
+.scene-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.side { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-content: start; }
 @media (max-width: 1100px) {
   .gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* wide windows: everything in one screen. The 3D view takes the height the timelines and the
+   detail leave; the board and the gauges stand beside it, the gauges one above the other. */
+@media (min-width: 1200px) and (min-height: 700px) {
+  .page { padding-bottom: 10px; }
+  .scene-grid { grid-template-columns: minmax(0, 1fr) clamp(400px, 30vw, 640px); height: calc(100vh - 58px); }
+  .scene-grid > * { min-height: 0; }
+  .replay { grid-template-rows: auto minmax(0, 1fr) auto auto; min-height: 0; }
+  .view { height: auto; min-height: 240px; }
+  .detail-wrap { height: 130px; }
+  .side { grid-template-rows: auto minmax(0, 1fr); align-content: stretch; }
+  .board-panel { max-height: 42vh; overflow: auto; }
+  /* more than four controllers: two columns, or each gauge is left a sliver of the height */
+  .side .gauges { grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); min-height: 0; }
+  .side .gauges.two .read { grid-template-columns: repeat(2, minmax(0, 1fr)); font-size: 11px; }
+  .side .gauge { grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }
+  .side .gauge .screen { height: auto; min-height: 70px; }
 }
 </style>
 </head>
@@ -123,16 +146,11 @@ td.total { font-weight: 700; }
     <select id="scene"></select>
   </div>
 
-  <div id="scenePage" class="page" style="padding:0; margin:0; max-width:none">
-    <section class="panel">
-      <h2 id="boardTitle">横评</h2>
-      <div class="board" id="board"></div>
-    </section>
-
+  <div id="scenePage" class="scene-grid">
     <section class="panel replay">
       <div class="replay-head">
         <span class="label">回放机体</span>
-        <div class="seg" id="conds" role="group" aria-label="回放机体"></div>
+        <select id="conds" aria-label="回放机体"></select>
         <span class="label">镜头</span>
         <div class="seg" id="cams" role="group" aria-label="镜头"></div>
         <div class="transport">
@@ -142,19 +160,24 @@ td.total { font-weight: 700; }
           <span class="clock" id="clock">0.0 s</span>
         </div>
       </div>
-      <div class="replay-body">
-        <div class="view"><canvas id="view" aria-label="所有飞控同一画面的三维回放" title="拖动旋转 · 滚轮缩放 · 双击复位"></canvas></div>
-        <div class="gauges" id="gauges"></div>
-      </div>
+      <div class="view"><canvas id="view" aria-label="所有飞控同一画面的三维回放" title="拖动旋转 · 滚轮缩放 · 双击复位"></canvas></div>
       <div class="timeline-wrap" id="timelineWrap"><div class="timeline" id="timeline"><canvas id="lanes"></canvas><canvas id="lanesCursor"></canvas></div></div>
       <div class="detail-wrap"><canvas id="detail" aria-label="光标前后 10 秒的偏差角与坡度"></canvas></div>
     </section>
+    <aside class="side">
+      <section class="panel board-panel">
+        <h2 id="boardTitle">横评</h2>
+        <div class="board" id="board"></div>
+      </section>
+      <div class="gauges" id="gauges"></div>
+    </aside>
   </div>
 
   <section class="panel overview" id="overview" hidden></section>
 </div>
 
 <script src="results/index.js"></script>
+<script src="results/summary.js"></script>
 <script src="models.js"></script>
 <script src="models/su35.js"></script>
 <script src="models/probed_su57.js"></script>
@@ -168,7 +191,13 @@ if (!IDX) { document.getElementById('app').innerHTML = '<div class="empty">还�
 // ---------- data ----------
 // Frame layout written by harness.cpp.
 const F = { t: 0, x: 1, y: 2, z: 3, pitch: 4, yaw: 5, roll: 6, ax: 7, ay: 8, az: 9, angle: 10, q: 11, p: 12, r: 13,
-            sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25, tgt: 26, kills: 27 };
+            sp: 14, sr: 15, sy: 16, speed: 17, nz: 18, aoa: 19, ex: 20, ey: 21, ez: 22, ep: 23, eyaw: 24, er: 25, tgt: 26, kills: 27,
+            lx: 28, ly: 29, lz: 30, fire: 31, ix: 32, iy: 33, iz: 34, jx: 35, jy: 36, jz: 37, hit: 38, pwin: 39 };
+const GUN_RING = 4.4;   // deg: the game's gun ring (at 500 m it frames LADON's body)
+const AIM_RING = 1.8;   // deg: the mod's mouse ring (25 px radius at 1080p, the game's 100 deg view)
+const TARGET_BOX = 1.0;   // deg: half the target box, inside the mouse ring as in game
+// the gun ring green as the game draws it, red while rounds fired now would hit (the game shows no such thing)
+const HUD_AIM = '#f2f5f7', HUD_ENEMY = '#ff5a5a', HUD_LEAD = '#5fd38a', HUD_WINDOW = '#ff4040', HUD_TRUE = '#f2f5f7', HUD_JUDGED = '#ffd25a';
 const PALETTE = { ours: '#4fb3d9', arch_baseline_20261005: '#9aa7b0', upstream_legacy: '#f29a4a', upstream_coord: '#c38df2', pw5: '#5fd38a' };
 const EXTRA = ['#ff7aa8', '#8fd0c4', '#b0b8ff', '#e8e8e8'];
 const colorOf = (() => { let n = 0; const m = {}; return id => m[id] || (m[id] = PALETTE[id] || EXTRA[n++ % EXTRA.length]); })();
@@ -189,8 +218,8 @@ const COLS = {
             ['mean_angle', '平均偏差', '°', -1, v => v < 0 ? null : v.toFixed(2)], ['chatter', '杆来回打', '', -1, num]],
   pursuit: [['mean_angle', '平均偏差', '°', -1, deg], ['within5', '5° 内', '%', 1, pct], ['reversals', '滚转反向', '', -1, num]],
   single: [['mean_angle', '平均偏差', '°', -1, deg], ['within2', '2° 内', '%', 1, pct], ['within5', '5° 内', '%', 1, pct]],
-  multi: [['kills', '击落', '', 1, num], ['clear', '全部击落', 's', -1, v => v < 0 ? null : v.toFixed(1)], ['to_shot', '选定到开火', 's', -1, sec], ['on_lead', '机炮瞄准', '%', 1, pct]],
-  boss: [['lock_frac', '1 km 锁定', '%', 1, pct], ['on_lead', '机炮瞄准', '%', 1, pct], ['mean_angle', '平均偏差', '°', -1, deg]],
+  multi: [['kills', '击落', '', 1, num], ['to_shot', '选定到开火', 's', -1, sec], ['gun_usable', '可用射击', '%', 1, pct], ['gun_hits', '命中', 's', 1, v => v.toFixed(2)], ['gun_window_max', '最长窗口', 's', 1, sec], ['stall', '失速', 's', -1, v => v.toFixed(1)]],
+  boss: [['gun_usable', '可用射击', '%', 1, pct], ['gun_hits', '命中', 's', 1, v => v.toFixed(1)], ['gun_window_max', '最长窗口', 's', 1, sec], ['gun_window_med', '窗口中位', 's', 1, sec], ['mean_angle', '平均偏差', '°', -1, deg], ['stall', '失速', 's', -1, v => v.toFixed(1)]],
 };
 COLS.switch = COLS.chain = COLS.capture;
 
@@ -232,7 +261,7 @@ const RANK_MARK = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'
 
 // ---------- board: the numbers for the scene, every controller on every aircraft ----------
 function drawBoard() {
-  const sc = scenario(), cols = COLS[sc.kind] || COLS.capture, list = IDX.controllers, conds = IDX.plants;
+  const sc = scenario(), cols = COLS[sc.kind] || COLS.capture, list = IDX.controllers, conds = IDX.plants.filter(c => c.id === st.cond);
   document.getElementById('boardTitle').textContent = `横评 · ${sc.title} · ${sc.seconds.toFixed(0)} s`;
   let html = '<table><thead><tr class="cond"><th></th>';
   for (const c of conds) html += `<th class="gap" colspan="${cols.length + 1}">${c.title}</th>`;
@@ -295,9 +324,17 @@ function frameAt(arr, t) {
   const step = arr.length > 1 ? arr[1][F.t] - arr[0][F.t] : 1;
   const i = Math.max(0, Math.min(arr.length - 1, Math.floor(t / step)));
   const a = arr[i], b = arr[Math.min(i + 1, arr.length - 1)];
-  if (a === b || b[F.t] <= a[F.t] || (a.length > F.tgt && a[F.tgt] !== b[F.tgt])) return a;
+  if (a === b || b[F.t] <= a[F.t]) return a;
   const u = Math.max(0, Math.min(1, (t - a[F.t]) / (b[F.t] - a[F.t])));
-  return a.map((v, k) => k >= F.tgt ? v : v + (WRAPS.has(k) ? ((b[k] - v + 540) % 360) - 180 : b[k] - v) * u);
+  // Across a change of target (a kill, a new pick) the aircraft is still interpolated; only what
+  // belongs to the target (its position and attitude, the lead, the ring, the judged lead) is
+  // taken from the nearer frame rather than swung between two enemies. The whole frame was held
+  // until 2026-10-06: the aircraft stood still for 0.2 s and jumped at every kill.
+  const switched = a.length > F.tgt && a[F.tgt] !== b[F.tgt];
+  const near = u < 0.5 ? a : b;
+  return a.map((v, k) => k === F.tgt || k === F.kills || k === F.fire || k === F.hit ? v
+    : switched && ((k >= F.ex && k <= F.er) || (k >= F.lx && k <= F.lz) || (k >= F.ix && k <= F.jz)) ? near[k]
+    : v + (WRAPS.has(k) ? ((b[k] - v + 540) % 360) - 180 : b[k] - v) * u);
 }
 const ended = (arr, t) => arr.length && t > arr[arr.length - 1][F.t] + 0.3;   // crashed or cleared before t
 const crashedRun = id => { const m = metricsOf(st.cond, st.scen)[id]; return !!m && m.crashed >= 0; };
@@ -349,7 +386,14 @@ let dirty = true;
 const sizeWatch = new ResizeObserver(entries => { for (const e of entries) sizes.set(e.target, [e.contentRect.width, e.contentRect.height]); lanesKey = null; dirty = true; });
 function fit(canvas, maxPixels = 600000) {
   let size = sizes.get(canvas);
-  if (!size) { sizeWatch.observe(canvas); const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
+  if (!size) {
+    sizeWatch.observe(canvas);
+    // a canvas whose drawing memory the browser dropped while hidden: draw it again once restored
+    canvas.addEventListener('contextrestored', () => { lanesKey = null; dirty = true; });
+  }
+  // measured again when unknown or zero: hidden (the overview tab), the observer reports 0 x 0, and
+  // the first frame back is drawn before it reports the size again
+  if (!size || size[0] < 1 || size[1] < 1) { const r = canvas.getBoundingClientRect(); size = [r.width, r.height]; sizes.set(canvas, size); }
   // never below one canvas pixel per CSS pixel (below that the picture is upscaled and blurred);
   // the cap only limits the extra resolution of a high-DPI screen
   const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(maxPixels / Math.max(1, size[0] * size[1]))));
@@ -426,6 +470,7 @@ function drawJet(ctx, P, A, B, tint, scale = 1, mesh = MESH, length = 19) {
 // ---------- the shared 3D view: every controller in one picture ----------
 const orbit = { yaw: -30, pitch: 18, zoom: 1 };
 let camHeading = null;
+let camTgt = null;   // the target camera's last target and its move to a new one
 // The global camera's centre and reach, eased in real time (0.5 s) toward what the scene asks
 // for: taken raw, every enemy crossing the 4 km line, leaving, or going down for all, and every
 // controller crashing, moved the view in one jump. A new scene, condition or camera, or a jump
@@ -471,11 +516,25 @@ function drawView() {
   let lookWeight = 1;   // how readily the camera turns to it
   if (st.cam === 'follow' && followed) { centre = followed.pos; size = 60; look = [followed.fr[F.pitch], followed.fr[F.yaw]]; }
   else if (st.cam === 'target' && followed) {   // a chase camera behind the target, its distance by the target's size
-    const ti = followed.fr.length > F.tgt && followed.fr[F.tgt] >= 0 ? followed.fr[F.tgt] : -1;
+    // Kept on the last target through the moment after a kill with none picked yet (up to 1 s),
+    // and moved to a new one over ~0.4 s: it cut to the next enemy kilometres away, by way of the
+    // own aircraft for the frame between, and the view seemed to stall at every kill (2026-10-06).
+    const key = `${st.scen}|${st.cond}|${st.follow}`;
+    if (!camTgt || camTgt.key !== key || Math.abs(st.t - camTgt.t) > 2) camTgt = { key, ti: -1, t: st.t, pos: null, from: null, wall: 0 };
+    let ti = followed.fr.length > F.tgt && followed.fr[F.tgt] >= 0 ? followed.fr[F.tgt] : -1;
+    if (ti < 0 && camTgt.ti >= 0 && st.t - camTgt.t < 1 && foeAt(foes[camTgt.ti], st.t)) ti = camTgt.ti;
     const tgt = ti >= 0 ? foeAt(foes[ti], st.t) : null;
     if (tgt) {
       const model = window.AC8_MODELS ? AC8_MODELS.forClass(foes[ti][0]) : null;
-      centre = tgt.pos; size = Math.max(60, (model ? model.length : 19) * 2.2); look = [0, tgt.track];
+      const wall = performance.now();
+      if (camTgt.ti >= 0 && camTgt.ti !== ti && camTgt.pos) { camTgt.from = camTgt.pos; camTgt.wall = wall; }
+      if (camTgt.ti !== ti || ti === followed.fr[F.tgt]) camTgt.t = st.t;
+      camTgt.ti = ti;
+      const u = camTgt.from ? Math.min(1, (wall - camTgt.wall) / 400) : 1, e = u * u * (3 - 2 * u);
+      centre = camTgt.from && u < 1 ? add(camTgt.from, mul(sub(tgt.pos, camTgt.from), e)) : tgt.pos;
+      if (u < 1) dirty = true; else camTgt.from = null;
+      camTgt.pos = centre;
+      size = Math.max(60, (model ? model.length : 19) * 2.2); look = [0, tgt.track];
     } else if (scripted) { centre = scripted; size = 60; look = [followed.fr[F.ep], followed.fr[F.eyaw]]; }
     else { centre = followed.pos; size = 60; look = [followed.fr[F.pitch], followed.fr[F.yaw]]; }
   } else {
@@ -494,14 +553,17 @@ function drawView() {
     if (sc.kind !== 'multi' || !camEase || camEase.key !== key || Math.abs(st.t - camEase.t) > 2) camEase = { key, offset: wantOffset, size: wantSize };
     else {
       const k = 1 - Math.exp(-Math.min(0.2, (wall - camEase.wall) / 1000) / 0.5);
+      const kz = 1 - Math.exp(-Math.min(0.2, (wall - camEase.wall) / 1000) / 2);   // the reach: over ~2 s
       camEase.offset = add(camEase.offset, mul(sub(wantOffset, camEase.offset), k));
-      camEase.size *= Math.pow(wantSize / camEase.size, k);
+      camEase.size *= Math.pow(wantSize / camEase.size, kz);
       // keep drawing while it settles (also when paused)
       if (Math.hypot(...sub(wantOffset, camEase.offset)) > 0.5 || Math.abs(Math.log(wantSize / camEase.size)) > 0.002) dirty = true;
     }
     camEase.t = st.t; camEase.wall = wall;
     centre = add(anchor, camEase.offset); size = camEase.size;
-    if (!DIRECTION_ONLY.has(sc.kind) && flying.length) {   // behind the group's mean heading
+    // not in multi-aircraft fights: the controllers scatter after their own targets and the mean
+    // heading swung the view about at random (the player, 2026-10-06); it keeps the dragged heading
+    if (!DIRECTION_ONLY.has(sc.kind) && sc.kind !== 'multi' && flying.length) {   // behind the group's mean heading
       const f = flying.map(o => enu(basis(o.fr[F.pitch], o.fr[F.yaw], 0).f)).reduce((a, b) => add(a, b), [0, 0, 0]);
       look = [0, Math.atan2(f[0], f[1]) / rad];
       // how much they agree (1 all one way, 0 scattered): scattered, the mean heading swings
@@ -608,11 +670,41 @@ function drawView() {
       const color = colorOf(o.c.id), r = 11 + ring * 4;
       ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.globalAlpha = .95; ctx.setLineDash([]);
       ctx.strokeRect(q[0] - r, q[1] - r, 2 * r, 2 * r);
-      const next = 1 + killsNow.filter(k => k.c.id === o.c.id).length;
+      // its next kill (its own count: the same enemy is #9 for one controller and #7 for another)
+      // and the enemy's number in the scene (the same for all)
+      const next = 1 + killsNow.filter(k => k.c.id === o.c.id).length, label = `#${next} 敌${i}`;
       ctx.fillStyle = color; ctx.font = `bold 11px ${MONO}`;
-      ctx.fillText('#' + next, q[0] - r - 2 - ctx.measureText('#' + next).width, q[1] - r + 9 + ring * 11);
+      ctx.fillText(label, q[0] - r - 2 - ctx.measureText(label).width, q[1] - r + 9 + ring * 11);
     }
     ctx.globalAlpha = 1;
+  }
+  // LAAMs (scenes with missiles=laam): each in its controller's colour, the last 3 s of its path
+  // and its head while it flies; one lost (beyond 117 deg, or out of time) ends in a ring for 2 s
+  for (const c of list) {
+    for (const m of (data._laams && data._laams[c.id]) || []) {
+      const [t0, , , , outcome, tEnd, tr] = m;
+      const end = tEnd >= 0 ? tEnd : Infinity;
+      if (st.t < t0 || st.t > end + 2 || tr.length < 8) continue;
+      const pts = [];
+      let head = null;
+      for (let k = 0; k + 3 < tr.length; k += 4) {
+        if (tr[k] > st.t) {   // between this sample and the one before: the head
+          const a = k - 4, u = (st.t - tr[a]) / Math.max(tr[k] - tr[a], 1e-3);
+          head = enu([0, 1, 2].map(j => tr[a + 1 + j] + (tr[k + 1 + j] - tr[a + 1 + j]) * u));
+          break;
+        }
+        if (tr[k] >= st.t - 3) pts.push(enu([tr[k + 1], tr[k + 2], tr[k + 3]]));
+      }
+      if (!head) head = enu([tr[tr.length - 3], tr[tr.length - 2], tr[tr.length - 1]]);
+      const color = colorOf(c.id), flying = st.t <= end;
+      if (flying) pts.push(head);
+      if (pts.length > 1) strokePath(ctx, P, pts, color, 1.5, flying ? .9 : .35);
+      const q = P(head); if (!q) continue;
+      ctx.fillStyle = color; ctx.strokeStyle = color; ctx.globalAlpha = .95;
+      if (flying) { ctx.beginPath(); ctx.arc(q[0], q[1], 2.5, 0, 2 * Math.PI); ctx.fill(); }
+      else if (outcome !== 1) { ctx.beginPath(); ctx.arc(q[0], q[1], 6, 0, 2 * Math.PI); ctx.stroke(); }
+      ctx.globalAlpha = 1;
+    }
   }
   // LADON's ECM: missiles lock only within 1 km. A sphere of that radius (the horizontal ring and
   // two upright ones), solid while any controller is inside it, dashed while all are outside
@@ -647,7 +739,7 @@ function drawView() {
     // the player's airframe: the Su-35 placed from the runtime skeleton (models/su35.js) when
     // flying the Su-35 condition, the probe-built model for the Su-57 and ADF-X02, otherwise
     // the light fighter from models.js
-    const own = window.AC8_MODELS && (st.cond === 'su35' ? AC8_MODELS.byId.su35 : AC8_MODELS.probed(st.cond) || AC8_MODELS.byId.light);
+    const own = window.AC8_MODELS && (st.cond === 'su35' ? AC8_MODELS.byId.su35 : st.cond === 'mig21bis' ? AC8_MODELS.byId.mig21 : AC8_MODELS.probed(st.cond) || AC8_MODELS.byId.light);
     const mesh = st.cond === 'su35' && window.SU35_ATTITUDE_MESH || (own ? own.tris() : MESH);
     drawJet(ctx, P, o.pos, B, crash ? '#555' : color, jetScale, mesh);
     if (!o.gone || !crash) {
@@ -664,6 +756,7 @@ function drawView() {
 const gauges = new Map();
 function buildGauges() {
   const box = document.getElementById('gauges'); box.innerHTML = ''; gauges.clear(); box.style.setProperty('--n', IDX.controllers.length);
+  box.style.setProperty('--cols', IDX.controllers.length > 4 ? 2 : 1); box.classList.toggle('two', IDX.controllers.length > 4);
   for (const c of IDX.controllers) {
     const el = document.createElement('div'); el.className = 'gauge';
     el.innerHTML = `<div class="name"><span class="chip" style="background:${colorOf(c.id)}"></span>${shortName(c)}<button type="button" title="镜头跟随它">跟随</button></div>
@@ -684,8 +777,13 @@ function drawGauges() {
     const crash = gone && crashedRun(c.id);
     g.el.classList.toggle('crashed', crash);
     const cx = w / 2, cy = h / 2 + 6, R = Math.hypot(w, h);
-    // A head-up display: one scale for everything, K px per degree (about +-22 deg top to bottom)
-    const K = (h - 24) / 44, HUD = '#9fe0b4', DIM = 'rgba(159,224,180,.55)';
+    // A head-up display: one scale for everything, K px per degree (about +-13 deg top to bottom;
+    // at +-22 a gauge 114-150 px high gave 2-3 px a degree and the rings were a few pixels across)
+    const K = (h - 24) / 26, HUD = '#9fe0b4', DIM = 'rgba(159,224,180,.55)';
+    // Every symbol at the display's own scale, the target box included (a fixed 14 px box was the
+    // mouse ring's size on a small gauge; rings drawn larger than their angle no longer matched the
+    // window they show)
+    const BOX = Math.max(3, TARGET_BOX * K);
     const pitch = fr[F.pitch], bank = fr[F.roll];
     ctx.save(); ctx.translate(cx, cy); ctx.rotate(-bank * rad);
     const shift = pitch * K;
@@ -744,10 +842,70 @@ function drawGauges() {
     // the nose (gun cross / waterline)
     ctx.strokeStyle = '#f2f5f7'; ctx.lineWidth = 2; ctx.beginPath();
     ctx.moveTo(cx - 18, cy); ctx.lineTo(cx - 8, cy); ctx.lineTo(cx - 4, cy + 4); ctx.lineTo(cx, cy); ctx.lineTo(cx + 4, cy + 4); ctx.lineTo(cx + 8, cy); ctx.lineTo(cx + 18, cy); ctx.stroke();
-    ctx.strokeStyle = '#f29a4a'; ctx.lineWidth = 2; ctx.beginPath();
-    if (out) { const a = Math.atan2(ay, ax); ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a - .5), cy + ay - 9 * Math.sin(a - .5)); ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a + .5), cy + ay - 9 * Math.sin(a + .5)); }
-    else ctx.arc(cx + ax, cy + ay, 6, 0, 2 * Math.PI);
-    ctx.stroke(); ctx.lineWidth = 1; ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+    if (out) {   // off the display: an arrow at its edge
+      const a = Math.atan2(ay, ax); ctx.strokeStyle = HUD_AIM; ctx.lineWidth = 2; ctx.beginPath();
+      ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a - .5), cy + ay - 9 * Math.sin(a - .5)); ctx.moveTo(cx + ax, cy + ay); ctx.lineTo(cx + ax - 9 * Math.cos(a + .5), cy + ay - 9 * Math.sin(a + .5));
+      ctx.stroke();
+    } else {   // the mouse ring as the mod draws it in game: white on a soft dark halo, 50 px across at 1080p (~1.8 deg)
+      const x = cx + ax, y = cy + ay, r = AIM_RING * K;
+      ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.stroke();
+      ctx.strokeStyle = 'rgba(242,245,247,.85)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.stroke();
+    }
+    ctx.lineWidth = 1; ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+    // the enemy attacked and the gun: its direction (red diamond, an arrow at the edge when off the
+    // display, with its distance), the lead point (yellow pipper), the 2 deg window around the nose
+    // (solid green with the lead point inside), and the trigger
+    let range = null;
+    if (fr.length > F.fire && fr[F.tgt] >= 0) {
+      const to = [fr[F.ex] - fr[F.x], fr[F.ey] - fr[F.y], fr[F.ez] - fr[F.z]];
+      range = Math.hypot(...to);
+      const place = d => {   // HUD position of a world direction, pulled to the edge when off it or behind
+        const n = Math.hypot(...d) || 1, v = d.map(x => x / n);
+        const f = dot(v, B.f), r = dot(v, B.r), up = dot(v, B.u);
+        let x = Math.atan2(r, f) / rad * K, y = -Math.atan2(up, f) / rad * K;
+        if (f < 0) { const m = Math.hypot(r, up) || 1; x = r / m * 1e4; y = -up / m * 1e4; }
+        const m = Math.hypot(x, y), off = m > lim;
+        if (off) { x *= lim / m; y *= lim / m; }
+        return { x: cx + x, y: cy + y, off, a: Math.atan2(y, x) };
+      };
+      const lead = [fr[F.lx], fr[F.ly], fr[F.lz]];
+      const hasImpact = fr.length > F.jz, impact = hasImpact ? [fr[F.ix], fr[F.iy], fr[F.iz]] : B.f;
+      const ang = (a, b) => Math.acos(Math.max(-1, Math.min(1, dot(a, b) / ((Math.hypot(...a) || 1) * (Math.hypot(...b) || 1))))) / rad;
+      // a window: rounds fired now would meet the enemy, within its size (as hits are judged)
+      const foe = ((window.COMPARE_DATA[st.cond] || {})[st.scen] || {})._foes, cls = foe && foe[fr[F.tgt]] ? foe[fr[F.tgt]][0] : '';
+      const size = /ladn/i.test(cls) ? 30 : /tu95|t160|b01b/i.test(cls) ? 20 : 6;   // by the aircraft, as the bench judges hits
+      const hitDeg = Math.atan2(size + 5, Math.max(range, 1)) / rad + 3.5 + 0.35;   // the round's 5 m burst and the game's 3.5 deg gun assist
+      // the bench's own window flag where recorded (the gun's reach is the rounds' since 2026-10-06)
+      const inWindow = fr.length > F.hit ? fr[F.hit] > 0.5 : range <= 1000 && ang(lead, impact) < hitDeg, firing = fr[F.fire] > 0.5;
+      const m = place(impact), e = place(to);
+      ctx.strokeStyle = HUD_ENEMY; ctx.fillStyle = HUD_ENEMY; ctx.lineWidth = 2; ctx.beginPath();
+      if (e.off) { ctx.moveTo(e.x, e.y); ctx.lineTo(e.x - 10 * Math.cos(e.a - .45), e.y - 10 * Math.sin(e.a - .45)); ctx.moveTo(e.x, e.y); ctx.lineTo(e.x - 10 * Math.cos(e.a + .45), e.y - 10 * Math.sin(e.a + .45)); }
+      else ctx.rect(e.x - BOX, e.y - BOX, 2 * BOX, 2 * BOX);   // the target box
+      ctx.stroke();
+      ctx.font = `10px ${MONO}`; ctx.textAlign = e.x > cx ? 'right' : 'left';
+      ctx.fillText(`${(range / 1000).toFixed(2)} km`, e.x + (e.x > cx ? -9 : 9), e.y + (e.y > cy ? -9 : 14));
+      if (range <= 1000) {   // the game's gun marker and what lies behind it
+        // the game's gun ring around where the rounds go: green, red while rounds would really hit
+        ctx.lineWidth = 2; ctx.strokeStyle = inWindow ? HUD_WINDOW : HUD_LEAD;
+        ctx.beginPath(); ctx.arc(m.x, m.y, GUN_RING * K, 0, 2 * Math.PI); ctx.stroke();
+        const tl = place(lead);   // where it will really be: a small white cross
+        if (!tl.off) { ctx.strokeStyle = HUD_TRUE; ctx.lineWidth = 1.5; ctx.beginPath();
+          ctx.moveTo(tl.x - 4, tl.y - 4); ctx.lineTo(tl.x + 4, tl.y + 4); ctx.moveTo(tl.x + 4, tl.y - 4); ctx.lineTo(tl.x - 4, tl.y + 4); ctx.stroke(); }
+        if (hasImpact) {   // where the player judged it: a small yellow plus
+          const jl = place([fr[F.jx], fr[F.jy], fr[F.jz]]);
+          if (!jl.off) { ctx.strokeStyle = HUD_JUDGED; ctx.lineWidth = 1.5; ctx.beginPath();
+            ctx.moveTo(jl.x - 5, jl.y); ctx.lineTo(jl.x + 5, jl.y); ctx.moveTo(jl.x, jl.y - 5); ctx.lineTo(jl.x, jl.y + 5); ctx.stroke(); }
+        }
+      }
+      if (firing || inWindow) {
+        ctx.font = `600 11px ${MONO}`; ctx.textAlign = 'left';
+        const label = firing ? '开火' : '窗口', bx = 6, by = 26;
+        ctx.fillStyle = firing ? '#e5534b' : 'rgba(10,16,20,.8)'; ctx.fillRect(bx, by, 34, 16);
+        ctx.strokeStyle = firing ? '#e5534b' : HUD_WINDOW; ctx.lineWidth = 1; ctx.strokeRect(bx, by, 34, 16);
+        ctx.fillStyle = firing ? '#fff' : HUD_WINDOW; ctx.textBaseline = 'middle'; ctx.fillText(label, bx + 5, by + 8.5);
+      }
+      ctx.lineWidth = 1; ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+    }
     // stick bars along the bottom: pitch, roll
     for (const [k, v] of [[0, fr[F.sp]], [1, fr[F.sr]]]) {
       const y = h - 12 + k * 6, x = Math.max(-1, Math.min(1, v));
@@ -758,8 +916,9 @@ function drawGauges() {
       const landing = scenario().kind === 'landing', end = arr[arr.length - 1][F.t].toFixed(1);
       ctx.fillText(crash ? (landing ? '降落失败' : '已坠地') : `${end} s ${landing ? '着陆' : '全部击落'}`, cx, cy + 4); ctx.textAlign = 'start'; }
     let text = `<div><span>偏差</span>${fr[F.angle].toFixed(1)}°</div><div><span>俯仰</span>${pitch.toFixed(0)}°</div><div><span>坡度</span>${bank.toFixed(0)}°</div>` +
-               `<div><span>速度</span>${fr[F.speed].toFixed(0)}</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>`;
+               `<div><span>速度</span>${(fr[F.speed] * 3.6).toFixed(0)} km/h</div><div><span>过载</span>${fr[F.nz].toFixed(1)} g</div>`;
     if (fr.length > F.kills && sc.kind === 'multi') text += `<div><span>击落</span>${fr[F.kills]}</div>`;
+    if (range !== null) text += `<div><span>距离</span>${(range / 1000).toFixed(2)} km</div>`;
     if (g.text !== text) { g.read.innerHTML = text; g.text = text; }
   }
 }
@@ -769,16 +928,32 @@ const LANES = [
   { key: 'angle', title: '偏差角', get: fr => fr[F.angle], color: v => heat(Math.log10(1 + v) / Math.log10(46)), legend: '0° → 2° → 10° → 45°+ · 白线 击落' },
   { key: 'bank', title: '坡度', get: fr => Math.abs(fr[F.roll]), color: v => cool(v / 180), legend: '水平 → 倒飞' },
   { key: 'stick', title: '滚转杆', get: fr => Math.abs(fr[F.sr]), color: v => violet(v), legend: '0 → 满杆' },
+  // 0 neither, 1 the program's window only (rounds fired now would hit), 2 the player's only (the
+  // game's ring shown, the target within 1 km, and on the enemy), 3 both. Firing is not drawn.
+  { key: 'gun', title: '射击窗口', get: fr => fr.length > F.hit ? (fr[F.hit] > 0.5 ? 1 : 0) + (fr.length > F.pwin && fr[F.pwin] > 0.5 ? 2 : 0) : 0,
+    color: v => ['#262d33', '#3c6fa8', '#c9a227', '#6ef08c'][v], legend: '蓝 仅程序 · 黄 仅玩家 · 绿 两者 · 秒数 程序/玩家',
+    note: arr => {   // seconds in the program's window / in the player's
+      let prog = 0, player = 0;
+      for (let i = 0; i + 1 < arr.length; i++) {
+        const dt = arr[i + 1][F.t] - arr[i][F.t], v = LANES[3].get(arr[i]);
+        if (v & 1) prog += dt;
+        if (v & 2) player += dt;
+      }
+      return `${prog.toFixed(1)}/${player.toFixed(1)}s`;
+    } },
 ];
 function ramp(stops, u) {
   u = Math.max(0, Math.min(1, u)); const k = Math.min(stops.length - 2, Math.floor(u * (stops.length - 1))), f = u * (stops.length - 1) - k;
   return `rgb(${stops[k].map((a, i) => Math.round(a + (stops[k + 1][i] - a) * f)).join(',')})`;
 }
 const heat = u => ramp([[24, 72, 64], [70, 150, 90], [220, 200, 70], [235, 120, 50], [210, 50, 50]], u);
-const cool = u => ramp([[20, 34, 44], [50, 110, 160], [120, 190, 230], [242, 154, 74]], u);
-const violet = u => ramp([[22, 28, 36], [90, 70, 150], [200, 140, 240]], u);
-const LANE_H = 11, LANE_GAP = 2, GROUP_GAP = 12, LABEL_W = 150, TOP = 4;
-let lanesKey = null;
+// the low ends are a dim grey, not the panel's colour: level flight and no stick read as
+// gaps in the lane otherwise
+const cool = u => ramp([[56, 68, 78], [50, 110, 160], [120, 190, 230], [242, 154, 74]], u);
+const violet = u => ramp([[56, 60, 72], [90, 70, 150], [200, 140, 240]], u);
+const LANE_H = 11, LANE_GAP = 2, GROUP_GAP = 12, TOP = 4;
+// the label column fits the longest controller name and lane note (more controllers, longer names)
+let LABEL_W = 150, lanesKey = null;
 function laneLayout() {
   const n = IDX.controllers.length, groupH = n * (LANE_H + LANE_GAP) + 16;
   return { n, groupH, height: TOP + LANES.length * (groupH + GROUP_GAP) + 14 };
@@ -794,8 +969,11 @@ function drawLanes() {
     const { ctx, w, h } = fit(base, 1200000);
     ctx.clearRect(0, 0, w, h);
     if (!data) return;
-    const T = sc.seconds, X = t => LABEL_W + (w - LABEL_W - 8) * t / T;
     ctx.font = `11px ${MONO}`;
+    const nameW = Math.max(...IDX.controllers.map(c => ctx.measureText(shortName(c)).width));
+    const noteW = Math.max(0, ...LANES.filter(l => l.note).flatMap(l => IDX.controllers.map(c => data[c.id] ? ctx.measureText(l.note(data[c.id])).width : 0)));
+    LABEL_W = Math.round(Math.min(w * 0.4, Math.max(150, 18 + nameW + (noteW ? 12 + noteW : 0) + 8)));
+    const T = sc.seconds, X = t => LABEL_W + (w - LABEL_W - 8) * t / T;
     LANES.forEach((lane, g) => {
       const y0 = TOP + g * (L.groupH + GROUP_GAP);
       ctx.fillStyle = '#dbe4e9'; ctx.fillText(lane.title, 6, y0 + 10);
@@ -805,6 +983,10 @@ function drawLanes() {
         ctx.fillStyle = colorOf(c.id); ctx.fillRect(6, y + 2, 8, LANE_H - 4);
         ctx.fillStyle = '#84959f'; ctx.fillText(shortName(c), 18, y + LANE_H - 2);
         if (!arr) return;
+        if (lane.note) {
+          const s = lane.note(arr);
+          ctx.fillStyle = '#dbe4e9'; ctx.fillText(s, LABEL_W - 6 - ctx.measureText(s).width, y + LANE_H - 2);
+        }
         ctx.fillStyle = '#0c1114'; ctx.fillRect(LABEL_W, y, w - LABEL_W - 8, LANE_H);
         for (let i = 0; i < arr.length; i++) {
           const x0 = X(arr[i][F.t]), x1 = i + 1 < arr.length ? X(arr[i + 1][F.t]) : x0 + 2;
@@ -874,9 +1056,27 @@ function drawDetail() {
 }
 
 // ---------- overview: every scene, every aircraft, every controller, ranked ----------
+function summaryTables(list) {
+  const S = window.COMPARE_SUMMARY; if (!S) return '';
+  const at = id => S.controllers.indexOf(id);
+  const cells = (vals, better, fmt) => {
+    const v = list.map(x => at(x.id) >= 0 ? vals[at(x.id)] : null), r = ranks(v, better);
+    return list.map((x, k) => `<td class="cell ${k ? '' : 'gap'}" style="background:${rankColor(r[k], list.length)}">${v[k] === null ? '—' : fmt(v[k])}</td>`).join('');
+  };
+  const head = title => `<tr class="metric"><th>${title}</th>` + list.map((x, k) => `<th class="${k ? '' : 'gap'}"><span class="chip" style="background:${colorOf(x.id)}"></span>${shortName(x)}</th>`).join('') + '</tr>';
+  let html = '<table class="summary"><thead>' + head('全部机型 · 相对基线 10-05（&lt; 1 更好）') + '</thead><tbody>';
+  html += `<tr><td>每个场景同权（几何平均）</td>${cells(S.per_scene, -1, v => v.toFixed(3))}</tr>`;
+  html += `<tr><td>每类场景同权</td>${cells(S.per_kind, -1, v => v.toFixed(3))}</tr>`;
+  html += `<tr><td>平均名次</td>${cells(S.mean_rank, -1, v => v.toFixed(2))}</tr>`;
+  if (S.profiles && S.profiles.length > 1) {
+    html += `<tr class="group"><td colspan="${1 + list.length}">不同模拟玩家（只有“标准”参与过调参）</td></tr>`;
+    for (const pr of S.profiles) html += `<tr><td>${pr.title}</td>${cells(pr.per_scene, -1, v => v.toFixed(3))}</tr>`;
+  }
+  return html + '</tbody></table>';
+}
 function drawOverview() {
-  const list = IDX.controllers, conds = IDX.plants;
-  let html = '<table><thead><tr class="cond"><th></th>';
+  const list = IDX.controllers, conds = IDX.plants.filter(c => c.id === st.cond);
+  let html = summaryTables(list) + '<table><thead><tr class="cond"><th></th>';
   for (const c of conds) html += `<th class="gap" colspan="${list.length}">${c.title}</th>`;
   html += '</tr><tr class="metric"><th>场景 · 综合代价</th>';
   for (const c of conds) list.forEach((x, k) => { html += `<th class="${k ? '' : 'gap'}"><span class="chip" style="background:${colorOf(x.id)}"></span>${shortName(x)}</th>`; });
@@ -906,7 +1106,26 @@ function drawOverview() {
   conds.forEach((c, ci) => { const best = Math.max(...firsts[ci]);
     firsts[ci].forEach((v, k) => { html += `<td class="${k ? '' : 'gap'}" style="color:${v === best ? '#5fd38a' : 'inherit'}">${v}</td>`; }); });
   html += '</tr></tfoot></table>';
+  // every aircraft (the bench's order): each controller's total cost over all scenes and its crashes
+  const S = window.COMPARE_SUMMARY;
+  html += `<table class="planes"><thead><tr class="metric"><th>每个机型 · ${S ? '相对基线（&lt; 1 更好）' : '总代价'}（✕ 坠地次数）</th>`;
+  list.forEach((x, k) => { html += `<th class="${k ? '' : 'gap'}"><span class="chip" style="background:${colorOf(x.id)}"></span>${shortName(x)}</th>`; });
+  html += '</tr></thead><tbody>';
+  for (const c of IDX.plants) {
+    const totals = list.map(() => 0), crashes = list.map(() => 0);
+    for (const sc of IDX.scenarios) {
+      const M = metricsOf(c.id, sc.id);
+      list.forEach((x, k) => { if (M[x.id]) { totals[k] += M[x.id].cost; if (M[x.id].crashed >= 0) crashes[k]++; } });
+    }
+    const rel = S && S.per_plant[c.id] ? list.map(x => S.per_plant[c.id][S.controllers.indexOf(x.id)]) : null;
+    const shown = rel || totals, r = ranks(shown, -1);
+    html += `<tr data-cond="${c.id}"${c.id === st.cond ? ' class="current"' : ''}><td>${c.title}</td>`;
+    list.forEach((x, k) => { html += `<td class="cell ${k ? '' : 'gap'}" style="background:${rankColor(r[k], list.length)}">${rel ? shown[k].toFixed(3) : shown[k].toFixed(0)}${crashes[k] ? ` ✕${crashes[k]}` : ''}</td>`; });
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
   const box = document.getElementById('overview'); box.innerHTML = html;
+  box.querySelectorAll('tr[data-cond]').forEach(tr => tr.addEventListener('click', () => selectCond(tr.dataset.cond)));
   box.querySelectorAll('tr[data-scen]').forEach(tr => tr.addEventListener('click', () => { st.scen = tr.dataset.scen; document.getElementById('scene').value = st.scen; setTab('scene'); selectScene(); }));
 }
 
@@ -917,14 +1136,16 @@ function fillScenes() {
     `<optgroup label="${KIND[k]}">${IDX.scenarios.filter(s => s.kind === k).map(s => `<option value="${s.id}">${s.id} · ${s.title}</option>`).join('')}</optgroup>`).join('');
   sel.value = st.scen;
 }
+function selectCond(id) {
+  st.cond = id; save(); document.getElementById('conds').value = id;
+  loadCond(st.cond, () => { lanesKey = null; dirty = true; });
+  drawBoard(); if (st.tab === 'overview') drawOverview();
+}
 function buildCondButtons() {
-  const box = document.getElementById('conds'); box.innerHTML = '';
-  for (const c of IDX.plants) {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = c.title;
-    b.setAttribute('aria-pressed', String(c.id === st.cond));
-    b.addEventListener('click', () => { st.cond = c.id; save(); buildCondButtons(); loadCond(st.cond, () => { lanesKey = null; dirty = true; }); });
-    box.appendChild(b);
-  }
+  const sel = document.getElementById('conds');
+  sel.innerHTML = IDX.plants.map(c => `<option value="${c.id}">${c.title}</option>`).join('');
+  sel.value = st.cond;
+  sel.onchange = () => selectCond(sel.value);
 }
 function buildCamButtons() {
   const box = document.getElementById('cams'); box.innerHTML = '';
@@ -981,13 +1202,17 @@ function tick(now) {
     dirty = true;
   }
   lastTick = now;
+  // the next frame asked for first: an error in a drawing must not end the loop (the view and the
+  // gauges stayed one flat colour after a tab switch during playback, reported 2026-10-07)
+  requestAnimationFrame(tick);
   if (dirty && st.tab === 'scene' && now - lastDraw >= 1000 / 30 - 2) {
     dirty = false; lastDraw = now;
     document.getElementById('clock').textContent = `${st.t.toFixed(1)} s`;
     document.getElementById('scrub').value = String(Math.round(st.t / scenario().seconds * 1000));
-    drawView(); drawGauges(); drawLanes(); drawDetail();
+    for (const draw of [drawView, drawGauges, drawLanes, drawDetail]) {
+      try { draw(); } catch (e) { console.error(draw.name, e); }
+    }
   }
-  requestAnimationFrame(tick);
 }
 window.ac8review = st;   // debugging
 window.ac8draw = () => { drawView(); drawGauges(); drawLanes(); drawDetail(); };

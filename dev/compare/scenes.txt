@@ -3,29 +3,31 @@
 # they fly their recorded paths, and every controller meets them with the same simulated
 # player from the same standard start (1.5 km behind), on every condition.
 # Cut new enemies with extract_tracks.py (one enemy, tracks/) or extract_battles.py (several,
-# battles/), then add a line here.
+# battles/), or overlay the busiest recorded fights with synth_battles.py (battles/synth_<n>.txt),
+# then add a line here.
 #
 #   kind    landing (landings/, cut with extract_landings.py), multi (several, battles/), boss
 #           (battles/, cut with --boss); single (one enemy,
 #           tracks/) is still read but no longer used: the boss fights cover it
 #   file    the cut file
 #   id      <category>_<nn>: multi_, boss_
-#   title   <category> · <what>; may begin with start=<m>: start that far behind the enemy
+#   title   <category> · <what>; may begin with start=<m>: start that far behind the enemy, or
+#           start=player: as the player was at the cut (attitude and speed; a phase following another)
+#           target=game: the enemy the player had locked at each moment chased (the pilot's own choice while none)
+#           from=<s>: the scene starts that far into the file (with start=player: as the player was then)
 #           instead of the standard distance (single 1 km, multi 1.5 km, boss 800 m), and with
 #           order=game|near|nose|mixed: every controller attacks in the same fixed order (the
-#           player's own, or a reference flight's; see reference_order in harness.cpp). One
-#           crowded battle is run under four orders so no single order's luck decides it.
+#           player's own, or a reference flight's; see reference_order in harness.cpp). The
+#           crowded M28 battle runs in the player's own order only (four orders until 2026-10-06);
+#           and missiles=1|laam: missiles as well as the gun, by the old rules or LAAMs flown
+#           (fights are gun only otherwise).
 #
 # kind    file                      id        title
 landing   20261005-131536_613.txt   man_10    通用机动 · 战时降落 盘旋进近
 landing   20261005-131536_1131.txt  man_11    通用机动 · 战时降落 垂直俯冲
 landing   20261005-131536_1509.txt  man_12    通用机动 · 战时降落 高速俯冲
-multi     20261005-010417_521.txt   multi_01  多机 · Shadow 四机
-multi     20261005-131536_100.txt   multi_02  order=game 多机 · M28 千颗亮点 · 实战顺序
-multi     20261005-131536_100.txt   multi_03  order=near 多机 · M28 千颗亮点 · 距离优先
-multi     20261005-131536_100.txt   multi_04  order=nose 多机 · M28 千颗亮点 · 偏角优先
-multi     20261005-131536_100.txt   multi_05  order=mixed 多机 · M28 千颗亮点 · 综合
-boss      20261005-102156_93.txt    boss_01   头目 · LADON 一阶段
-boss      20261005-102156_343.txt   boss_02   头目 · LADON 二阶段
+multi     20261005-131536_100.txt   multi_01  order=game missiles=laam 多机 · M28 千颗亮点
+boss      20261005-102156_93.txt    boss_01   from=61.8 start=player target=game 头目 · LADON 一阶段
+boss      20261005-102156_343.txt   boss_02   start=player 头目 · LADON 二阶段
 boss      20261005-113403_10.txt    boss_03   头目 · Selene
 boss      20261005-131536_2026.txt  boss_04   start=1000 头目 · Shadow 22
