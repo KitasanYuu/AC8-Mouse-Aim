@@ -359,7 +359,9 @@ function M.update(pawn,game_time)
         return
     end
     next_sample=game_time+SAMPLE_SECONDS
-    local new_scan=game_time>=next_scan
+    -- the scan (every object in the game, ~40 ms) only once a packet has gone out: with telemetry
+    -- off it ran every 5 s before the send found nothing listening
+    local new_scan=sending and game_time>=next_scan
     if new_scan then
         next_scan=game_time+SCAN_SECONDS
         local ok=pcall(scan,pawn,game_time)
