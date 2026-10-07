@@ -61,6 +61,9 @@ contacts.init(function(text)
     if text:find('"type":"boss"') then boss[#boss + 1] = text else packets[#packets + 1] = text end
     return 1
 end)
+-- the scan runs only once a packet has gone out (telemetry on): one sample first
+contacts.update(pawn, 0.5)
+packets, boss = {}, {}
 contacts.update(pawn, 1.0)
 assert(packets[1], 'no packet')
 assert(packets[1]:find('"classes"'), 'class census missing on a scan')
