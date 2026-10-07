@@ -71,6 +71,7 @@ struct Guidance {
     float yaw_error=0;    // positive yaws right
     float yaw_weight=0;   // how much rudder to use (near field, or a bank-limited turn)
     float turn_weight=0;  // 0 fine tracking, 1 lift-vector turn
+    float pitch_gate=1;   // the pitch plane is flown now (0 while the lift is more than 90 deg off the target)
     bool tail=false;      // committed rear-target reversal
     bool pushing=false;   // aligning the floor, not the canopy, with the target
 };
@@ -110,8 +111,16 @@ struct ManeuverTuning {
     // reach it sideways cost the 0.5 s that would have pulled out. 0 = off. (Altitude is above
     // sea level: over high ground it does not help, and does not get in the way.)
     float ground_guard=5.0f;
+    // The escape below (canopy to the sky, the short way) starts beyond this much bank (the
+    // canopy that far from the sky); 135 until 2026-10-06: banked 111-131 deg, nose sinking at
+    // 300 m with the aim above it, the aircraft held its lift on the target for 1.5 s and was
+    // inverted and 26 deg nose-down by the time 135 was passed (bench, Selene low).
+    float escape_bank=135.0f;
+    // ...and only for an aim no steeper down than this (deg): one put well below the horizon is a
+    // dive the player asks for (a landing's steep banked spiral was rolled out of at 90 deg).
+    float escape_aim_down=90.0f;
     float choice_margin=0.6f;                      // seconds a push must lose by to switch to a pull
-    float push_bias=0.3f;                          // seconds a push may be slower and still be chosen
+    float push_bias=0.0f;                          // seconds a push may be slower and still be chosen (0.3 until 2026-10-05)
     float tail_enter=160.0f, tail_exit=145.0f, tail_bank=50.0f;
     float latch_limit=150.0f;
     // Pitch starts before the roll is done: the roll expected over the pitch lag is
@@ -170,10 +179,11 @@ struct Maneuver {
         // the sea: 400 m, inverted, 30 deg nose-down, the aim snatched up behind: rolling one
         // way and back for 3 s into the sea). Not a push: inverted, the game's push has almost
         // no authority (logged). Held until the canopy is well up or the danger gone.
-        const bool low_and_aim_up=t.ground_guard>0 && ground_time<t.ground_guard && dot(aim,{0,0,1})>b.f.z;
+        const bool low_and_aim_up=t.ground_guard>0 && ground_time<t.ground_guard && dot(aim,{0,0,1})>b.f.z &&
+                                  aim.z>-std::sin(t.escape_aim_down*rad);
         const bool was_escaping=escaping;
         if(!low_and_aim_up || b.u.z>0.5f) escaping=false;
-        else if(b.u.z<-0.7f) escaping=true;
+        else if(b.u.z<std::cos(t.escape_bank*rad)) escaping=true;
         if(escaping) {
             tail=false; pushing=false;
             g.tail=false; g.pushing=false; g.turn_weight=1;
@@ -185,7 +195,9 @@ struct Maneuver {
             g.roll_error=r;   // canopy to the sky
             const float gap=(std::asin(std::clamp(aim.z,-1.0f,1.0f))-std::asin(std::clamp(b.f.z,-1.0f,1.0f)))/rad;
             const float credit=std::min(std::max(0.0f,roll_rate*(g.roll_error>=0?1.0f:-1.0f))*lag,t.overlap_max);
-            g.pitch_error=gap*std::max(0.0f,std::cos(std::max(0.0f,std::abs(g.roll_error)-credit)*rad));
+            const float lift_left=std::max(0.0f,std::abs(g.roll_error)-credit);
+            g.pitch_error=gap*std::max(0.0f,std::cos(lift_left*rad));
+            g.pitch_gate=smoothstep(95.0f,80.0f,lift_left);
             return g;
         }
         if(!tail && g.angle>t.tail_enter) { tail=true; tail_side=side; }
@@ -199,7 +211,9 @@ struct Maneuver {
             g.roll_error=latch_roll(roll_toward(std::sin(bank)*horizon,std::cos(bank)*horizon),
                                     roll_side,t.latch_limit);
             const float credit=std::min(std::max(0.0f,roll_rate*(g.roll_error>=0?1.0f:-1.0f))*lag,t.overlap_max);
-            g.pitch_error=g.angle*std::max(0.0f,std::cos(std::max(0.0f,std::abs(g.roll_error)-credit)*rad));
+            const float lift_left=std::max(0.0f,std::abs(g.roll_error)-credit);
+            g.pitch_error=g.angle*std::max(0.0f,std::cos(lift_left*rad));
+            g.pitch_gate=smoothstep(95.0f,80.0f,lift_left);
             return g;
         }
         const float target_speed=std::hypot(lead_u,lead_r);
@@ -319,6 +333,7 @@ struct Maneuver {
         const float along=std::max(0.0f,s*std::atan2(rx*cx+ux*cy,fx)/rad);
         const float lift_left=std::max(0.0f,std::abs(g.roll_error)-credit);
         g.pitch_error=plane*(1-w)+s*along*w*std::max(0.0f,std::cos(lift_left*rad));
+        g.pitch_gate=(1-w)+w*smoothstep(95.0f,80.0f,lift_left);
         // Near the ground, sinking, the aim above the nose: pull while the roll is still under
         // way, as much as the canopy already faces up (the pull above waits for the lift to be
         // within 90 deg of the target: bench, 650 m/s and 275 m/s down, 80 deg banked, the

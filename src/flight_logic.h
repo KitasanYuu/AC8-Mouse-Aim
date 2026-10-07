@@ -15,7 +15,7 @@
 #include "maneuver.h"
 namespace flight {
 // Bump when LogicInput, LogicOutput or the exported functions change.
-constexpr int logic_abi=5;
+constexpr int logic_abi=7;
 // Controller convention: positive pitch raises the nose, roll rolls right, yaw yaws right.
 struct LogicInput {
     float pitch,yaw,roll;              // aircraft attitude, degrees
@@ -30,6 +30,12 @@ struct LogicInput {
     float vel_x,vel_y,vel_z;
     float acc_x,acc_y,acc_z;
     float altitude;
+    int request;                       // the player's requests by key: 1 post-stall (key held)
+    // 1: the aim is attached to the aircraft (the cockpit's mouse joystick: an offset off the nose
+    // that turns with it), so its motion is the aircraft's own, not a target's: no lead. Read as
+    // a target's, the aircraft's yaw kept itself going with the ring on the nose (reported
+    // 2026-10-07: rudder held at -0.6, 5 deg/s, the aim 0.03 deg off the nose).
+    int aim_attached;
 };
 // Per-frame internal state for the telemetry stream (LogicOutput::diag).
 enum Diag { DiagAngle, DiagPitchError, DiagYawError, DiagRollError, DiagTurnWeight, DiagPushing, DiagTail,
@@ -53,14 +59,16 @@ struct Tuning {
     float pitch_kd=0.1f;               // stick per deg/s of predicted rate error (0.25 until 2026-10-05)
     float roll_kv=1.5f;                // roll acceleration per deg/s of rate error (1/s)
     float pitch_brake=0.45f, roll_brake=0.45f;
-    float pitch_unload=0;              // opposite authority used to slow a wanted rotation (0 = full)
+    float pitch_unload=0.3f;           // opposite authority used to slow a wanted rotation (0 = full; 0 until 2026-10-05)
     // pitch_gain 2.5: 2 began easing off ~40 deg out and crept in (logged); 3 overshot.
     float pitch_gain=2.5f, roll_gain=2.0f;
     // Lead: the target's own motion across the nose is flown as a rate on top of closing
     // the error, so a moving target (a turning enemy) is followed, not trailed. Without
     // it a 20 deg/s turner was trailed by a steady 13 deg (sim), and turns in combat
     // stalled half way (reported). Gain, low-pass (s), limit (deg/s).
-    float lead_gain=1.0f, lead_filter=0.2f, lead_max=60.0f;
+    // lead_gate: while the roll must come first, only the part that hurries the coming pitch
+    // (1; 0 = the whole lead, as before 2026-10-05).
+    float lead_gain=1.0f, lead_filter=0.2f, lead_max=60.0f, lead_gate=1.0f;
     // Extra gain fraction inside the last few degrees: the nose crept the final 1-2 deg
     // into the ~1.3 deg aim circle (logged); 0.4 settled faster in sim, 0.8 overshot.
     float pitch_gain_near=0.4f;
@@ -73,6 +81,14 @@ struct Tuning {
     // outside it and 45-55 inside, with 77-90 for the first second; the model and the
     // authority estimate (1-2 s to follow) under-predicted the turn, braking late.
     float highg_pull=1.4f;
+    // High-G (throttle and brake held) is the player asking for all the G there is: beyond
+    // highg_full_from deg of the aim, with the lift on the target's side (a pull the guidance
+    // wants), the stick goes full back, without waiting for the roll to finish or braking
+    // early for the stop (it stops as late as the hardest stop allows); inside it the usual law takes over. (Logged, LADON in an FA-36: in
+    // high-G turns the stick sat short of full 44% of the time, 15% waiting on a roll the
+    // game turns at ~20 deg/s at 600 m/s, 18% braking early; "no high-G feel", missiles not
+    // dodged.) 0 = off.
+    float highg_full_from=8.0f;
     // Stick slew (full scale per second). The game smooths stick input, so faster
     // swings are averaged away and only make the model-based loop chatter.
     float pitch_slew=20.0f, roll_slew=20.0f;
@@ -82,7 +98,34 @@ struct Tuning {
     float rate_observer=3.0f;
     float yaw_dead=0.2f, yaw_gain=1.5f, yaw_max_rate=6.0f, yaw_damping=0.45f, yaw_limit=0.6f;
     float yaw_slew=5.0f;
+    // Fine search (the Gaijin patent's scored look-ahead, US8770979B2 process 303C): within
+    // fine_angle deg of the aim, a few sticks around the rules' own (and no roll at all) are
+    // each flown fine_horizon s ahead on this logic's own aircraft model, from where the
+    // commands in flight leave it, and the one with the least squared aim error, roll
+    // activity (fine_roll), bank (fine_level) and stick change (fine_smooth) is flown. So a
+    // degree off is closed by rudder and pitch rather than a roll in and out (bench, mouse
+    // nudges: 7 deg of rocking cut to 0.7, roll reversals in fights down a third). 0 = off.
+    float fine_search=1, fine_angle=20, fine_horizon=1.0f, fine_smooth=2.0f, fine_roll=0.002f, fine_level=0.003f;
+    float fine_yaw_rate=6.0f;   // deg/s a full rudder gives (logged ~5.4)
+    // What is left after the horizon: the aim error there, held for as long as the aircraft model
+    // needs to remove it from that attitude (roll the lift onto it and pull, roll the floor onto it
+    // and push, or rudder), and closing evenly. Without it a roll that pays off after more than
+    // fine_horizon was never chosen: the search held the bank against the guidance's roll ~20% of
+    // its time in game (2-3% before it was widened), the target circled the nose in a corkscrew
+    // (logged, FA-36 against LADON); the bench halved it. Weight (1 = the remaining error closing
+    // evenly); 0 = off (until 2026-10-05).
+    float fine_to_go=3;
+    // The pitch in the look-ahead follows the rules' pitch law: from the rules' stick now, changed
+    // as the aim's offset in the pitch plane changes (a roll that brings the lift onto the aim is
+    // followed by the pull the rules will then give). Held fixed, a roll never paid off within the
+    // horizon. 0 = held (until 2026-10-05).
+    float fine_follow=1;
+    // 0: the pitch stays the rules' and only roll and rudder are searched. Searching the pitch
+    // too stopped the rocking but settled later and overshot more (bench: the rules' braking
+    // is fitted to the game; the search trusts a model that is not quite the aircraft).
+    float fine_pitch=0;
     float calibrate=0;                 // change to a new positive value to run input calibration
+    float maneuver_test=0;             // change to a new positive value to arm the post-stall test plan
     float auto_trace=0;                // record each maneuver automatically (compact AT lines); 0 = off
     // Online identification of the current aircraft: memory of the estimate (s) and
     // seconds of informative data before it is fully trusted. 0 memory disables it.
@@ -125,6 +168,35 @@ struct Calibration {
     int end_count=0;
     float samples[24]{};               // rate every 0.1 s during the hold
 };
+// Scripted post-stall test (maneuver_test): what a hand on a gamepad cannot time. The player
+// slows below 500 km/h and presses the high-G turn (throttle and brake); the script takes the
+// pitch only, centred and then full, a set delay after the high-G began, and lets go at a set
+// angle between the nose and the flight path (or holds); roll and rudder stay the flight
+// logic's, so the turn goes where the pointer is. One step of the plan per high-G press. After
+// letting go it watches until the game has swung the flight path onto the nose, then hands the
+// pitch back. Found so far (FA-36, 2026-10-06): the post-stall maneuver starts when the pitch
+// input is not already pulling at the moment the high-G is pressed (20 of 20; with the stick
+// already pulling it is an ordinary high-G turn), below 500 km/h, the pull following within at
+// least 0.42 s; let go at 60-121 deg off the path with the nose at 116-140 deg/s, the nose
+// carries on another 50-55 deg over ~0.6 s, and the path is on the nose 1.0-1.7 s after letting
+// go. Now measured: smaller let-go angles, and how late the pull may come.
+// Telemetry diag[DiagTail] is 10 x step (from 1) + phase during a step.
+struct TestStep { float delay; float release; };   // s after high-G; deg off the path, 0 = held
+inline const TestStep* test_plan(int& count) {
+    static const TestStep plan[]={{0.3f,30},{0.3f,75},{0.3f,105},{0.6f,0},{0.9f,0},{1.2f,0}};
+    count=int(sizeof(plan)/sizeof(plan[0]));
+    return plan;
+}
+struct ManeuverTest {
+    static constexpr unsigned valid_tag=0x54455354u;   // kept across resets only when intact
+    unsigned tag=valid_tag;
+    int step=-1;                       // -1 idle; otherwise the step that runs on the next press
+    int phase=0;                       // 0 waiting for high-G, 1 delay (centred), 2 pulling, 3 let go (centred)
+    float time=0, off_max=0;
+    bool high_g=false;
+};
+constexpr float test_hold=3.0f;        // pull held at most when the step lets go at no angle (s)
+constexpr float test_watch=2.5f;       // centred stick watched after letting go, at most (s)
 // Online identification. Aircraft differ widely (logged: roll 95 vs 238 deg/s^2 at
 // full stick, pull 28 vs 47 deg/s), so each aircraft's authority and response time are
 // identified in flight. A bank of candidate models runs in parallel on the stick actually
@@ -287,6 +359,14 @@ struct LogicState {
     bool recording=false;              // automatic per-maneuver trace
     float settled_for=0;
     Calibration cal;
+    ManeuverTest test;
+    bool post_stall_high_g=false;      // high-G as of the previous frame, for the post-stall request
+    float unmodelled=0;                // s left in which the measured rates are not the model's (post-stall)
+    // The game's post-stall entry as the logic sent it: the high-G pressed below 500 km/h with the
+    // pitch not pulling (see post_stall_override); how long since, and the nose's most off the path.
+    bool psm_entered=false;
+    float psm_time=0, psm_off_max=0;
+    float post_stall_hold=0;           // pitch held centred for the post-stall entry (s left)
     // Authority estimate: responses to the delayed stick at unit authority (and pitch's
     // gravity part), and their decayed correlation with the measured rates.
     // Pull and push are estimated separately: inverted, a full push gave 2-10 deg/s
@@ -371,7 +451,7 @@ inline Tuning read_tuning(const wchar_t* path) {
     auto& m=t.maneuver;
     get(L"near_end",m.near_end); get(L"far_start",m.far_start); get(L"level_per_deg",m.level_per_deg); get(L"rollout_rate",m.rollout_rate);
     get(L"rollout_lag",m.rollout_lag); get(L"pursuit_ahead",m.pursuit_ahead); get(L"push_enter",m.push_enter); get(L"push_exit",m.push_exit);
-    get(L"push_roll_enter",m.push_roll_enter); get(L"push_roll_exit",m.push_roll_exit); get(L"push_below",m.push_below); get(L"pursuit_speed",m.pursuit_speed); get(L"level_inside",m.level_inside); get(L"slice_ease",m.slice_ease); get(L"slice_hold",m.slice_hold); get(L"chase_slice",m.chase_slice); get(L"chase_level",m.chase_level); get(L"push_below_exit",m.push_below_exit); get(L"choice_margin",m.choice_margin); get(L"push_bias",m.push_bias); get(L"ground_guard",m.ground_guard);
+    get(L"push_roll_enter",m.push_roll_enter); get(L"push_roll_exit",m.push_roll_exit); get(L"push_below",m.push_below); get(L"pursuit_speed",m.pursuit_speed); get(L"level_inside",m.level_inside); get(L"slice_ease",m.slice_ease); get(L"slice_hold",m.slice_hold); get(L"chase_slice",m.chase_slice); get(L"chase_level",m.chase_level); get(L"push_below_exit",m.push_below_exit); get(L"choice_margin",m.choice_margin); get(L"push_bias",m.push_bias); get(L"ground_guard",m.ground_guard); get(L"escape_bank",m.escape_bank); get(L"escape_aim_down",m.escape_aim_down);
     get(L"tail_enter",m.tail_enter); get(L"tail_exit",m.tail_exit); get(L"tail_bank",m.tail_bank); get(L"latch_limit",m.latch_limit);
     get(L"overlap_max",m.overlap_max); get(L"upright",m.upright); get(L"slice_bank",m.slice_bank); get(L"slice_deep",m.slice_deep);
     get(L"slice_from",m.slice_from); get(L"invert_min_angle",m.invert_min_angle);
@@ -385,15 +465,18 @@ inline Tuning read_tuning(const wchar_t* path) {
     get(L"roll_accel",p.roll_accel); get(L"roll_curve",p.roll_curve);
     get(L"roll_max_rate",p.roll_max_rate); get(L"roll_tau",p.roll_tau);
     get(L"pitch_kd",t.pitch_kd); get(L"roll_kv",t.roll_kv);
-    get(L"pitch_brake",t.pitch_brake); get(L"roll_brake",t.roll_brake); get(L"pitch_unload",t.pitch_unload); get(L"pitch_trim_keep",t.pitch_trim_keep); get(L"highg_pull",t.highg_pull); get(L"pitch_gain_near",t.pitch_gain_near);
-    get(L"lead_gain",t.lead_gain); get(L"lead_filter",t.lead_filter); get(L"lead_max",t.lead_max);
+    get(L"pitch_brake",t.pitch_brake); get(L"roll_brake",t.roll_brake); get(L"pitch_unload",t.pitch_unload); get(L"pitch_trim_keep",t.pitch_trim_keep); get(L"highg_pull",t.highg_pull); get(L"highg_full_from",t.highg_full_from); get(L"pitch_gain_near",t.pitch_gain_near);
+    get(L"lead_gain",t.lead_gain); get(L"lead_filter",t.lead_filter); get(L"lead_max",t.lead_max); get(L"lead_gate",t.lead_gate);
     get(L"pitch_gain",t.pitch_gain); get(L"roll_gain",t.roll_gain);
     get(L"pitch_trim",t.pitch_trim); get(L"pitch_trim_limit",t.pitch_trim_limit);
     get(L"pitch_slew",t.pitch_slew); get(L"roll_slew",t.roll_slew);
     get(L"rate_observer",t.rate_observer);
     get(L"yaw_dead",t.yaw_dead); get(L"yaw_gain",t.yaw_gain); get(L"yaw_max_rate",t.yaw_max_rate);
     get(L"yaw_damping",t.yaw_damping); get(L"yaw_limit",t.yaw_limit); get(L"yaw_slew",t.yaw_slew);
+    get(L"fine_search",t.fine_search); get(L"fine_angle",t.fine_angle); get(L"fine_horizon",t.fine_horizon);
+    get(L"fine_smooth",t.fine_smooth); get(L"fine_roll",t.fine_roll); get(L"fine_level",t.fine_level); get(L"fine_yaw_rate",t.fine_yaw_rate); get(L"fine_pitch",t.fine_pitch); get(L"fine_to_go",t.fine_to_go); get(L"fine_follow",t.fine_follow);
     get(L"calibrate",t.calibrate);
+    get(L"maneuver_test",t.maneuver_test);
     get(L"auto_trace",t.auto_trace);
     get(L"ident_memory",t.ident_memory); get(L"ident_trust",t.ident_trust);
     get(L"authority_memory",t.authority_memory); get(L"authority_min",t.authority_min);
@@ -471,6 +554,100 @@ inline FlightPath flight_path(const Basis& b,const LogicInput& in) {
     return p;
 }
 
+// Post-stall on request (a key; the player still presses the high-G): the game enters its
+// post-stall maneuver only when the pitch input is not already pulling at the moment the
+// high-G is pressed (FA-36, 20 of 20; pulling, it is an ordinary high-G turn), below 500 km/h,
+// and only if the pull then comes while the high-G is still held: tapped high-G (0.1-0.2 s)
+// with the pull after it, 17 of 17 were ordinary turns; with the pull inside it, the longer the
+// overlap the surer (0.08 s and more nearly always; logged 2026-10-06). The flight logic pulls
+// whenever the aim is off the nose, so the pitch is held centred for post_stall_entry from the
+// high-G (0.1 s and the stick's slew put the full pull 0.11-0.15 s after it, often past a tap),
+// then pulled full at once if the logic pulls at all, while the high-G lasts.
+constexpr float post_stall_entry=0.04f;
+constexpr float post_stall_pull=0.3f;  // the full pull's window from the high-G (s)
+constexpr float post_stall_speed=500/3.6f;
+inline void post_stall_override(LogicState& s,const LogicInput& in,LogicOutput& out) {
+    const bool high_g=in.throttle>0.5f && in.brake>0.5f;
+    const bool pressed=high_g && !s.post_stall_high_g;
+    s.post_stall_high_g=high_g;
+    if(!high_g) { s.post_stall_hold=0; return; }
+    const float speed=std::sqrt(in.vel_x*in.vel_x+in.vel_y*in.vel_y+in.vel_z*in.vel_z);
+    if(pressed && (in.request&1)) {
+        if(speed<post_stall_speed) s.post_stall_hold=post_stall_pull;
+        if(!out.event[0]) snprintf(out.event,sizeof(out.event),speed<post_stall_speed?"post-stall: entry at %.0f km/h"
+                                   :"post-stall: %.0f km/h, over 500 (an ordinary high-G turn)",speed*3.6f);
+    }
+    if(s.post_stall_hold>0) {
+        const bool centred=s.post_stall_hold>post_stall_pull-post_stall_entry;
+        s.post_stall_hold-=in.dt;
+        if(out.pitch>0) {
+            out.pitch=centred?0.0f:1.0f;
+            s.pitch_out.value=out.pitch;
+            s.pitch_history.u[s.pitch_history.head]=out.pitch;   // what was sent, for the model
+        }
+    }
+    // the game's rule, with what was sent: a post-stall may begin (requested or not)
+    if(pressed && speed<post_stall_speed && out.pitch<=0.05f) { s.psm_entered=true; s.psm_time=0; s.psm_off_max=0; }
+}
+constexpr float unmodelled_off=30;     // deg between the nose and the flight path: post-stall
+// The nose in post-stall (FA-36, logged 2026-10-06): centred it slows by about 160 deg/s^2
+// (125-176 at 330-370 km/h), a full push stops it at about 350.
+constexpr float post_stall_coast=160, post_stall_push=350;
+// After the flight logic's own step: the test's pitch over it while a step runs.
+inline void test_override(LogicState& s,const LogicInput& in,LogicOutput& out) {
+    int count=0;
+    const TestStep* plan=test_plan(count);
+    ManeuverTest& m=s.test;
+    const bool high_g=in.throttle>0.5f && in.brake>0.5f;
+    const bool pressed=high_g && !m.high_g;
+    m.high_g=high_g;
+    if(in.keyboard) {
+        m=ManeuverTest{};
+        snprintf(out.event,sizeof(out.event),"TEST aborted: keyboard input");
+        return;
+    }
+    const Basis b=basis(in.pitch,in.yaw,in.roll);
+    const FlightPath path=flight_path(b,in);
+    const V vel{in.vel_x,in.vel_y,in.vel_z};
+    const float off=path.speed>1 ? std::acos(std::clamp(dot(b.f,vel)/path.speed,-1.0f,1.0f))/rad : 0;
+    const TestStep& step=plan[m.step];
+    if(m.phase==0) {
+        if(!pressed) return;
+        if(path.speed>=500/3.6f || in.altitude<1500) {
+            snprintf(out.event,sizeof(out.event),"TEST %d/%d not started: %.0f km/h, %.0f m (needs under 500 km/h, over 1500 m)",
+                     m.step+1,count,path.speed*3.6f,in.altitude);
+            return;
+        }
+        m.phase=1; m.time=0; m.off_max=0;
+        snprintf(out.event,sizeof(out.event),"TEST %d/%d start: %.0f km/h, pull after %.2f s, let go at %.0f deg (0 = held)",
+                 m.step+1,count,path.speed*3.6f,step.delay,step.release);
+    }
+    m.time+=in.dt;
+    m.off_max=std::max(m.off_max,off);
+    if(m.phase==1 && m.time>=step.delay) { m.phase=2; m.time=0; }
+    // Held: until the flight path has come round onto the nose (it swings within ~0.5 s once
+    // the nose is well past 90 deg) or the time is up.
+    const bool swung=m.off_max>60 && off<20;
+    if(m.phase==2 && ((step.release>0 && off>=step.release) || (step.release<=0 && swung) || m.time>=test_hold)) {
+        snprintf(out.event,sizeof(out.event),"TEST %d let go: %.0f deg off the path after %.2f s, %.0f km/h, pitch %.0f deg/s",
+                 m.step+1,off,m.time,path.speed*3.6f,in.pitch_rate);
+        m.phase=3; m.time=0;
+    }
+    if(m.phase==3 && (swung || (m.time>0.8f && m.off_max<45) || m.time>=test_watch)) {   // <45 after 0.8 s: no post-stall
+        const int next=m.step+1;
+        snprintf(out.event,sizeof(out.event),"TEST %d done: nose %.0f deg off the path at most%s",
+                 next,m.off_max,next<count?"":" | TEST plan done");
+        m=ManeuverTest{};
+        m.high_g=high_g;
+        if(next<count) m.step=next;
+        return;
+    }
+    out.pitch=m.phase==2?1.0f:0.0f;
+    s.pitch_out.value=out.pitch;
+    s.pitch_history.u[s.pitch_history.head]=out.pitch;   // what was sent, for the model
+    out.diag[DiagTail]=float(10*(m.step+1)+m.phase);
+}
+
 inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicOutput& out) {
     out=LogicOutput{};
     if(s.cal.step>=0 && calibration_hold(s,in,out)) return;
@@ -501,6 +678,35 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
     // with exponential forgetting, a prior of 1 worth ~0.3 s of 20 deg/s response, and
     // only authority_trust of the estimated change applied (a slower-than-modelled
     // aircraft still reads somewhat weak, and full trust overshot it in sim).
+    // Post-stall (the nose more than unmodelled_off from the flight path; a high-G turn peaks
+    // near 20): the game turns the nose at 110-190 deg/s whatever the stick, and then swings
+    // the flight path onto it, nothing the model describes. Learning from it, the pull
+    // authority read 76 against 58-61 before (the full-stick rate predicted 45-50 deg/s after
+    // the swing, measured 10-15: the pull eased off and the nose stalled on its way to the
+    // pointer), then ran below the aircraft (braked late, overshot, a full push and a roll
+    // back: a Z at the pointer; logged, FA-36, 2026-10-06). So the authority, the online
+    // identification and the trim learn nothing then, nor for the filters' time after.
+    // Post-stall only after the game's entry (the high-G pressed below 500 km/h with the pitch not
+    // pulling, as sent): the nose off the path alone also took the X-40A's ordinary high-G turns,
+    // up to 58 deg off (25 spells, 12 s in one sortie, the learning held and the pitch switched to
+    // the post-stall rule; logged 2026-10-07). Over when the path has come round onto the nose
+    // (within 20 deg after more than unmodelled_off), or no swing within 1.5 s, or after 6 s.
+    bool post_stall=false;
+    {
+        const float speed=std::sqrt(in.vel_x*in.vel_x+in.vel_y*in.vel_y+in.vel_z*in.vel_z);
+        const float along=speed>1?(in.vel_x*b.f.x+in.vel_y*b.f.y+in.vel_z*b.f.z)/speed:1;
+        const float off=std::acos(std::clamp(along,-1.0f,1.0f))/rad;
+        if(s.psm_entered) {
+            s.psm_time+=in.dt;
+            s.psm_off_max=std::max(s.psm_off_max,off);
+            if((s.psm_off_max>unmodelled_off && off<20) || (s.psm_time>1.5f && s.psm_off_max<unmodelled_off) || s.psm_time>6)
+                s.psm_entered=false;
+        }
+        post_stall=s.psm_entered && speed>1 && off>unmodelled_off;
+        if(post_stall) s.unmodelled=t.authority_filter+0.3f;
+        else s.unmodelled=std::max(0.0f,s.unmodelled-in.dt);
+    }
+    const bool modelled=s.unmodelled<=0;
     Plant p=base;
     if(t.authority_memory>0 && in.dt>0) {
         const float kp=1-std::exp(-in.dt/base.pitch_tau), forget=std::exp(-in.dt/t.authority_memory);
@@ -513,7 +719,7 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
         s.pull_f+=(s.pull_unit-s.pull_f)*kf; s.push_f+=(s.push_unit-s.push_f)*kf;
         s.pitch_yf+=(in.pitch_rate-s.pitch_free-s.pitch_yf)*kf;
         s.roll_f+=(s.roll_unit-s.roll_f)*kf; s.roll_yf+=(in.roll_rate-s.roll_yf)*kf;
-        auto decay=[&](float& sum,float add) { sum=sum*forget+add*in.dt; };
+        auto decay=[&](float& sum,float add) { if(modelled) sum=sum*forget+add*in.dt; };
         decay(s.s_uu,s.pull_f*s.pull_f); decay(s.s_dd,s.push_f*s.push_f); decay(s.s_ud,s.pull_f*s.push_f);
         decay(s.s_uy,s.pull_f*s.pitch_yf); decay(s.s_dy,s.push_f*s.pitch_yf);
         decay(s.roll_zz,s.roll_f*s.roll_f); decay(s.roll_zy,s.roll_f*s.roll_yf);
@@ -563,7 +769,8 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
     // re-anchor) is far faster than any real motion and is ignored.
     {
         const V aim{in.aim_x,in.aim_y,in.aim_z};
-        if(s.aim_primed && in.dt>0 && t.lead_gain>0) {
+        if(in.aim_attached) { s.lead_pitch=0; s.lead_yaw=0; }
+        else if(s.aim_primed && in.dt>0 && t.lead_gain>0) {
             const V d{(aim.x-s.aim_prev[0])/in.dt,(aim.y-s.aim_prev[1])/in.dt,(aim.z-s.aim_prev[2])/in.dt};
             if(std::sqrt(dot(d,d))/rad<3*t.lead_max) {
                 const float k=1-std::exp(-in.dt/std::max(t.lead_filter,0.01f));
@@ -573,7 +780,7 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
         }
         s.aim_prev[0]=aim.x; s.aim_prev[1]=aim.y; s.aim_prev[2]=aim.z; s.aim_primed=true;
     }
-    const float lead_pitch=t.lead_gain*std::clamp(s.lead_pitch,-t.lead_max,t.lead_max);
+    const float lead_pitch_raw=t.lead_gain*std::clamp(s.lead_pitch,-t.lead_max,t.lead_max);
     const float lead_yaw=t.lead_gain*std::clamp(s.lead_yaw,-t.lead_max,t.lead_max);
     // Seconds to sea level at the present sink rate (the push guard near the ground).
     const float ground_time=in.vel_z<-5.0f?std::max(0.0f,in.altitude)/-in.vel_z:1e9f;
@@ -586,11 +793,17 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
                  g.tail?"rear reversal committed":"rear reversal complete",g.angle);
     }
     const float w=g.turn_weight;
+    // While the roll must come first (the lift more than 90 deg from the target) the target's
+    // motion may hurry the pitch that is coming, never oppose it: the aim moving toward the
+    // floor read as a full push mid-roll (logged, FA-36 at 550-700 m/s: 16 s in one sortie,
+    // 2.8 s of it in high-G turns, the negative G undone after the roll).
+    const float lead_along=g.pushing?std::min(lead_pitch_raw,0.0f):std::max(lead_pitch_raw,0.0f);
+    const float lead_pitch=lead_pitch_raw+t.lead_gate*(1-g.pitch_gate)*(lead_along-lead_pitch_raw);
     const float pitch_left=g.pitch_error-pitch_travel;
     // The trim learns a steady model offset near the target and keeps it through
     // maneuvers (it is a few deg/s against rates of tens). Decaying it in every turn
     // relearned it from zero at each arrival, and the nose sat ~0.7 deg high (logged).
-    if(std::abs(g.pitch_error)<3 && w<0.5f)
+    if(std::abs(g.pitch_error)<3 && w<0.5f && modelled)
         s.pitch_trim=std::clamp(s.pitch_trim+t.pitch_trim*g.pitch_error*in.dt,-t.pitch_trim_limit,t.pitch_trim_limit);
     else if(t.pitch_trim_keep<=0) s.pitch_trim*=std::max(0.0f,1-2*in.dt);
     const bool nose_up=pitch_left>=0;
@@ -617,9 +830,13 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
     const float pitch_full=nose_up?p.pull_rate(upright):p.push_rate(upright);
     const bool pitch_all_out=std::min(t.pitch_gain*std::abs(pitch_left),
         stoppable_first_order(std::abs(pitch_left),pitch_opposing,p.pitch_tau+p.pitch_release,3*pitch_full))>=pitch_full;
-    const float pitch_cmd=pitch_all_out ? (nose_up?1.0f:-1.0f)
+    float pitch_cmd=pitch_all_out ? (nose_up?1.0f:-1.0f)
         : std::clamp(pitch_hold+t.pitch_kd*(pitch_want-pitch_pred),pitch_low,pitch_high);
-    out.pitch=s.pitch_out.step(pitch_cmd,in.dt,t.pitch_slew);
+    // ...but no further than the pitch already certain to come with the hardest stop: past that
+    // the full pull carries the nose through the aim (bench, every aircraft from the game's own
+    // parameters: a Su-35 in a high-G pull at 125 deg/s went 40 deg past an aim 10 deg off,
+    // into a vertical dive and the ground, where the FA-36's slower pull had stopped in time).
+    if(high_g && t.highg_full_from>0 && g.angle>t.highg_full_from && !g.pushing && g.pitch_error>std::max(0.5f,pitch_coming)) pitch_cmd=1;
 
     // Roll: acceleration-limited plant. Same prediction; braking distance r^2/(2a).
     float roll_pred=0, roll_filtered=0, roll_travel=0;
@@ -631,18 +848,121 @@ inline void logic_step(const Tuning& t,LogicState& s,const LogicInput& in,LogicO
         std::sqrt(2*roll_brake*std::abs(roll_left)),t.roll_gain);
     const bool roll_all_out=std::min(t.roll_gain*std::abs(roll_left),
         std::sqrt(2*roll_brake*std::abs(roll_left)))>=p.roll_max_rate;
-    const float roll_cmd=roll_all_out ? (roll_left>=0?1.0f:-1.0f)
+    float roll_cmd=roll_all_out ? (roll_left>=0?1.0f:-1.0f)
         : roll_input_for(p,t.roll_kv*(roll_want-roll_pred)+roll_want/p.roll_tau);
-    out.roll=s.roll_out.step(roll_cmd,in.dt,t.roll_slew);
 
     // Rudder only trims small lateral errors and fades out entirely in turns.
     const float yaw_rate=std::clamp(dead(g.yaw_error,t.yaw_dead)*t.yaw_gain+lead_yaw,-t.yaw_max_rate,t.yaw_max_rate);
-    const float ycmd=g.yaw_weight*std::clamp((yaw_rate-in.yaw_rate*t.yaw_damping)/10.0f,-t.yaw_limit,t.yaw_limit);
+    float ycmd=g.yaw_weight*std::clamp((yaw_rate-in.yaw_rate*t.yaw_damping)/10.0f,-t.yaw_limit,t.yaw_limit);
+    // (not while the low-altitude guard is on: the look-ahead knows nothing of the ground, and
+    // charging the roll rate it held back the roll upright the guard wanted, into the sea)
+    if(t.fine_search>0 && g.angle<t.fine_angle && !g.tail && !g.pushing && in.keyboard==0 &&
+       !(t.maneuver.ground_guard>0 && ground_time<t.maneuver.ground_guard)) {
+        // From where the commands in flight leave the aircraft: attitude advanced by the
+        // travel still to come, rates and input smoothing as they will then be.
+        auto turn=[](V& a,V& c,float deg) { const float k=deg*rad, cs=std::cos(k), sn=std::sin(k); const V a0=a; a=a*cs+c*sn; c=c*cs-a0*sn; };
+        Basis b0=b;
+        turn(b0.f,b0.u,pitch_travel); turn(b0.u,b0.r,roll_travel);
+        const V aim0{in.aim_x,in.aim_y,in.aim_z};
+        const float start=p.pitch_delay, dts=0.05f;
+        const int steps=std::max(1,int(t.fine_horizon/dts+0.5f));
+        const float still=1-smoothstep(t.maneuver.pursuit_speed,2*t.maneuver.pursuit_speed,std::hypot(s.lead_pitch,s.lead_yaw));
+        auto aim_at=[&](float tt) { return unit(aim0+(b.u*s.lead_pitch+b.r*s.lead_yaw)*(tt*rad)); };
+        auto law=[&](const Basis& k,const V& aim) {
+            const float ep=std::atan2(dot(aim,k.u),dot(aim,k.f))/rad, upr=k.u.z;
+            return pitch_input_for(p,std::clamp(t.pitch_gain*ep,-0.9f*p.push_rate(upr),0.9f*p.pull_rate(upr))+p.pitch_gravity*upr,upr);
+        };
+        const float law0=law(b0,aim_at(start));
+        auto cost=[&](float up,float ur,float uy) {
+            Basis k=b0;
+            float q=pitch_pred, fq=pitch_filtered, pr=roll_pred, fr=roll_filtered, yr=in.yaw_rate, c=0;
+            for(int i=0;i<steps;++i) {
+                const float upi=t.fine_follow>0&&i>0 ? std::clamp(up+t.fine_follow*(law(k,aim_at(start+i*dts))-law0),-1.0f,1.0f) : up;
+                fq=input_smooth(fq,upi,dts,p.pitch_input,p.pitch_release);
+                // less the trim: the steady model offset the rules have learned and fly against
+                q+=dts*(pitch_steady(p,fq,k.u.z)-s.pitch_trim-q)/p.pitch_tau;
+                fr=input_smooth(fr,ur,dts,p.roll_input,p.roll_input);
+                pr=std::clamp(pr+dts*(roll_accel_for(p,fr)-pr/p.roll_tau),-p.roll_max_rate,p.roll_max_rate);
+                yr+=dts*(uy*t.fine_yaw_rate-yr)/0.35f;
+                turn(k.f,k.u,q*dts); turn(k.u,k.r,pr*dts); turn(k.f,k.r,yr*dts);
+                // the aim keeps moving across the nose as it has been (low-passed, deg/s)
+                const float tt=start+(i+1)*dts;
+                const V aim=unit(aim0+(b.u*s.lead_pitch+b.r*s.lead_yaw)*(tt*rad));
+                const float e=std::acos(std::clamp(dot(k.f,aim),-1.0f,1.0f))/rad;
+                c+=(e*e+e)*dts+t.fine_roll*pr*pr*dts;   // the linear part keeps the last degree worth closing
+            }
+            if(t.fine_to_go>0) {
+                const V aim=aim_at(start+steps*dts);
+                const float e=std::acos(std::clamp(dot(k.f,aim),-1.0f,1.0f))/rad;
+                // the target's direction around the nose: 0 over the canopy, 180 below the floor
+                const float x=dot(aim,k.r), y=dot(aim,k.u), phi=std::atan2(std::abs(x),y)/rad, n=std::hypot(x,y);
+                // how fast the aim moves away from the nose (deg/s): a rudder slower than the
+                // target never catches it, however well it does over the horizon
+                const V lead=b.u*s.lead_pitch+b.r*s.lead_yaw;
+                const float away=n>1e-6f?(dot(lead,k.r)*x+dot(lead,k.u)*y)/n:0.0f;
+                auto way=[&](float lag,float rate) { return lag+(e+std::max(0.0f,away)*lag)/std::max(rate-away,0.1f*rate); };
+                const float lag=p.pitch_delay+p.pitch_input+p.pitch_tau;
+                const float go=std::min({way(p.roll_time(phi)+lag,p.pull_rate(k.u.z)),
+                                         way(p.roll_time(180-phi)+lag,p.push_rate(k.u.z)),
+                                         way(0.35f,std::max(t.fine_yaw_rate,0.1f))});
+                { const float beyond=std::max(0.0f,e-t.maneuver.near_end); c+=t.fine_to_go*beyond*beyond/3*go; }   // closing evenly over go; inside near_end the fine tracking's
+            }
+            const float bank=std::atan2(k.r.z,k.u.z)/rad;
+            // the bank counts as much as the horizon is there to bank against (nose straight up or
+            // down it is undefined and swung about, and the search rolled after it: sim, 90 deg
+            // dive), and only for an aim that is not moving: a chased one has no arrival to level
+            // the wings for (as chase_level; charged anyway, the bank held for a circling target
+            // was pulled level and back every few seconds: bench, Selene's shield phase)
+            c+=t.fine_level*bank*bank*(k.r.z*k.r.z+k.u.z*k.u.z)*still;
+            c+=t.fine_smooth*((up-s.pitch_out.value)*(up-s.pitch_out.value)+(ur-s.roll_out.value)*(ur-s.roll_out.value)+
+                              (uy-s.yaw.value)*(uy-s.yaw.value));
+            return c;
+        };
+        // coordinate search: roll, then pitch, then rudder, twice; the rules' sticks always a candidate
+        float bp=pitch_cmd, br=roll_cmd, by=ycmd, best=cost(bp,br,by);
+        auto tryit=[&](float up,float ur,float uy) {
+            up=std::clamp(up,-1.0f,1.0f); ur=std::clamp(ur,-1.0f,1.0f); uy=std::clamp(uy,-t.yaw_limit,t.yaw_limit);
+            const float c=cost(up,ur,uy);
+            if(c<best) { best=c; bp=up; br=ur; by=uy; }
+        };
+        for(int pass=0;pass<2;++pass) {
+            const float r0=br, p0=bp, y0=by;
+            for(float ur:{0.0f,0.5f*r0,r0-0.15f,r0+0.15f,-0.3f,0.3f}) tryit(p0,ur,y0);
+            const float r1=br;
+            if(t.fine_pitch>0) for(float up:{p0-0.2f,p0-0.08f,p0+0.08f,p0+0.2f,pitch_hold}) tryit(up,r1,y0);
+            const float p1=bp;
+            for(float uy:{0.0f,y0-0.2f,y0+0.2f,-t.yaw_limit,t.yaw_limit}) tryit(p1,r1,uy);
+        }
+        pitch_cmd=bp; roll_cmd=br; ycmd=by;
+    }
+    out.pitch=s.pitch_out.step(pitch_cmd,in.dt,t.pitch_slew);
+    // Post-stall: while the nose is swinging, a full pull until what is left is what it carries
+    // on by itself centred, then centred, and a push only for the part of the stop the centred
+    // stick does not make (a share of it) or once past the pointer. Centred, the nose carries on
+    // by itself (let go at 60-121 deg off the path at 116-140 deg/s it went another 50-55 deg);
+    // the logic's own braking ended the swing short (a push of -0.33 at 44 deg to go and 130
+    // deg/s: 15 deg/s 0.3 s later, stopped 37 deg short, then held still 1.4 s while the game
+    // swung the path onto it), and its full push 1-4 deg past the pointer sent the nose back at
+    // 35 deg/s and a full pull after it (logged, FA-36, 2026-10-06). Once the swing is over
+    // (under 20 deg/s) the game is bringing the path round and the nose hardly answers: a pull
+    // for what is still far, centred near.
+    if(post_stall) {
+        const float q=in.pitch_rate, e=g.pitch_error;
+        if(q>20) {
+            const float coast=q*q/(2*post_stall_coast);
+            if(e>coast) out.pitch=1.0f;
+            else if(e>0.5f) out.pitch=-std::clamp((q*q/(2*e)-post_stall_coast)/(post_stall_push-post_stall_coast),0.0f,1.0f);
+            else out.pitch=-1.0f;
+        } else if(std::abs(e)<10) out.pitch=0.0f;
+        else if(e>0) out.pitch=1.0f;
+        s.pitch_out.value=out.pitch;
+    }
+    out.roll=s.roll_out.step(roll_cmd,in.dt,t.roll_slew);
     out.yaw=s.yaw.step(ycmd,in.dt,t.yaw_slew);
     s.pitch_history.push(out.pitch,in.dt);
     s.roll_history.push(out.roll,in.dt);
     s.ident.observe(t.plant,s.pitch_history,s.roll_history,in.pitch_rate,in.roll_rate,upright,in.dt,
-                    in.keyboard==0,t.ident_memory,out);
+                    in.keyboard==0 && modelled,t.ident_memory,out);
     // want: desired rates; pred: rates predicted after the delay; abi marks controller-convention signs.
     snprintf(out.trace,sizeof(out.trace),
         "dt=%.4f angle=%.2f w=%.2f tail=%d push=%d err=(p%.2f,y%.2f,r%.1f) roll=%.1f "
@@ -684,21 +1004,34 @@ inline int abi(unsigned* input_size,unsigned* output_size,unsigned* state_size) 
     *input_size=sizeof(LogicInput); *output_size=sizeof(LogicOutput); *state_size=sizeof(LogicState);
     return logic_abi;
 }
-inline float calibrate_seen=0;
-inline bool calibrate_request=false;
+inline float calibrate_seen=0, maneuver_test_seen=0;
+inline bool calibrate_request=false, maneuver_test_request=false;
 inline void configure(const wchar_t* config_path) {
     tuning=read_tuning(config_path);
     if(tuning.calibrate!=calibrate_seen) {
         calibrate_seen=tuning.calibrate;
         calibrate_request=tuning.calibrate>0;
     }
+    if(tuning.maneuver_test!=maneuver_test_seen) {
+        maneuver_test_seen=tuning.maneuver_test;
+        maneuver_test_request=tuning.maneuver_test>0;
+    }
 }
 // Pauses, recenters and hitches reset control state but keep what was learned about
 // the aircraft; a stale or foreign buffer (tag mismatch) starts fresh.
 inline void reset_keeping_aircraft(LogicState& s) {
     const Identification keep=s.ident;
+    const ManeuverTest test=s.test;
     new(&s) LogicState();
     if(keep.tag==Identification::valid_tag) { s.ident=keep; s.ident.primed=false; }
+    // An armed test plan stays armed (a pause or F9 mid-step); a step interrupted after the
+    // stick was let go counts as done, one interrupted before runs again on the next press.
+    int count=0;
+    test_plan(count);
+    if(keep.tag==Identification::valid_tag && test.tag==ManeuverTest::valid_tag && test.step>=0 && test.step<count) {
+        s.test.step=test.phase>=3 ? test.step+1 : test.step;
+        if(s.test.step>=count) s.test.step=-1;
+    }
 }
 inline void reset(void* state) { reset_keeping_aircraft(*static_cast<LogicState*>(state)); }
 inline void step(void* state,const LogicInput* in,LogicOutput* out) {
@@ -709,7 +1042,22 @@ inline void step(void* state,const LogicInput* in,LogicOutput* out) {
         s.cal.step=0;
         s.cal.announce=true;
     }
+    if(maneuver_test_request) {
+        maneuver_test_request=false;
+        s.test=ManeuverTest{};
+        s.test.step=0;
+        int count=0;
+        test_plan(count);
+        snprintf(out->event,sizeof(out->event),"TEST armed: %d steps; each below 500 km/h with high-G held runs one",count);
+        LogicOutput first{};
+        logic_step(tuning,s,*in,first);
+        std::memcpy(first.event,out->event,sizeof(first.event));
+        *out=first;
+        return;
+    }
     logic_step(tuning,s,*in,*out);
+    post_stall_override(s,*in,*out);
+    if(s.test.step>=0) test_override(s,*in,*out);
 }
 }
 }

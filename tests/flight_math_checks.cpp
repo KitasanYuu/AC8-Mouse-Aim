@@ -9,10 +9,10 @@ namespace {
 using namespace flight;
 bool close_to(float a,float b,float tolerance=0.1f) { return std::abs(a-b)<tolerance; }
 // The rules as tuned until 2026-10-05 (upright preference 1, 20 deg of bank per degree to go,
-// no pursuit lead): the checks below describe them, and they remain selectable. The defaults
+// no pursuit lead, a push favoured by 0.3 s): the checks below describe them, and they remain selectable. The defaults
 // since then (the game's tuning: upright 0, level_per_deg 10, pursuit_ahead 0.3) are checked
 // after them.
-Maneuver upright_maneuver() { Maneuver m; m.t.upright=1; m.t.level_per_deg=20; m.t.pursuit_ahead=0; return m; }
+Maneuver upright_maneuver() { Maneuver m; m.t.upright=1; m.t.level_per_deg=20; m.t.pursuit_ahead=0; m.t.push_bias=0.3f; return m; }
 Guidance guide(const Basis& body,V aim) { Maneuver m=upright_maneuver(); return m.step(body,aim); }
 }
 
@@ -263,7 +263,7 @@ int main() {
             logic_step(tuning,state,in,out);
             assert(std::abs(out.pitch)<=1 && std::abs(out.roll)<=1 && std::abs(out.yaw)<=1);
         }
-        assert(out.roll>0.5f && std::strstr(out.trace,"abi=5"));
+        assert(out.roll>0.5f && std::strstr(out.trace,"abi=7"));
         // Flight path: level flight along the nose is 0 deg AoA at 1 g; a nose 5 deg above a
         // level flight path is +5 deg AoA; pulling 3 g extra along the canopy reads 4 g.
         {

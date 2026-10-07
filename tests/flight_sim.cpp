@@ -327,6 +327,12 @@ int main(int argc,char** argv) {
         else if(key=="pitch_trim_keep") tuning.pitch_trim_keep=value;
         else if(key=="pitch_slew") tuning.pitch_slew=value;
         else if(key=="roll_slew") tuning.roll_slew=value;
+        else if(key=="fine_search") tuning.fine_search=value;
+        else if(key=="fine_angle") tuning.fine_angle=value;
+        else if(key=="fine_level") tuning.fine_level=value;
+        else if(key=="fine_roll") tuning.fine_roll=value;
+        else if(key=="fine_to_go") tuning.fine_to_go=value;
+        else if(key=="fine_follow") tuning.fine_follow=value;
     }
     if(trace_case>=0) {
         verbose=true;
