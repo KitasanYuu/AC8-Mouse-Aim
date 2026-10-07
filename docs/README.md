@@ -2,13 +2,13 @@
 
 文档按职责分区。能力与实现状态的权威清单是[能力矩阵](01-capabilities/capability-matrix.md)，飞控行为以[飞控规范](02-architecture/flight-control.md)为准。
 
-| 分区 | 主题 | 内容 |
+| 分区 | 主题 | 文档 |
 |---|---|---|
-| [00-overview](00-overview/) | 概览、原则与现状 | project-overview、principles-and-boundaries、current-status |
-| [01-capabilities](01-capabilities/) | 能力清单与限制 | capability-matrix、limitations |
-| [02-architecture](02-architecture/) | 实现方式 | architecture、flight-control、camera-and-views、input-and-takeover |
-| [03-usage](03-usage/) | 安装与使用 | installation、controls、configuration、localization、performance-reporting |
-| [04-development](04-development/) | 开发工具与流程 | build-and-deploy、flight-reconstruction、flight-bench |
+| 00-overview | 概览、原则与现状 | [项目概览](00-overview/project-overview.md) · [原则与边界](00-overview/principles-and-boundaries.md) · [当前状态](00-overview/current-status.md) |
+| 01-capabilities | 能力清单与限制 | [能力矩阵](01-capabilities/capability-matrix.md) · [已知限制与排查](01-capabilities/limitations.md) |
+| 02-architecture | 实现方式 | [总体架构](02-architecture/architecture.md) · [飞控规范](02-architecture/flight-control.md) · [镜头与视角](02-architecture/camera-and-views.md) · [输入与接管](02-architecture/input-and-takeover.md) |
+| 03-usage | 安装与使用 | [安装与卸载](03-usage/installation.md) · [操作](03-usage/controls.md) · [配置与调参面板](03-usage/configuration.md) · [多语言](03-usage/localization.md) · [问题反馈](03-usage/performance-reporting.md) |
+| 04-development | 开发工具与流程 | [构建与调试部署](04-development/build-and-deploy.md) · [飞行重建](04-development/flight-reconstruction.md) · [飞控对比台](04-development/flight-bench.md) |
 
 ## 状态标签
 
