@@ -29,7 +29,7 @@ group.keys_panel = 设置面板
 group.keys_diagnostics = 诊断
 
 item.sensitivity = 鼠标灵敏度
-item.sensitivity.desc = 指定以鼠标操作瞄准点时的灵敏度（每个鼠标计数转动的角度）。座舱／机首视角下按视野角度的比例降低。
+item.sensitivity.desc = 指定以鼠标操作瞄准点时的灵敏度（每个鼠标计数转动的角度）。座舱／机首视角下按视野角度（FOV）的比例降低。
 
 item.camera_follow = 镜头追踪速度
 item.camera_follow.desc = 设置追尾镜头转向瞄准点的速度（1/秒）。数值越大，镜头越贴近瞄准点。
@@ -40,8 +40,8 @@ item.camera_distance.desc = 设置追尾镜头与机体的距离（m）。设为
 item.camera_height = 镜头高度
 item.camera_height.desc = 设置追尾镜头在机体上方的高度（m）。镜头距离为 0 时无效。
 
-item.camera_fov_add = 视野角度修正
-item.camera_fov_add.desc = 在游戏的视野角度上增减的度数（追尾镜头）。保留游戏随速度产生的变化。
+item.camera_fov_add = FOV 修正
+item.camera_fov_add.desc = 在游戏的视野角度（FOV）上增减的度数（追尾镜头）。保留游戏随速度产生的变化。
 
 item.near_view_camera = 视角模式
 item.near_view_camera.desc = 设置座舱／机首视角的镜头动作。0：固定朝前　1：朝向瞄准点　2：瞄准点到达画面边缘才转动　3：固定朝前并朝瞄准圈转头
@@ -64,8 +64,8 @@ item.near_view_inertia.desc = 设置视角跟随机体姿态的延迟（秒）�
 item.near_view_level = 视角水平修正
 item.near_view_level.desc = 设置视角的翻滚向水平修正的比例。0：随机体翻滚　1：保持水平
 
-item.near_view_fov_add = 视野角度修正
-item.near_view_fov_add.desc = 在游戏的视野角度上增减的度数（座舱／机首视角）。
+item.near_view_fov_add = FOV 修正
+item.near_view_fov_add.desc = 在游戏的视野角度（FOV）上增减的度数（座舱／机首视角）。
 
 item.pitch_gain = 俯仰增益
 item.pitch_gain.desc = 设置接近瞄准点时的俯仰速度：目标俯仰角速度＝该值×剩余角度（1/秒）。数值越大越快到位，过大会在瞄准点附近反复修正。
