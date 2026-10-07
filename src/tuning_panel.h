@@ -244,60 +244,67 @@ void panel_attach(HWND window) {
     log_line("tuning panel: attached to the game window (toggle key 0x%02X)",config.tuning_key);
 }
 
-// draw_overlay: the panel, left of centre below the status line; returns where it was drawn.
+// draw_overlay: the panel, top left below the status line; returns where it was drawn. Compact:
+// a row is the key and its value (and the opening value once changed); the selected item's
+// description sits at the bottom (each row's own had made the panel half the screen wide).
 RECT draw_tuning_panel(HDC dc,uint32_t* pixels,int width,int height,float scale) {
     if(!panel_open.load()) return RECT{0,0,0,0};
     PanelState state;
     { std::lock_guard<std::mutex> lock(panel_mutex); state=panel; }
     static HFONT font{}; static int font_height=0;
-    const int text_height=std::max(14,int(std::lround(17*scale)));
+    const int text_height=std::max(13,int(std::lround(15*scale)));
     if(font_height!=text_height) {
         if(font) DeleteObject(font);
         font=CreateFontW(-text_height,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
                          ANTIALIASED_QUALITY,FIXED_PITCH|FF_MODERN,L"Consolas");
         font_height=text_height;
     }
-    const int line=int(text_height*1.35f), pad=int(12*scale);
-    int lines=3;
-    for(const auto& item:panel_items) lines+=item.group?2:1;
+    HGDIOBJ old_font=SelectObject(dc,font);
+    struct Line { std::string text; COLORREF color; int item=-1; };
+    std::vector<Line> lines;
+    char row[160]{};
     char key_name[16]{};
     if(config.tuning_key>=VK_F1 && config.tuning_key<=VK_F24) snprintf(key_name,sizeof(key_name),"F%d",config.tuning_key-VK_F1+1);
-    else snprintf(key_name,sizeof(key_name),"key 0x%02X",config.tuning_key);
-    RECT box{int(28*scale),int(100*scale),0,0};
-    box.right=std::min(LONG(width),box.left+LONG(text_height*0.56f*95)+2*pad);
-    box.bottom=std::min(LONG(height),box.top+LONG(lines*line+2*pad));
-    if(box.right<=box.left || box.bottom<=box.top) return RECT{0,0,0,0};
+    else snprintf(key_name,sizeof(key_name),"0x%02X",config.tuning_key);
+    snprintf(row,sizeof(row),"MouseFlight tuning  (%s close)",key_name);
+    lines.push_back({row,RGB(255,255,255)});
+    lines.push_back({"Up/Down  Left/Right (Shift fine)  Bksp undo",RGB(150,150,150)});
+    for(int i=0;i<panel_count;++i) {
+        const PanelItem& item=panel_items[i];
+        if(item.group) lines.push_back({item.group,RGB(120,200,255)});
+        const std::string now=panel_text(item,state.value[i]), was=panel_text(item,state.was[i]);
+        if(now!=was) snprintf(row,sizeof(row),"%s %-17s %6s  was %s",i==state.selected?">":" ",item.key,now.c_str(),was.c_str());
+        else snprintf(row,sizeof(row),"%s %-17s %6s",i==state.selected?">":" ",item.key,now.c_str());
+        lines.push_back({row,i==state.selected?RGB(255,220,120):RGB(235,235,235),i});
+    }
+    lines.push_back({panel_items[state.selected].label,RGB(190,190,190)});
+    const int line=int(text_height*1.25f), pad=int(9*scale), gap=line/2;   // gap: before the description
+    LONG text_width=0;
+    for(const auto& l:lines) {
+        SIZE size{};
+        GetTextExtentPoint32A(dc,l.text.c_str(),int(l.text.size()),&size);
+        text_width=std::max(text_width,size.cx);
+    }
+    RECT box{LONG(28*scale),LONG(100*scale),0,0};
+    box.right=std::min(LONG(width),box.left+text_width+2*pad);
+    box.bottom=std::min(LONG(height),box.top+LONG(lines.size())*line+gap+2*pad);
+    if(box.right<=box.left || box.bottom<=box.top) { SelectObject(dc,old_font); return RECT{0,0,0,0}; }
     auto fill=[&](RECT r,uint32_t color) {   // premultiplied
         for(LONG y=std::max(0L,r.top);y<std::min(LONG(height),r.bottom);++y)
             for(LONG x=std::max(0L,r.left);x<std::min(LONG(width),r.right);++x) pixels[size_t(y)*width+x]=color;
     };
     fill(box,0xC8000000);
-    HGDIOBJ old_font=SelectObject(dc,font);
     SetBkMode(dc,TRANSPARENT);
     int y=box.top+pad;
-    const int x=box.left+pad;
-    auto text=[&](int at,COLORREF color,const char* s) {
-        SetTextColor(dc,color);
-        TextOutA(dc,at,y,s,int(strlen(s)));
-    };
-    char row[256]{};
-    snprintf(row,sizeof(row),"MouseFlight tuning (%s closes; saved to config.ini as you go)",key_name);
-    text(x,RGB(255,255,255),row); y+=line;
-    text(x,RGB(170,170,170),"Up/Down choose   Left/Right change (Shift: finer)   Backspace: opening value");
-    y+=line*2;
-    for(int i=0;i<panel_count;++i) {
-        const PanelItem& item=panel_items[i];
-        if(item.group) { text(x,RGB(120,200,255),item.group); y+=line; }
-        const bool selected=i==state.selected;
-        if(selected) { GdiFlush(); fill(RECT{box.left+pad/2,y-int(line*0.12f),box.right-pad/2,y+line-int(line*0.12f)},0xC8303A46); }
-        const std::string now=panel_text(item,state.value[i]);
-        const bool changed=now!=panel_text(item,state.was[i]);
-        snprintf(row,sizeof(row),"%s %-18s %8s  %s",selected?">":" ",item.key,now.c_str(),item.label);
-        text(x,selected?RGB(255,220,120):RGB(235,235,235),row);
-        if(changed) {
-            snprintf(row,sizeof(row),"(was %s)",panel_text(item,state.was[i]).c_str());
-            text(x+int(text_height*0.55f*79),RGB(150,150,150),row);
+    for(size_t n=0;n<lines.size();++n) {
+        const Line& l=lines[n];
+        if(n+1==lines.size()) y+=gap;
+        if(l.item>=0 && l.item==state.selected) {
+            GdiFlush();
+            fill(RECT{box.left+pad/2,LONG(y-line/10),box.right-pad/2,LONG(y+line-line/10)},0xC8303A46);
         }
+        SetTextColor(dc,l.color);
+        TextOutA(dc,box.left+pad,y,l.text.c_str(),int(l.text.size()));
         y+=line;
     }
     SelectObject(dc,old_font);

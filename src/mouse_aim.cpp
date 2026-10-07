@@ -17,6 +17,7 @@
 #include <thread>
 #include <mutex>
 #include <array>
+#include <vector>
 #include "vendor/minhook/include/MinHook.h"
 bool telemetry_send(int port, const char* data, int length);  // telemetry.cpp
 bool gamepad_read(float values[6], unsigned& buttons);        // telemetry.cpp
