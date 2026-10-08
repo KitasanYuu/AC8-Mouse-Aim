@@ -1,6 +1,6 @@
 # 安装与卸载（Installation）
 
-所有操作都通过仓库根目录的 **`AC8MouseFlight.cmd`** 完成。它通过 Steam 的安装记录找到游戏（找不到时请手动选择），打开后是一个菜单：
+安装、更新、模式切换与卸载都通过仓库根目录的 **`AC8MouseFlight.cmd`** 完成。它通过 Steam 的安装记录找到游戏（找不到时请手动选择），打开后是一个菜单：
 
 ```text
 ==== AC8 MouseFlight ====
