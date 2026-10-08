@@ -13,15 +13,11 @@
 
 `dev/compare/scorecard.txt` 随仓库提交；改飞控后重跑，用 `git diff` 看各场景分数的变化。每次运行都会比对仓库与游戏中 `config.ini` 的 `[tuning]`，有差异时在输出和计分表顶部列出。
 
-### 发布到 GitHub Pages
+### 在线页面
 
-`dev\compare\Publish-Pages.cmd` 把页面（`index.html`、机体模型）与最近一次运行的 `results/` 生成为本地分支 `gh-pages` 的唯一一个提交。每次运行替换这个提交而不是追加，结果（数百 MB）不会在历史中累积。脚本不推送；确认后手动推送：
+`dev\compare\Publish-Pages.cmd` 将页面（`index.html`、机体模型）与最近一次运行的 `results/` 整理为可发布的 `gh-pages` 内容。每次生成的页面只保留当前结果，避免数百 MB 的结果数据在页面历史中累积。
 
-```bat
-git push -f origin gh-pages
-```
-
-首次需在仓库 Settings → Pages 选择 “Deploy from a branch”、`gh-pages`、`/ (root)`。页面地址为 `https://kitasanyuu.github.io/AC8-Mouse-Aim/`。更新时先运行完整的 `compare.cmd`，再运行发布脚本并推送。
+公开实例：<https://kitasanyuu.github.io/AC8-Mouse-Aim/>。
 
 ## 参评飞控
 
@@ -32,7 +28,7 @@ git push -f origin gh-pages
 | FletcherMiya 0.2.30 | 上游 052cd6a |
 | xsd467 pw.11 | xsd467 05d7f48（CC0） |
 
-其他仓库的源码与本项目的发布版按提交原样放在 `dev/compare/controllers/<名称>/`（只改命名空间），适配器见同目录的 `.h`；新增飞控或发版时照此添加并在 `harness.cpp` 注册，发版后计分基准改为最新发布版。只试参数时可放配置存档 `dev/compare/configs/*.ini`（首行 `; label: 名称`），以开发版代码运行；文件中没写的键取当天代码的默认值。
+其他仓库的源码与本项目的发布版按提交原样放在 `dev/compare/controllers/<名称>/`（只改命名空间），适配器见同目录的 `.h`；参评飞控在 `harness.cpp` 注册，最新发布版作为计分基准。只试参数时可放配置存档 `dev/compare/configs/*.ini`（首行 `; label: 名称`），以开发版代码运行；文件中没写的键取当天代码的默认值。
 
 ## 页面
 
