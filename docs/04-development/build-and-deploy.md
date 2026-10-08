@@ -23,7 +23,7 @@ dev\check_lua.cmd
 
 ## 版本号
 
-格式为 `<上游版本>+Alf.<本项目版本>`，例如 `0.2.30+Alf.1.0.0`，定义在 `src/version.h`（`MOUSEFLIGHT_UPSTREAM`、`MOUSEFLIGHT_RELEASE`），状态行与日志从这里读取。发布时提高本项目版本，在 [CHANGELOG](../../CHANGELOG.md) 记录变更并打标签 `alf-v<本项目版本>`；并入新的上游版本时改上游部分。
+格式为 `<上游版本>+Alf.<本项目版本>`，例如 `0.2.30+Alf.1.0.0`，定义在 `src/version.h`（`MOUSEFLIGHT_UPSTREAM`、`MOUSEFLIGHT_RELEASE`），状态行与日志从这里读取。发布标签使用 `alf-v<本项目版本>`；上游部分表示当前版本所基于的上游版本。
 
 ## 调试部署
 
@@ -62,9 +62,8 @@ recordings/          遥测录像（不提交）
 backups/             安装工具的备份（不提交）
 ```
 
-## 约定
+## 开发约束
 
 - 不通过移除校验来适配未知游戏或加载器版本。
 - 自上游 0.2.30 起通过 UE4SS 导出的 LuaMadeSimple 接口交换数值，不直接操作 Lua 虚拟机内部结构。
-- 提交说明简短，一两句概括；集成使用 rebase 与快进合并。
-- 游戏数据（`dev/compare/aircraft/aircraft.txt`、探测输出、设置菜单文字）不提交。
+- 游戏数据（`dev/compare/aircraft/aircraft.txt`、探测输出、设置菜单文字）仅用于本地分析，不随项目分发。
